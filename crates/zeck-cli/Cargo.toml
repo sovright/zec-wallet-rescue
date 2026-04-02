@@ -1,0 +1,18 @@
+[package]
+name = "zeck-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+dialoguer.workspace = true
+indicatif.workspace = true
+secrecy.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zeck-core = { path = "../zeck-core" }

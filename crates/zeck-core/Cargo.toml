@@ -1,0 +1,27 @@
+[package]
+name = "zeck-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bip0039.workspace = true
+orchard.workspace = true
+rustls.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+zcash_address.workspace = true
+zcash_client_backend.workspace = true
+zcash_keys.workspace = true
+zcash_protocol.workspace = true
+zcash_transparent.workspace = true
+zip32.workspace = true

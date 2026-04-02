@@ -1,0 +1,9 @@
+/target
+/node_modules
+/dist
+/gui/src-tauri/target
+/gui/.vite
+/zeck_data
+*.sqlite
+*.db
+.DS_Store

@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ZECK</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div>
+          <p class="eyebrow">ZecWallet Lite Recovery</p>
+          <h1>ZECK</h1>
+          <p class="sidebar-copy">
+            A careful recovery workspace for legacy seeds, built around a guided desktop flow and
+            a shared Rust core.
+          </p>
+        </div>
+
+        <ol class="step-list">
+          <li data-step-indicator="welcome">Welcome</li>
+          <li data-step-indicator="seed">Seed Entry</li>
+          <li data-step-indicator="config">Configure</li>
+          <li data-step-indicator="scan">Scan</li>
+          <li data-step-indicator="sweep">Sweep</li>
+          <li data-step-indicator="complete">Complete</li>
+        </ol>
+      </aside>
+
+      <main class="main-panel">
+        <section class="screen active" data-step="welcome">
+          <p class="eyebrow">Step 1</p>
+          <h2>Recover a discontinued wallet carefully</h2>
+          <p class="lead">
+            ZECK re-derives the non-standard ZecWallet Lite address layout from a 24-word seed,
+            then guides you through scanning and preparing a sweep to a modern Unified Address.
+          </p>
+          <div class="card-grid">
+            <article class="info-card">
+              <h3>Seed-only recovery</h3>
+              <p>You do not need a legacy wallet database to begin the recovery flow.</p>
+            </article>
+            <article class="info-card">
+              <h3>Local-first</h3>
+              <p>Seed validation and derivation happen locally in the Tauri Rust backend.</p>
+            </article>
+            <article class="info-card">
+              <h3>Preview-oriented</h3>
+              <p>This build emphasizes verification and safe interfaces before transaction signing.</p>
+            </article>
+          </div>
+          <div class="actions">
+            <button class="primary" data-next="seed">I have my 24-word seed phrase</button>
+            <a class="secondary-link" href="https://github.com/zingolabs/zexcavator" target="_blank"
+              >I have a .dat file instead</a
+            >
+          </div>
+        </section>
+
+        <section class="screen" data-step="seed">
+          <p class="eyebrow">Step 2</p>
+          <h2>Enter the seed phrase</h2>
+          <p class="lead">
+            Paste the full 24 words. The phrase stays on this machine and is cleared from the UI
+            after you start a session.
+          </p>
+          <label class="field">
+            <span>Seed phrase</span>
+            <textarea id="seed-input" rows="5" class="masked"></textarea>
+          </label>
+          <div class="inline-actions">
+            <label class="checkline">
+              <input type="checkbox" id="seed-visibility" />
+              <span>Show words on screen</span>
+            </label>
+            <button class="ghost" id="seed-validate">Validate seed</button>
+          </div>
+          <p id="seed-status" class="status-line"></p>
+          <div class="actions split">
+            <button class="secondary" data-prev="welcome">Back</button>
+            <button class="primary" data-next="config" id="seed-next" disabled>Continue</button>
+          </div>
+        </section>
+
+        <section class="screen" data-step="config">
+          <p class="eyebrow">Step 3</p>
+          <h2>Configure the recovery session</h2>
+          <div class="form-grid">
+            <label class="field">
+              <span>Birthday height</span>
+              <input id="birthday-height" type="number" min="0" value="419200" />
+            </label>
+            <label class="field">
+              <span>Date helper</span>
+              <input id="birthday-date" type="date" />
+            </label>
+            <label class="field">
+              <span>Accounts to scan</span>
+              <input id="accounts-range" type="range" min="5" max="200" value="20" />
+              <strong id="accounts-range-value">20</strong>
+            </label>
+            <label class="field">
+              <span>Gap limit</span>
+              <input id="gap-limit" type="number" min="1" max="50" value="20" />
+            </label>
+            <label class="field span-two">
+              <span>lightwalletd server</span>
+              <input
+                id="lightwalletd-url"
+                type="url"
+                value="https://mainnet.lightwalletd.com:9067"
+              />
+            </label>
+            <label class="field span-two">
+              <span>Destination Unified Address</span>
+              <input id="destination-input" type="text" placeholder="u1..." />
+            </label>
+          </div>
+          <div class="inline-actions">
+            <button class="ghost" id="birthday-estimate">Estimate birthday from date</button>
+            <button class="ghost" id="destination-validate">Validate destination</button>
+          </div>
+          <p id="config-status" class="status-line"></p>
+          <div class="actions split">
+            <button class="secondary" data-prev="seed">Back</button>
+            <button class="primary" id="start-scan">Start Scan</button>
+          </div>
+        </section>
+
+        <section class="screen" data-step="scan">
+          <p class="eyebrow">Step 4</p>
+          <h2>Recovery preview</h2>
+          <div class="banner warning" id="scan-warning">
+            This build performs real seed derivation and server probing, but the compact-block
+            balance scan is still preview-only.
+          </div>
+          <div class="metric-panel">
+            <div>
+              <span class="metric-label">Phase</span>
+              <strong id="scan-phase">Idle</strong>
+            </div>
+            <div>
+              <span class="metric-label">Server</span>
+              <strong id="scan-server">Not connected</strong>
+            </div>
+            <div>
+              <span class="metric-label">Progress</span>
+              <strong id="scan-progress-text">0 / 0</strong>
+            </div>
+          </div>
+          <div class="progress-shell">
+            <div class="progress-bar" id="scan-progress-bar"></div>
+          </div>
+          <p id="scan-message" class="status-line"></p>
+          <div class="table-card">
+            <table>
+              <thead>
+                <tr>
+                  <th>Acct</th>
+                  <th>Sapling</th>
+                  <th>Unified</th>
+                  <th>Transparent</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="scan-rows"></tbody>
+            </table>
+          </div>
+          <div class="actions split">
+            <button class="secondary" id="cancel-scan">Cancel</button>
+            <button class="primary" id="review-sweep" disabled>Review & Sweep</button>
+          </div>
+        </section>
+
+        <section class="screen" data-step="sweep">
+          <p class="eyebrow">Step 5</p>
+          <h2>Review the sweep proposal</h2>
+          <div class="banner warning">
+            This proposal validates the destination and keeps the workflow shape stable, but it does
+            not sign or broadcast transactions yet.
+          </div>
+          <div class="table-card">
+            <table>
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>Destination</th>
+                  <th>Gross</th>
+                  <th>Fee</th>
+                  <th>Net</th>
+                </tr>
+              </thead>
+              <tbody id="sweep-rows"></tbody>
+            </table>
+          </div>
+          <p id="sweep-summary" class="status-line"></p>
+          <label class="checkline">
+            <input type="checkbox" id="irreversible-check" />
+            <span>I understand that a real sweep will be irreversible once broadcasting lands.</span>
+          </label>
+          <div class="actions split">
+            <button class="secondary" data-prev="scan">Back</button>
+            <button class="primary" id="execute-sweep" disabled>Sweep Funds</button>
+          </div>
+        </section>
+
+        <section class="screen" data-step="complete">
+          <p class="eyebrow">Step 6</p>
+          <h2>Session complete</h2>
+          <p class="lead" id="complete-summary">
+            ZECK finished the current recovery preview workflow.
+          </p>
+          <div class="report-card" id="complete-report"></div>
+          <div class="actions">
+            <button class="primary" data-next="welcome" id="restart-flow">Start over</button>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
