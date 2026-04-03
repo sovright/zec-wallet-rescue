@@ -46,8 +46,8 @@
               <p>Seed validation and derivation happen locally in the Tauri Rust backend.</p>
             </article>
             <article class="info-card">
-              <h3>Preview-oriented</h3>
-              <p>This build emphasizes verification and safe interfaces before transaction signing.</p>
+              <h3>Incremental recovery</h3>
+              <p>ZECK keeps a local recovery workspace so scans can resume and real sweeps can build from authoritative wallet state.</p>
             </article>
           </div>
           <div class="actions">
@@ -88,6 +88,13 @@
           <h2>Configure the recovery session</h2>
           <div class="form-grid">
             <label class="field">
+              <span>Network</span>
+              <select id="network-select">
+                <option value="mainnet" selected>Mainnet</option>
+                <option value="testnet">Testnet</option>
+              </select>
+            </label>
+            <label class="field">
               <span>Birthday height</span>
               <input id="birthday-height" type="number" min="0" value="419200" />
             </label>
@@ -97,24 +104,50 @@
             </label>
             <label class="field">
               <span>Accounts to scan</span>
-              <input id="accounts-range" type="range" min="5" max="200" value="20" />
+              <input id="accounts-range" type="range" min="1" max="500" value="20" />
               <strong id="accounts-range-value">20</strong>
+            </label>
+            <label class="checkline field">
+              <input id="auto-gap-limit" type="checkbox" checked />
+              <span>Use auto gap-limit mode</span>
             </label>
             <label class="field">
               <span>Gap limit</span>
               <input id="gap-limit" type="number" min="1" max="50" value="20" />
             </label>
+            <label class="field">
+              <span>Server preset</span>
+              <select id="server-preset">
+                <option value="recommended" selected>Recommended for selected network</option>
+                <option value="mainnet">Mainnet public server</option>
+                <option value="testnet">Testnet public server</option>
+                <option value="custom">Keep custom value</option>
+              </select>
+            </label>
             <label class="field span-two">
               <span>lightwalletd server</span>
               <input
                 id="lightwalletd-url"
-                type="url"
+                type="text"
                 value="https://mainnet.lightwalletd.com:9067"
               />
+              <small>Comma-separated URLs are tried in order for fallback.</small>
+            </label>
+            <label class="field span-two">
+              <span>Recovery workspace directory</span>
+              <input id="data-dir" type="text" value="./zeck_data" />
             </label>
             <label class="field span-two">
               <span>Destination Unified Address</span>
               <input id="destination-input" type="text" placeholder="u1..." />
+            </label>
+            <label class="field span-two">
+              <span>Recovery memo (optional)</span>
+              <input id="sweep-memo" type="text" placeholder="ZECK recovery" />
+            </label>
+            <label class="field">
+              <span>Max estimated fee in ZEC (optional)</span>
+              <input id="max-fee-zec" type="text" inputmode="decimal" placeholder="0.0002" />
             </label>
           </div>
           <div class="inline-actions">
@@ -130,10 +163,10 @@
 
         <section class="screen" data-step="scan">
           <p class="eyebrow">Step 4</p>
-          <h2>Recovery preview</h2>
+          <h2>Recovery scan</h2>
           <div class="banner warning" id="scan-warning">
-            This build performs real seed derivation and server probing, but the compact-block
-            balance scan is still preview-only.
+            ZECK persists a local wallet workspace while it syncs compact blocks and transparent
+            UTXOs. Cancelling a session keeps that on-disk state for later reuse.
           </div>
           <div class="metric-panel">
             <div>
@@ -148,25 +181,35 @@
               <span class="metric-label">Progress</span>
               <strong id="scan-progress-text">0 / 0</strong>
             </div>
+            <div>
+              <span class="metric-label">Elapsed / ETA</span>
+              <strong id="scan-eta">0s / —</strong>
+            </div>
           </div>
           <div class="progress-shell">
             <div class="progress-bar" id="scan-progress-bar"></div>
           </div>
           <p id="scan-message" class="status-line"></p>
+          <div class="report-card scan-summary-card">
+            <p id="scan-totals" class="status-line">Grand total: 0.00000000 ZEC across 0 accounts.</p>
+            <p id="scan-workspace" class="status-line">Workspace: not initialized</p>
+          </div>
           <div class="table-card">
             <table>
               <thead>
                 <tr>
                   <th>Acct</th>
                   <th>Sapling</th>
-                  <th>Unified</th>
+                  <th>Orchard</th>
                   <th>Transparent</th>
+                  <th>Total</th>
                   <th>Status</th>
                 </tr>
               </thead>
               <tbody id="scan-rows"></tbody>
             </table>
           </div>
+          <div class="report-card" id="scan-discoveries"></div>
           <div class="actions split">
             <button class="secondary" id="cancel-scan">Cancel</button>
             <button class="primary" id="review-sweep" disabled>Review & Sweep</button>
@@ -177,27 +220,31 @@
           <p class="eyebrow">Step 5</p>
           <h2>Review the sweep proposal</h2>
           <div class="banner warning">
-            This proposal validates the destination and keeps the workflow shape stable, but it does
-            not sign or broadcast transactions yet.
+            ZECK will broadcast real transactions from the persisted recovery workspace. Any
+            transparent funds are shielded first, then the account's spendable shielded value is
+            swept to your destination Unified Address.
           </div>
           <div class="table-card">
             <table>
               <thead>
                 <tr>
                   <th>Account</th>
+                  <th>Step</th>
                   <th>Destination</th>
                   <th>Gross</th>
                   <th>Fee</th>
                   <th>Net</th>
+                  <th>Memo</th>
                 </tr>
               </thead>
               <tbody id="sweep-rows"></tbody>
             </table>
           </div>
           <p id="sweep-summary" class="status-line"></p>
+          <div class="report-card" id="sweep-skipped"></div>
           <label class="checkline">
             <input type="checkbox" id="irreversible-check" />
-            <span>I understand that a real sweep will be irreversible once broadcasting lands.</span>
+            <span>I understand that broadcasting this recovery sweep is irreversible.</span>
           </label>
           <div class="actions split">
             <button class="secondary" data-prev="scan">Back</button>
@@ -209,9 +256,17 @@
           <p class="eyebrow">Step 6</p>
           <h2>Session complete</h2>
           <p class="lead" id="complete-summary">
-            ZECK finished the current recovery preview workflow.
+            ZECK finished the current recovery workflow.
           </p>
           <div class="report-card" id="complete-report"></div>
+          <label class="field">
+            <span>Recovery report path</span>
+            <input id="report-path" type="text" value="./zeck_data/zeck-recovery-report.txt" />
+          </label>
+          <div class="inline-actions">
+            <button class="ghost" id="save-report">Save recovery report</button>
+            <p id="save-report-status" class="status-line"></p>
+          </div>
           <div class="actions">
             <button class="primary" data-next="welcome" id="restart-flow">Start over</button>
           </div>

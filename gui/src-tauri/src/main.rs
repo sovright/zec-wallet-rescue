@@ -19,7 +19,8 @@ fn main() {
             commands::cancel_scan,
             commands::propose_sweep,
             commands::execute_sweep,
-            commands::estimate_birthday_from_date
+            commands::estimate_birthday_from_date,
+            commands::save_recovery_report
         ])
         .setup(|app| {
             let _window = app.get_webview_window("main");

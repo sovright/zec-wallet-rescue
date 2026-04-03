@@ -2,9 +2,11 @@ pub mod address;
 pub mod birthday;
 pub mod derivation;
 pub mod error;
+pub mod lightwalletd;
 pub mod models;
 pub mod scan;
 pub mod service;
+pub mod workspace;
 
 pub use address::validate_destination_address;
 pub use birthday::estimate_birthday_from_date;

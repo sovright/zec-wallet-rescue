@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use zcash_address::unified::{self, Encoding};
 use zcash_address::ZcashAddress;
 use zcash_protocol::PoolType;
 
@@ -16,6 +17,12 @@ pub fn validate_destination_address(address: &str) -> ZeckResult<AddressInfo> {
     let has_orchard = parsed.can_receive_as(PoolType::ORCHARD);
     let has_sapling = parsed.can_receive_as(PoolType::SAPLING);
     let has_transparent = parsed.can_receive_as(PoolType::TRANSPARENT);
+    let is_unified = unified::Address::decode(address).is_ok();
+
+    if !is_unified {
+        return Err(ZeckError::DestinationMustBeUnified);
+    }
+
     let destination_ok = has_orchard || has_sapling;
 
     if !destination_ok {
@@ -24,7 +31,7 @@ pub fn validate_destination_address(address: &str) -> ZeckResult<AddressInfo> {
 
     Ok(AddressInfo {
         encoded: address.to_owned(),
-        is_unified: has_orchard || (has_sapling && has_transparent),
+        is_unified,
         has_orchard,
         has_sapling,
         has_transparent,

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -76,6 +78,7 @@ pub struct RuntimeScanConfig {
     pub num_accounts: Option<u32>,
     pub gap_limit: u32,
     pub lightwalletd_url: String,
+    pub data_dir: PathBuf,
     pub network: ZeckNetwork,
 }
 
@@ -85,6 +88,7 @@ pub struct ScanConfig {
     pub num_accounts: Option<u32>,
     pub gap_limit: u32,
     pub lightwalletd_url: String,
+    pub data_dir: PathBuf,
     pub network: ZeckNetwork,
 }
 
@@ -101,17 +105,24 @@ impl ScanHandle {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScanPhase {
     Idle,
     ValidatingSeed,
     DerivingKeys,
     ProbingLightwalletd,
-    Previewing,
+    ScanningTransparent,
+    ScanningShielded,
     Complete,
     Cancelled,
     Error,
+}
+
+impl ScanPhase {
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Complete | Self::Cancelled | Self::Error)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +132,7 @@ pub struct AccountBalancePreview {
     pub unified_address: String,
     pub transparent_receive_address: String,
     pub transparent_change_address: String,
+    pub transparent_utxo_count: u32,
     pub sapling_zatoshis: u64,
     pub orchard_zatoshis: u64,
     pub transparent_zatoshis: u64,
@@ -142,6 +154,7 @@ pub struct ScanSummary {
     pub total_zatoshis: u64,
     pub authoritative_balances: bool,
     pub note: String,
+    pub workspace_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,6 +163,8 @@ pub struct ScanProgress {
     pub phase: ScanPhase,
     pub blocks_scanned: u64,
     pub blocks_total: u64,
+    pub elapsed_seconds: Option<u64>,
+    pub estimated_remaining_seconds: Option<u64>,
     pub accounts: Vec<AccountBalancePreview>,
     pub summary: Option<ScanSummary>,
     pub server: Option<LightwalletdProbe>,
@@ -158,18 +173,42 @@ pub struct ScanProgress {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SweepRequest {
+    pub destination: String,
+    pub memo: Option<String>,
+    pub max_fee_zatoshis: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProposedTxKind {
+    ShieldTransparent,
+    SweepShielded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProposedTx {
+    pub kind: ProposedTxKind,
     pub source_account: u32,
     pub destination: String,
     pub gross_zatoshis: u64,
     pub fee_zatoshis: u64,
     pub net_zatoshis: u64,
     pub note: String,
+    pub memo: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkippedSweepAccount {
+    pub account_index: u32,
+    pub gross_zatoshis: u64,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SweepProposal {
     pub transactions: Vec<ProposedTx>,
+    pub skipped_accounts: Vec<SkippedSweepAccount>,
     pub total_send_zatoshis: u64,
     pub total_fee_zatoshis: u64,
     pub net_received_zatoshis: u64,
@@ -183,4 +222,5 @@ pub struct TxBroadcastResult {
     pub txid: Option<String>,
     pub status: String,
     pub detail: String,
+    pub confirmed_height: Option<u32>,
 }

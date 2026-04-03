@@ -10,6 +10,9 @@ pub enum ZeckError {
     #[error("invalid destination address: {0}")]
     InvalidAddress(String),
 
+    #[error("destination must be a Zcash Unified Address")]
+    DestinationMustBeUnified,
+
     #[error("destination must include an Orchard or Sapling receiver")]
     UnsupportedDestination,
 
@@ -24,6 +27,30 @@ pub enum ZeckError {
 
     #[error("scan session not found")]
     UnknownScanHandle,
+
+    #[error("scan was cancelled")]
+    Cancelled,
+
+    #[error("scan is not ready for sweeping: {0}")]
+    ScanNotReady(String),
+
+    #[error("estimated sweep fees exceed the configured maximum: {0}")]
+    MaxFeeExceeded(String),
+
+    #[error("invalid memo: {0}")]
+    InvalidMemo(String),
+
+    #[error("storage error: {0}")]
+    Storage(String),
+
+    #[error("wallet error: {0}")]
+    Wallet(String),
+
+    #[error("transaction build failed: {0}")]
+    TransactionBuild(String),
+
+    #[error("broadcast failed: {0}")]
+    Broadcast(String),
 
     #[error("sweep execution is not implemented yet")]
     SweepNotImplemented,

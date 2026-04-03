@@ -3,7 +3,9 @@ use secrecy::{ExposeSecret, SecretString};
 use zcash_address::unified::{Address as UnifiedAddress, Encoding, Receiver};
 use zcash_keys::{encoding::AddressCodec, keys::sapling};
 use zcash_protocol::consensus::{MAIN_NETWORK, TEST_NETWORK};
-use zcash_transparent::keys::{AccountPrivKey, IncomingViewingKey, NonHardenedChildIndex};
+use zcash_transparent::keys::{
+    AccountPrivKey, IncomingViewingKey, NonHardenedChildIndex, TransparentKeyScope,
+};
 use zip32::AccountId;
 
 use crate::{
@@ -23,15 +25,8 @@ pub fn derive_accounts(
     network: ZeckNetwork,
     account_count: u32,
 ) -> ZeckResult<Vec<DerivedAccount>> {
-    let mnemonic = Mnemonic::<English>::from_phrase(seed_phrase.expose_secret())
-        .map_err(|err| ZeckError::InvalidMnemonic(err.to_string()))?;
-    let seed = mnemonic.to_seed("");
-
-    let transparent_account = match network {
-        ZeckNetwork::Mainnet => AccountPrivKey::from_seed(&MAIN_NETWORK, &seed, AccountId::ZERO),
-        ZeckNetwork::Testnet => AccountPrivKey::from_seed(&TEST_NETWORK, &seed, AccountId::ZERO),
-    }
-    .map_err(|err| ZeckError::Internal(err.to_string()))?;
+    let seed = mnemonic_seed(seed_phrase)?;
+    let transparent_account = legacy_transparent_account_key_from_seed(network, &seed)?;
 
     let external_ivk = transparent_account
         .to_account_pubkey()
@@ -45,6 +40,43 @@ pub fn derive_accounts(
     (0..account_count)
         .map(|index| derive_account(index, network, &seed, &external_ivk, &internal_ivk))
         .collect()
+}
+
+pub(crate) fn mnemonic_seed(seed_phrase: &SecretString) -> ZeckResult<[u8; 64]> {
+    let mnemonic = Mnemonic::<English>::from_phrase(seed_phrase.expose_secret())
+        .map_err(|err| ZeckError::InvalidMnemonic(err.to_string()))?;
+    Ok(mnemonic.to_seed(""))
+}
+
+pub(crate) fn legacy_transparent_account_key(
+    seed_phrase: &SecretString,
+    network: ZeckNetwork,
+) -> ZeckResult<AccountPrivKey> {
+    let seed = mnemonic_seed(seed_phrase)?;
+    legacy_transparent_account_key_from_seed(network, &seed)
+}
+
+pub(crate) fn legacy_transparent_pubkey(
+    transparent_account: &AccountPrivKey,
+    scope: AddressScope,
+    index: u32,
+) -> ZeckResult<secp256k1::PublicKey> {
+    let child_index = transparent_child_index(index)?;
+    transparent_account
+        .to_account_pubkey()
+        .derive_address_pubkey(scope.into(), child_index)
+        .map_err(|err| ZeckError::Internal(err.to_string()))
+}
+
+pub(crate) fn legacy_transparent_secret_key(
+    transparent_account: &AccountPrivKey,
+    scope: AddressScope,
+    index: u32,
+) -> ZeckResult<secp256k1::SecretKey> {
+    let child_index = transparent_child_index(index)?;
+    transparent_account
+        .derive_secret_key(scope.into(), child_index)
+        .map_err(|err| ZeckError::Internal(err.to_string()))
 }
 
 fn derive_account(
@@ -133,6 +165,23 @@ fn transparent_path(scope: AddressScope, index: u32, coin_type: u32) -> String {
     format!("m / 44' / {coin_type}' / 0' / {scope_number} / {index}")
 }
 
+fn legacy_transparent_account_key_from_seed(
+    network: ZeckNetwork,
+    seed: &[u8; 64],
+) -> ZeckResult<AccountPrivKey> {
+    match network {
+        ZeckNetwork::Mainnet => AccountPrivKey::from_seed(&MAIN_NETWORK, seed, AccountId::ZERO),
+        ZeckNetwork::Testnet => AccountPrivKey::from_seed(&TEST_NETWORK, seed, AccountId::ZERO),
+    }
+    .map_err(|err| ZeckError::Internal(err.to_string()))
+}
+
+fn transparent_child_index(index: u32) -> ZeckResult<NonHardenedChildIndex> {
+    NonHardenedChildIndex::from_index(index).ok_or_else(|| {
+        ZeckError::InvalidConfig(format!("transparent index {index} is out of range"))
+    })
+}
+
 fn normalize_words(words: &[String]) -> ZeckResult<String> {
     if words.len() != 24 {
         return Err(ZeckError::InvalidMnemonic(format!(
@@ -146,4 +195,13 @@ fn normalize_words(words: &[String]) -> ZeckResult<String> {
         .map(|word| word.trim())
         .collect::<Vec<_>>()
         .join(" "))
+}
+
+impl From<AddressScope> for TransparentKeyScope {
+    fn from(value: AddressScope) -> Self {
+        match value {
+            AddressScope::External => TransparentKeyScope::EXTERNAL,
+            AddressScope::Internal => TransparentKeyScope::INTERNAL,
+        }
+    }
 }

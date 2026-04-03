@@ -128,6 +128,11 @@ h3 {
   color: var(--ink);
 }
 
+.step-list li.complete {
+  border-color: rgba(31, 107, 86, 0.16);
+  color: var(--accent);
+}
+
 .screen {
   display: none;
   animation: rise 240ms ease;
@@ -176,6 +181,11 @@ h3 {
   font-size: 0.9rem;
   font-weight: 700;
   color: var(--muted);
+}
+
+.field small {
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 
 .span-two {
@@ -360,6 +370,16 @@ th {
 pre {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.scan-summary-card {
+  margin-bottom: 18px;
+}
+
+.discovery-list {
+  margin: 10px 0 4px;
+  padding-left: 18px;
+  color: var(--muted);
 }
 
 @keyframes rise {
