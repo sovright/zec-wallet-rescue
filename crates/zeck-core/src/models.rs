@@ -137,6 +137,11 @@ pub struct AccountBalancePreview {
     pub orchard_zatoshis: u64,
     pub transparent_zatoshis: u64,
     pub total_zatoshis: u64,
+    /// Whether this account has any historical note activity (received notes,
+    /// including spent ones). Used instead of current balance for gap-limit
+    /// decisions so that accounts that received and fully spent funds are still
+    /// detected as active.
+    pub has_activity: bool,
     pub status: String,
 }
 

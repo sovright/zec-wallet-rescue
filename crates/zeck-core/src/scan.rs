@@ -545,6 +545,7 @@ fn build_account_preview(account: &DerivedAccount) -> AccountBalancePreview {
         orchard_zatoshis: 0,
         transparent_zatoshis: 0,
         total_zatoshis: 0,
+        has_activity: false,
         status: "Derived locally. Waiting for wallet workspace sync.".to_owned(),
     }
 }
@@ -717,6 +718,21 @@ pub(crate) async fn refresh_scan_progress(
         .map_err(|err| ZeckError::Wallet(format!("loading wallet summary: {err}")))?
         .ok_or_else(|| ZeckError::Wallet("wallet summary is unavailable after sync".to_owned()))?;
 
+    // Open a read-only connection to check historical note activity (including
+    // spent notes) per account.  The WalletRead API only exposes current
+    // balances, so accounts that received and fully spent funds would appear
+    // inactive.  Querying the raw sqlite tables lets us detect any note that was
+    // ever received, which is the correct signal for gap-limit decisions.
+    let raw_conn = Connection::open_with_flags(
+        workspace.wallet_db_path(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|err| {
+        ZeckError::Storage(format!(
+            "opening wallet database for activity check: {err}"
+        ))
+    })?;
+
     let target_height = (summary.chain_tip_height() + 1).into();
     let mut account_rows = Vec::with_capacity(tracked_accounts.len());
     let mut total_zatoshis = 0u64;
@@ -763,6 +779,17 @@ pub(crate) async fn refresh_scan_progress(
                     })
                 })?;
 
+        let has_activity = account_has_note_activity(
+            &raw_conn,
+            &tracked.wallet_account_id,
+        )
+        .map_err(|err| {
+            ZeckError::Wallet(format!(
+                "checking note activity for account {}: {err}",
+                tracked.derived.index
+            ))
+        })?;
+
         account_rows.push(AccountBalancePreview {
             account_index: tracked.derived.index,
             sapling_address: tracked.derived.sapling_address.clone(),
@@ -776,11 +803,13 @@ pub(crate) async fn refresh_scan_progress(
             orchard_zatoshis,
             transparent_zatoshis,
             total_zatoshis: total_account_zatoshis,
+            has_activity,
             status: build_account_status(
                 sapling_zatoshis,
                 orchard_zatoshis,
                 transparent_zatoshis,
                 transparent_utxo_count,
+                has_activity,
             ),
         });
     }
@@ -814,10 +843,15 @@ fn build_account_status(
     orchard_zatoshis: u64,
     transparent_zatoshis: u64,
     transparent_utxo_count: usize,
+    has_activity: bool,
 ) -> String {
     let total = sapling_zatoshis + orchard_zatoshis + transparent_zatoshis;
     if total == 0 {
-        return "No funds found for this derived account.".to_owned();
+        return if has_activity {
+            "Previously active (all funds spent).".to_owned()
+        } else {
+            "No funds found for this derived account.".to_owned()
+        };
     }
 
     let mut parts = Vec::new();
@@ -846,7 +880,34 @@ fn trailing_gap_limit_reached(accounts: &[AccountBalancePreview], gap_limit: u32
         .iter()
         .rev()
         .take(gap)
-        .all(|account| account.total_zatoshis == 0)
+        .all(|account| !account.has_activity)
+}
+
+/// Returns `true` if the wallet database contains any received notes (Sapling,
+/// Orchard, or transparent) for the given account, regardless of whether those
+/// notes have been spent.  This is the correct activity signal for gap-limit
+/// decisions: an account that received and fully spent its funds is still
+/// evidence that higher account indices may also be in use.
+fn account_has_note_activity(
+    conn: &Connection,
+    account_uuid: &AccountUuid,
+) -> Result<bool, rusqlite::Error> {
+    let uuid_bytes = account_uuid.expose_uuid().into_bytes();
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sapling_received_notes
+            WHERE account_id = (SELECT id FROM accounts WHERE uuid = ?1)
+            UNION ALL
+            SELECT 1 FROM orchard_received_notes
+            WHERE account_id = (SELECT id FROM accounts WHERE uuid = ?1)
+            UNION ALL
+            SELECT 1 FROM transparent_received_outputs
+            WHERE account_id = (SELECT id FROM accounts WHERE uuid = ?1)
+            LIMIT 1
+        )",
+        params![uuid_bytes.as_slice()],
+        |row| row.get(0),
+    )
 }
 
 fn block_delta(height: u32, birthday: u32) -> u64 {
@@ -906,14 +967,26 @@ mod tests {
 
     #[test]
     fn account_status_mentions_shielded_and_transparent_funds() {
-        let status = build_account_status(42_000, 84_000, 21_000, 2);
+        let status = build_account_status(42_000, 84_000, 21_000, 2, true);
         assert!(status.contains("Sapling"));
         assert!(status.contains("Orchard"));
         assert!(status.contains("transparent"));
     }
 
     #[test]
-    fn gap_limit_only_triggers_on_trailing_empty_accounts() {
+    fn account_status_shows_previously_active_for_spent_account() {
+        let status = build_account_status(0, 0, 0, 0, true);
+        assert!(status.contains("Previously active"));
+    }
+
+    #[test]
+    fn account_status_shows_no_funds_for_inactive_account() {
+        let status = build_account_status(0, 0, 0, 0, false);
+        assert!(status.contains("No funds found"));
+    }
+
+    #[test]
+    fn gap_limit_only_triggers_on_trailing_inactive_accounts() {
         let accounts = vec![
             AccountBalancePreview {
                 account_index: 0,
@@ -926,6 +999,7 @@ mod tests {
                 orchard_zatoshis: 0,
                 transparent_zatoshis: 0,
                 total_zatoshis: 1,
+                has_activity: true,
                 status: "found".to_owned(),
             },
             AccountBalancePreview {
@@ -939,6 +1013,7 @@ mod tests {
                 orchard_zatoshis: 0,
                 transparent_zatoshis: 0,
                 total_zatoshis: 0,
+                has_activity: false,
                 status: "empty".to_owned(),
             },
             AccountBalancePreview {
@@ -952,11 +1027,66 @@ mod tests {
                 orchard_zatoshis: 0,
                 transparent_zatoshis: 0,
                 total_zatoshis: 0,
+                has_activity: false,
                 status: "empty".to_owned(),
             },
         ];
 
         assert!(trailing_gap_limit_reached(&accounts, 2));
         assert!(!trailing_gap_limit_reached(&accounts, 3));
+    }
+
+    #[test]
+    fn gap_limit_does_not_trigger_when_spent_account_in_trailing_window() {
+        // Account 1 has zero balance but historical activity (received and spent).
+        // The gap limit should NOT trigger because account 1 is still "active".
+        let accounts = vec![
+            AccountBalancePreview {
+                account_index: 0,
+                sapling_address: "zs".to_owned(),
+                unified_address: "u".to_owned(),
+                transparent_receive_address: "t1".to_owned(),
+                transparent_change_address: "t2".to_owned(),
+                transparent_utxo_count: 0,
+                sapling_zatoshis: 1,
+                orchard_zatoshis: 0,
+                transparent_zatoshis: 0,
+                total_zatoshis: 1,
+                has_activity: true,
+                status: "found".to_owned(),
+            },
+            AccountBalancePreview {
+                account_index: 1,
+                sapling_address: "zs".to_owned(),
+                unified_address: "u".to_owned(),
+                transparent_receive_address: "t1".to_owned(),
+                transparent_change_address: "t2".to_owned(),
+                transparent_utxo_count: 0,
+                sapling_zatoshis: 0,
+                orchard_zatoshis: 0,
+                transparent_zatoshis: 0,
+                total_zatoshis: 0,
+                has_activity: true, // spent account -- still active
+                status: "previously active".to_owned(),
+            },
+            AccountBalancePreview {
+                account_index: 2,
+                sapling_address: "zs".to_owned(),
+                unified_address: "u".to_owned(),
+                transparent_receive_address: "t1".to_owned(),
+                transparent_change_address: "t2".to_owned(),
+                transparent_utxo_count: 0,
+                sapling_zatoshis: 0,
+                orchard_zatoshis: 0,
+                transparent_zatoshis: 0,
+                total_zatoshis: 0,
+                has_activity: false,
+                status: "empty".to_owned(),
+            },
+        ];
+
+        // With gap_limit=2, the trailing 2 accounts are [1, 2].
+        // Account 1 has_activity=true, so the gap limit should NOT fire.
+        assert!(!trailing_gap_limit_reached(&accounts, 2));
     }
 }

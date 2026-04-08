@@ -995,6 +995,7 @@ mod tests {
                 orchard_zatoshis: 0,
                 transparent_zatoshis: 30_000,
                 total_zatoshis: 70_000,
+                has_activity: true,
                 status: "ok".to_owned(),
             }),
             SweepRequest {
@@ -1028,6 +1029,7 @@ mod tests {
                 orchard_zatoshis: 0,
                 transparent_zatoshis: 50_000,
                 total_zatoshis: 50_000,
+                has_activity: true,
                 status: "ok".to_owned(),
             }),
             SweepRequest {
@@ -1055,6 +1057,7 @@ mod tests {
                 orchard_zatoshis: 0,
                 transparent_zatoshis: 5_000,
                 total_zatoshis: 5_000,
+                has_activity: true,
                 status: "ok".to_owned(),
             }),
             SweepRequest {
