@@ -135,7 +135,13 @@ impl RecoveryService {
         if let Some(task) = session.task.lock().await.take() {
             task.abort();
         }
-        spawn_session_cleanup(self.sessions.clone(), handle.id.clone());
+        // spawn_session_cleanup is intentionally omitted here: aborting the
+        // task prevents the scan from completing naturally, so the cleanup
+        // that was scheduled in start_scan will not fire.  We schedule a
+        // fresh one to ensure the session is eventually removed.
+        if self.sessions.read().await.contains_key(&handle.id) {
+            spawn_session_cleanup(self.sessions.clone(), handle.id.clone());
+        }
         Ok(())
     }
 
@@ -384,16 +390,10 @@ async fn execute_sweep_for_session(
 ) -> ZeckResult<Vec<TxBroadcastResult>> {
     let destination = validate_destination_address(&request.destination)?;
     let memo_text = normalized_memo_text(request.memo.as_deref())?;
-    let memo_bytes = if memo_text == RECOVERY_MEMO_DEFAULT {
-        Some(MemoBytes::from_bytes(memo_text.as_bytes()).map_err(|err| {
-            ZeckError::InvalidMemo(format!("default recovery memo could not be encoded: {err}"))
-        })?)
-    } else {
-        Some(
-            MemoBytes::from_bytes(memo_text.as_bytes())
-                .map_err(|err| ZeckError::InvalidMemo(err.to_string()))?,
-        )
-    };
+    let memo_bytes = Some(
+        MemoBytes::from_bytes(memo_text.as_bytes())
+            .map_err(|err| ZeckError::InvalidMemo(err.to_string()))?,
+    );
 
     let (runtime, workspace, tracked_accounts, progress) = {
         let guard = session.state.lock().await;
