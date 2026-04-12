@@ -12,40 +12,56 @@ use zeck_core::{
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "zeck", about = "Legacy ZecWallet Lite recovery tool")]
+#[command(
+    name = "zeck",
+    about = "Legacy ZecWallet Lite recovery tool",
+    long_about = "ZECK recovers funds from ZecWallet Lite wallets using a BIP-39 seed phrase.\n\
+                  It derives keys, scans the Zcash blockchain via lightwalletd, and can sweep\n\
+                  recovered funds to a new Unified Address.",
+    version
+)]
 struct Cli {
+    /// BIP-39 seed phrase (24 words). Omit to be prompted securely.
     #[arg(long, conflicts_with = "seed_file")]
     seed: Option<String>,
 
+    /// Path to a plain-text file containing the 24-word seed phrase.
     #[arg(long)]
     seed_file: Option<PathBuf>,
 
+    /// Directory for wallet database and block cache.
     #[arg(long, default_value = "./zeck_data")]
     data_dir: PathBuf,
 
+    /// lightwalletd gRPC endpoint(s). Comma-separated URLs are tried in order.
     #[arg(
         long,
         visible_alias = "server",
-        help = "lightwalletd gRPC endpoint(s); comma-separated URLs are tried in order",
         default_value = "https://mainnet.lightwalletd.com:9067"
     )]
     lightwalletd_url: String,
 
+    /// Scan exactly this many accounts (overrides --gap-limit).
     #[arg(long)]
     num_accounts: Option<u32>,
 
+    /// Stop after this many consecutive empty accounts (ignored when --num-accounts is set).
     #[arg(long, default_value_t = 20)]
     gap_limit: u32,
 
+    /// Wallet birthday as a block height. Use 0 for a full scan from genesis.
     #[arg(long, default_value_t = 419_200)]
     birthday: u32,
 
+    /// Wallet creation date (YYYY-MM-DD). Estimates birthday height automatically.
     #[arg(long)]
     birthday_date: Option<String>,
 
+    /// Zcash network to use.
     #[arg(long, value_enum, default_value_t = NetworkArg::Mainnet)]
     network: NetworkArg,
 
+    /// Enable debug-level logging from zeck-core.
     #[arg(long)]
     verbose: bool,
 
@@ -70,21 +86,31 @@ impl From<NetworkArg> for ZeckNetwork {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Derive and display all account keys and addresses (no network needed).
     ShowKeys,
+
+    /// Scan the blockchain and report balances for all derived accounts.
     Scan,
+
+    /// Scan and then sweep recovered funds to a Unified Address.
     Sweep {
+        /// Destination Unified Address (must include Orchard or Sapling receiver).
         #[arg(long)]
         destination: String,
 
+        /// Optional memo attached to shielded outputs (max 512 bytes).
         #[arg(long)]
         memo: Option<String>,
 
+        /// Maximum fee in ZEC (e.g. 0.001). Sweep is skipped if estimated fee exceeds this.
         #[arg(long, value_parser = parse_zec_to_zatoshis)]
         max_fee: Option<u64>,
 
+        /// Preview the sweep proposal without broadcasting any transactions.
         #[arg(long, conflicts_with = "confirm_sweep")]
         dry_run: bool,
 
+        /// Confirm you understand this is irreversible and broadcast the sweep.
         #[arg(long)]
         confirm_sweep: bool,
     },
@@ -109,29 +135,22 @@ async fn main() -> Result<()> {
         Commands::ShowKeys => {
             let accounts = derive_accounts(&seed_phrase, network, account_count)?;
             for account in accounts {
-                println!("Account {}", account.index);
-                println!("  Sapling path: {}", account.sapling_path);
-                println!("  Sapling address: {}", account.sapling_address);
-                println!("  Unified address: {}", account.unified_address);
+                println!("━━━ Account {} ━━━", account.index);
+                println!("  Unified address     {}", account.unified_address);
+                println!("  Sapling address     {}", account.sapling_address);
+                println!("  Sapling path        {}", account.sapling_path);
                 println!(
-                    "  Transparent receive: {}",
-                    account.transparent_receive_address
+                    "  Transparent receive {}  ({})",
+                    account.transparent_receive_address, account.transparent_receive_path
                 );
                 println!(
-                    "  Transparent change: {}",
-                    account.transparent_change_address
-                );
-                println!(
-                    "  Transparent receive path: {}",
-                    account.transparent_receive_path
-                );
-                println!(
-                    "  Transparent change path: {}",
-                    account.transparent_change_path
+                    "  Transparent change  {}  ({})",
+                    account.transparent_change_address, account.transparent_change_path
                 );
                 println!();
             }
         }
+
         Commands::Scan => {
             let service = RecoveryService::new();
             let handle = service
@@ -157,18 +176,27 @@ async fn main() -> Result<()> {
                 bail!("recovery scan failed");
             }
         }
+
         Commands::Sweep {
             destination,
             memo,
             max_fee,
-            dry_run: _dry_run,
+            dry_run,
             confirm_sweep,
         } => {
             let address = validate_destination_address(&destination)?;
             println!(
-                "Destination accepted as Unified Address: orchard={}, sapling={}, transparent={}",
+                "Destination: Unified Address (Orchard={}, Sapling={}, Transparent={})",
                 address.has_orchard, address.has_sapling, address.has_transparent
             );
+
+            if dry_run {
+                println!();
+                println!("╔══════════════════════════════════════╗");
+                println!("║  DRY RUN — no funds will be moved    ║");
+                println!("╚══════════════════════════════════════╝");
+                println!();
+            }
 
             let service = RecoveryService::new();
             let handle = service
@@ -195,29 +223,44 @@ async fn main() -> Result<()> {
             }
 
             let request = SweepRequest {
-                destination,
-                memo,
+                destination: destination.clone(),
+                memo: memo.clone(),
                 max_fee_zatoshis: max_fee,
             };
             let proposal = service.propose_sweep(&handle, request.clone()).await?;
             print_sweep_preview(&proposal);
 
+            if dry_run {
+                println!();
+                println!("Dry run complete. Re-run with --confirm-sweep to broadcast.");
+                return Ok(());
+            }
+
             if confirm_sweep {
+                println!();
+                println!("Broadcasting sweep transactions…");
                 let execution = service.execute_sweep(&handle, request).await;
                 match execution {
                     Ok(results) => {
-                        for result in results {
+                        println!();
+                        for result in &results {
                             println!(
-                                "account {}: {} {}",
+                                "  account {}  {}  {}",
                                 result.source_account, result.status, result.detail
                             );
                         }
+                        println!();
+                        println!("Sweep complete.");
                     }
                     Err(err) => {
+                        eprintln!();
                         eprintln!("Sweep failed: {err}");
                         std::process::exit(1);
                     }
                 }
+            } else {
+                println!();
+                println!("Re-run with --dry-run to preview, or --confirm-sweep to broadcast.");
             }
         }
     }
@@ -259,6 +302,7 @@ fn load_seed_phrase(seed: Option<String>, seed_file: Option<PathBuf>) -> Result<
     Ok(SecretString::new(phrase.trim().to_owned()))
 }
 
+/// Parse a ZEC string (e.g. "0.001") into zatoshis.
 fn parse_zec_to_zatoshis(input: &str) -> Result<u64, String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -266,7 +310,7 @@ fn parse_zec_to_zatoshis(input: &str) -> Result<u64, String> {
     }
 
     let (whole, fractional) = match trimmed.split_once('.') {
-        Some((whole, fractional)) => (whole, fractional),
+        Some((whole, frac)) => (whole, frac),
         None => (trimmed, ""),
     };
 
@@ -275,7 +319,7 @@ fn parse_zec_to_zatoshis(input: &str) -> Result<u64, String> {
     }
 
     let whole_part = if whole.is_empty() {
-        0
+        0u64
     } else {
         whole
             .parse::<u64>()
@@ -283,7 +327,7 @@ fn parse_zec_to_zatoshis(input: &str) -> Result<u64, String> {
     };
 
     let fractional_digits = if fractional.is_empty() {
-        0
+        0u64
     } else {
         fractional
             .parse::<u64>()
@@ -297,38 +341,72 @@ fn parse_zec_to_zatoshis(input: &str) -> Result<u64, String> {
         .ok_or_else(|| "max fee is too large".to_owned())
 }
 
+/// Format zatoshis as a human-readable ZEC amount (e.g. "1.23456789 ZEC").
+fn format_zec(zatoshis: u64) -> String {
+    let whole = zatoshis / 100_000_000;
+    let frac = zatoshis % 100_000_000;
+    if frac == 0 {
+        format!("{whole} ZEC")
+    } else {
+        format!("{whole}.{frac:08} ZEC")
+    }
+}
+
 async fn wait_for_scan(
     service: &RecoveryService,
     handle: &ScanHandle,
 ) -> Result<zeck_core::ScanProgress> {
-    let spinner = ProgressBar::new_spinner();
-    spinner
-        .set_style(ProgressStyle::with_template("{spinner:.green} {msg}")?.tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "));
-    spinner.enable_steady_tick(Duration::from_millis(120));
+    // Start with a spinner; upgrade to a real progress bar once we know total blocks.
+    let bar = ProgressBar::new_spinner();
+    bar.set_style(
+        ProgressStyle::with_template("{spinner:.green} {msg}")?
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
+    );
+    bar.enable_steady_tick(Duration::from_millis(120));
+
+    let mut bar_has_total = false;
 
     loop {
         let progress = service.get_scan_progress(handle).await?;
+
+        // Upgrade spinner → progress bar the first time we have block counts.
+        if !bar_has_total && progress.blocks_total > 0 {
+            bar.set_length(progress.blocks_total);
+            bar.set_style(
+                ProgressStyle::with_template(
+                    "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} blocks  {msg}",
+                )?
+                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
+                .progress_chars("█▉▊▋▌▍▎▏  "),
+            );
+            bar_has_total = true;
+        }
+
         let phase = format!("{:?}", progress.phase);
-        let message = progress.message.clone().unwrap_or_else(|| phase.clone());
-        let progress_counts = if progress.blocks_total > 0 {
-            format!(" [{} / {}]", progress.blocks_scanned, progress.blocks_total)
-        } else {
-            String::new()
-        };
+        let server_label = progress
+            .server
+            .as_ref()
+            .map(|s| format!(" [{}]", s.endpoint))
+            .unwrap_or_default();
         let eta = progress
             .estimated_remaining_seconds
             .map(format_duration)
-            .map(|eta| format!(" [ETA {eta}]"))
+            .map(|t| format!(" ETA {t}"))
             .unwrap_or_default();
-        spinner.set_message(format!("{phase}{progress_counts}{eta} {message}"));
 
-        match progress.phase {
-            phase if phase.is_terminal() => {
-                spinner.finish_and_clear();
-                return Ok(progress);
-            }
-            _ => tokio::time::sleep(Duration::from_millis(150)).await,
+        let msg = format!("{phase}{server_label}{eta}");
+
+        if bar_has_total {
+            bar.set_position(progress.blocks_scanned);
         }
+        bar.set_message(msg);
+
+        if progress.phase.is_terminal() {
+            bar.finish_and_clear();
+            return Ok(progress);
+        }
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
     }
 }
 
@@ -336,16 +414,12 @@ fn print_scan_result(progress: &zeck_core::ScanProgress) {
     println!("Phase: {:?}", progress.phase);
 
     if let Some(error) = &progress.error {
-        println!("Error: {error}");
-    }
-
-    if let Some(message) = &progress.message {
-        println!("Message: {message}");
+        eprintln!("Error: {error}");
     }
 
     if let Some(server) = &progress.server {
         println!(
-            "lightwalletd: {} tip={} vendor={}",
+            "lightwalletd: {}  tip={}  vendor={}",
             server.endpoint,
             server.latest_block_height.unwrap_or_default(),
             server.vendor.as_deref().unwrap_or("unknown")
@@ -355,7 +429,9 @@ fn print_scan_result(progress: &zeck_core::ScanProgress) {
     if let Some(summary) = &progress.summary {
         println!("Authoritative balances: {}", summary.authoritative_balances);
         println!("Workspace: {}", summary.workspace_dir);
-        println!("{}", summary.note);
+        if !summary.note.is_empty() {
+            println!("Note: {}", summary.note);
+        }
     }
 
     if progress.accounts.is_empty() {
@@ -364,58 +440,74 @@ fn print_scan_result(progress: &zeck_core::ScanProgress) {
     }
 
     println!();
+    println!("{:<8}  {:>16}  {:>16}  {:>16}  Status", "Account", "Sapling", "Orchard", "Transparent");
+    println!("{}", "─".repeat(80));
     for account in &progress.accounts {
         println!(
-            "Account {}  total={} zats  transparent={} zats",
-            account.account_index, account.total_zatoshis, account.transparent_zatoshis
+            "{:<8}  {:>16}  {:>16}  {:>16}  {}",
+            account.account_index,
+            format_zec(account.sapling_zatoshis),
+            format_zec(account.orchard_zatoshis),
+            format_zec(account.transparent_zatoshis),
+            account.status,
         );
-        println!("  Status: {}", account.status);
-        println!("  Sapling: {}", account.sapling_address);
-        println!("  Unified: {}", account.unified_address);
-        println!(
-            "  Transparent receive: {}",
-            account.transparent_receive_address
-        );
-        println!(
-            "  Transparent change: {}",
-            account.transparent_change_address
-        );
+    }
+    println!("{}", "─".repeat(80));
+    let total: u64 = progress.accounts.iter().map(|a| a.total_zatoshis).sum();
+    println!("{:<8}  {:>52}  Total: {}", "", "", format_zec(total));
+    println!();
+    for account in &progress.accounts {
+        if account.total_zatoshis > 0 {
+            println!("Account {}  addresses:", account.account_index);
+            println!("  Unified:              {}", account.unified_address);
+            println!("  Sapling:              {}", account.sapling_address);
+            println!("  Transparent receive:  {}", account.transparent_receive_address);
+            println!("  Transparent change:   {}", account.transparent_change_address);
+            println!();
+        }
     }
 }
 
 fn print_sweep_preview(proposal: &SweepProposal) {
     println!();
-    println!("Sweep preview");
-    println!("  total send: {} zats", proposal.total_send_zatoshis);
-    println!("  total fee: {} zats", proposal.total_fee_zatoshis);
-    println!("  net receive: {} zats", proposal.net_received_zatoshis);
+    println!("Sweep preview:");
+    println!("  Send:        {}", format_zec(proposal.total_send_zatoshis));
+    println!("  Fee:         {}", format_zec(proposal.total_fee_zatoshis));
+    println!("  Net receive: {}", format_zec(proposal.net_received_zatoshis));
+
     if !proposal.transactions.is_empty() {
-        println!("  transactions:");
+        println!();
+        println!("  Transactions:");
         for tx in &proposal.transactions {
-            let memo = tx.memo.as_deref().unwrap_or("-");
+            let memo = tx.memo.as_deref().unwrap_or("—");
             println!(
-                "    account {} {:?} gross={} fee={} net={} -> {} memo={}",
+                "    account {:>3}  {:?}  gross={}  fee={}  net={}  memo={}",
                 tx.source_account,
                 tx.kind,
-                tx.gross_zatoshis,
-                tx.fee_zatoshis,
-                tx.net_zatoshis,
-                tx.destination,
-                memo
+                format_zec(tx.gross_zatoshis),
+                format_zec(tx.fee_zatoshis),
+                format_zec(tx.net_zatoshis),
+                memo,
             );
         }
     }
+
     if !proposal.skipped_accounts.is_empty() {
-        println!("  skipped accounts:");
+        println!();
+        println!("  Skipped accounts:");
         for skipped in &proposal.skipped_accounts {
             println!(
-                "    account {} gross={} reason={}",
-                skipped.account_index, skipped.gross_zatoshis, skipped.reason
+                "    account {:>3}  gross={}  reason={}",
+                skipped.account_index,
+                format_zec(skipped.gross_zatoshis),
+                skipped.reason,
             );
         }
     }
+
     if let Some(warning) = &proposal.warning {
-        println!("  warning: {warning}");
+        println!();
+        println!("  Warning: {warning}");
     }
 }
 
