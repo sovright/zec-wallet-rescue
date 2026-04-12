@@ -52,9 +52,6 @@ pub enum ZeckError {
     #[error("broadcast failed: {0}")]
     Broadcast(String),
 
-    #[error("sweep execution is not implemented yet")]
-    SweepNotImplemented,
-
     #[error("serialization error: {0}")]
     Serialization(String),
 
