@@ -96,13 +96,14 @@
             <label class="field">
               <span>Wallet birthday</span>
               <input id="birthday-height" type="number" min="0" value="419200" />
-              <small>The block number when your wallet was created. Earlier = slower scan. Not sure? Use the date picker below — ZECK will estimate it for you.</small>
+              <small>The block number when your wallet was created. Not sure? Use the date picker below to estimate it automatically.</small>
               <small id="birthday-scan-estimate" style="font-weight:600"></small>
             </label>
             <label class="field">
               <span>Approximate wallet creation date</span>
               <input id="birthday-date" type="date" />
-              <small>Pick roughly when you first created your ZecWallet Lite, then click "Estimate birthday from date" below.</small>
+              <button class="ghost" id="birthday-estimate" style="margin-top:6px">Estimate from this date</button>
+              <small>Pick roughly when you first created your ZecWallet Lite — ZECK will fill in the block number for you.</small>
             </label>
             <label class="field">
               <span>Number of accounts to scan</span>
@@ -162,7 +163,6 @@
             </label>
           </div>
           <div class="inline-actions">
-            <button class="ghost" id="birthday-estimate">Estimate birthday from date</button>
             <button class="ghost" id="destination-validate">Validate destination</button>
           </div>
           <p id="config-status" class="status-line"></p>
