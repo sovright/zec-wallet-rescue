@@ -133,6 +133,17 @@ h3 {
   color: var(--accent);
 }
 
+.step-list li.reachable:hover {
+  background: rgba(255, 255, 255, 0.72);
+  border-color: rgba(31, 107, 86, 0.18);
+  cursor: pointer;
+}
+
+.step-list li:not(.reachable) {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .screen {
   display: none;
   animation: rise 240ms ease;

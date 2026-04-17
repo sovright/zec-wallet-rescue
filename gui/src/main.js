@@ -66,20 +66,40 @@ function escapeHtml(text) {
 // ─── Navigation ───────────────────────────────────────────────────────────────
 
 const steps = ["welcome", "seed", "config", "scan", "sweep", "complete"];
+let furthestStep = 0; // tracks how far the user has reached
 
 function goTo(step) {
+  const stepIdx = steps.indexOf(step);
+  if (stepIdx > furthestStep) furthestStep = stepIdx;
+
   document.querySelectorAll(".screen").forEach((s) => s.classList.remove("active"));
   document.querySelectorAll(".step-list li").forEach((li) => {
     const s = li.dataset.stepIndicator;
-    li.classList.remove("active", "complete");
-    const stepIdx = steps.indexOf(step);
     const liIdx = steps.indexOf(s);
+    li.classList.remove("active", "complete", "reachable");
     if (liIdx < stepIdx) li.classList.add("complete");
     if (liIdx === stepIdx) li.classList.add("active");
+    if (liIdx <= furthestStep) li.classList.add("reachable");
   });
   const screen = document.querySelector(`.screen[data-step="${step}"]`);
   if (screen) screen.classList.add("active");
 }
+
+// Make sidebar steps clickable — only allow jumping to already-reached steps
+document.querySelectorAll(".step-list li").forEach((li) => {
+  li.style.cursor = "pointer";
+  li.addEventListener("click", () => {
+    const target = li.dataset.stepIndicator;
+    const targetIdx = steps.indexOf(target);
+    if (targetIdx <= furthestStep) {
+      if (target === "config") {
+        $("start-scan").disabled = false;
+        setStatus("config-status", "", "");
+      }
+      goTo(target);
+    }
+  });
+});
 
 document.querySelectorAll("[data-next]").forEach((btn) => {
   btn.addEventListener("click", () => goTo(btn.dataset.next));
