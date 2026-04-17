@@ -387,7 +387,12 @@ async fn run_recovery_scan_inner(
     let chain_tip_height = u32::try_from(response.block_height)
         .map_err(|_| ZeckError::Lightwalletd("chain tip height overflowed u32".to_owned()))?;
     let probe: LightwalletdProbe = build_probe(endpoint, &response);
-    let effective_birthday = config.birthday.min(chain_tip_height);
+    // Clamp birthday to sapling_activation_height + 1 so we never request a
+    // pre-Sapling treestate (block 419199 and earlier have no Sapling tree).
+    let sapling_floor = u32::try_from(response.sapling_activation_height)
+        .unwrap_or(419_201)
+        .saturating_add(1);
+    let effective_birthday = config.birthday.max(sapling_floor).min(chain_tip_height);
     let birthday_treestate = client
         .get_tree_state(BlockId {
             height: u64::from(effective_birthday.saturating_sub(1)),
