@@ -121,8 +121,8 @@ $("seed-validate").addEventListener("click", async () => {
 // ─── Step 3: Configuration ────────────────────────────────────────────────────
 
 const SERVER_PRESETS = {
-  mainnet: "zec.rocks:443,na.zec.rocks:443",
-  testnet: "lightwalletd.testnet.electriccoin.co:9067",
+  mainnet: "https://zec.rocks:443,https://na.zec.rocks:443",
+  testnet: "https://lightwalletd.testnet.electriccoin.co:9067",
 };
 
 $("network-select").addEventListener("change", () => {
