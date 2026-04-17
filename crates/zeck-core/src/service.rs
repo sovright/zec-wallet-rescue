@@ -466,17 +466,22 @@ async fn execute_sweep_for_session(
         let transparent_balance =
             account_transparent_zatoshis(&workspace, runtime.network, &tracked_account)?;
         if transparent_balance > 0 {
-            let fee = execute_shielding_step(
-                &workspace,
-                runtime.network,
-                &mut client,
-                &tracked_account,
-                &transparent_account,
-                &usk,
-                &prover,
-                &mut results,
-            )
-            .await?;
+            let fee = {
+                let mut ctx = SweepStepCtx {
+                    workspace: &workspace,
+                    network: runtime.network,
+                    client: &mut client,
+                    prover: &prover,
+                    results: &mut results,
+                };
+                execute_shielding_step(
+                    &mut ctx,
+                    &tracked_account,
+                    &transparent_account,
+                    &usk,
+                )
+                .await?
+            };
             total_fee_zatoshis = total_fee_zatoshis.checked_add(fee).ok_or_else(|| {
                 ZeckError::Internal("fee total overflowed the supported range".to_owned())
             })?;
@@ -496,18 +501,23 @@ async fn execute_sweep_for_session(
             .await?;
         }
 
-        let fee = execute_send_max_step(
-            &workspace,
-            runtime.network,
-            &mut client,
-            &tracked_account,
-            &usk,
-            &destination_address,
-            memo_bytes.clone(),
-            &prover,
-            &mut results,
-        )
-        .await?;
+        let fee = {
+            let mut ctx = SweepStepCtx {
+                workspace: &workspace,
+                network: runtime.network,
+                client: &mut client,
+                prover: &prover,
+                results: &mut results,
+            };
+            execute_send_max_step(
+                &mut ctx,
+                &tracked_account,
+                &usk,
+                &destination_address,
+                memo_bytes.clone(),
+            )
+            .await?
+        };
         total_fee_zatoshis = total_fee_zatoshis.checked_add(fee).ok_or_else(|| {
             ZeckError::Internal("fee total overflowed the supported range".to_owned())
         })?;
@@ -517,26 +527,30 @@ async fn execute_sweep_for_session(
     Ok(results)
 }
 
-async fn execute_shielding_step(
-    workspace: &RecoveryWorkspace,
+struct SweepStepCtx<'a> {
+    workspace: &'a RecoveryWorkspace,
     network: crate::models::ZeckNetwork,
-    client: &mut CompactTxStreamerClient<tonic::transport::Channel>,
+    client: &'a mut CompactTxStreamerClient<tonic::transport::Channel>,
+    prover: &'a LocalTxProver,
+    results: &'a mut Vec<TxBroadcastResult>,
+}
+
+async fn execute_shielding_step(
+    ctx: &mut SweepStepCtx<'_>,
     tracked_account: &TrackedAccount,
     transparent_account: &zcash_transparent::keys::AccountPrivKey,
     usk: &UnifiedSpendingKey,
-    prover: &LocalTxProver,
-    results: &mut Vec<TxBroadcastResult>,
 ) -> ZeckResult<u64> {
     let mut wallet_db = WalletDb::for_path(
-        workspace.wallet_db_path(),
-        consensus_network(network),
+        ctx.workspace.wallet_db_path(),
+        consensus_network(ctx.network),
         SystemClock,
         rand_core::OsRng,
     )
     .map_err(|err| {
         ZeckError::Storage(format!(
             "opening wallet database {}: {err}",
-            workspace.wallet_db_path().display()
+            ctx.workspace.wallet_db_path().display()
         ))
     })?;
     let input_selector = GreedyInputSelector::<_>::new();
@@ -549,7 +563,7 @@ async fn execute_shielding_step(
 
     let proposal = propose_shielding::<_, _, _, _, Infallible>(
         &mut wallet_db,
-        &consensus_network(network),
+        &consensus_network(ctx.network),
         &input_selector,
         &change_strategy,
         Zatoshis::ZERO,
@@ -579,9 +593,9 @@ async fn execute_shielding_step(
     );
     let txids = create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
         &mut wallet_db,
-        &consensus_network(network),
-        prover,
-        prover,
+        &consensus_network(ctx.network),
+        ctx.prover,
+        ctx.prover,
         &SpendingKeys::new(usk.clone(), standalone_keys),
         OvkPolicy::Sender,
         &proposal,
@@ -590,11 +604,11 @@ async fn execute_shielding_step(
 
     broadcast_transactions(
         &mut wallet_db,
-        client,
+        ctx.client,
         tracked_account.derived.index,
         txids.into_iter().collect(),
         "shielding",
-        results,
+        ctx.results,
     )
     .await?;
 
@@ -602,32 +616,28 @@ async fn execute_shielding_step(
 }
 
 async fn execute_send_max_step(
-    workspace: &RecoveryWorkspace,
-    network: crate::models::ZeckNetwork,
-    client: &mut CompactTxStreamerClient<tonic::transport::Channel>,
+    ctx: &mut SweepStepCtx<'_>,
     tracked_account: &TrackedAccount,
     usk: &UnifiedSpendingKey,
     destination_address: &ZcashAddress,
     memo_bytes: Option<MemoBytes>,
-    prover: &LocalTxProver,
-    results: &mut Vec<TxBroadcastResult>,
 ) -> ZeckResult<u64> {
     let mut wallet_db = WalletDb::for_path(
-        workspace.wallet_db_path(),
-        consensus_network(network),
+        ctx.workspace.wallet_db_path(),
+        consensus_network(ctx.network),
         SystemClock,
         rand_core::OsRng,
     )
     .map_err(|err| {
         ZeckError::Storage(format!(
             "opening wallet database {}: {err}",
-            workspace.wallet_db_path().display()
+            ctx.workspace.wallet_db_path().display()
         ))
     })?;
 
     let proposal = propose_send_max_transfer::<_, _, _, Infallible>(
         &mut wallet_db,
-        &consensus_network(network),
+        &consensus_network(ctx.network),
         tracked_account.wallet_account_id,
         &[ShieldedProtocol::Sapling, ShieldedProtocol::Orchard],
         &StandardFeeRule::Zip317,
@@ -641,9 +651,9 @@ async fn execute_send_max_step(
 
     let txids = create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
         &mut wallet_db,
-        &consensus_network(network),
-        prover,
-        prover,
+        &consensus_network(ctx.network),
+        ctx.prover,
+        ctx.prover,
         &SpendingKeys::from_unified_spending_key(usk.clone()),
         OvkPolicy::Sender,
         &proposal,
@@ -652,11 +662,11 @@ async fn execute_send_max_step(
 
     broadcast_transactions(
         &mut wallet_db,
-        client,
+        ctx.client,
         tracked_account.derived.index,
         txids.into_iter().collect(),
         "sweep",
-        results,
+        ctx.results,
     )
     .await?;
 
