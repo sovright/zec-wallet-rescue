@@ -113,13 +113,15 @@
             </label>
             <label class="checkline field">
               <input id="auto-gap-limit" type="checkbox" checked />
-              <span>Stop automatically when no more funds are found</span>
+              <span>Scan until no more funds are found <em>(recommended)</em></span>
             </label>
-            <label class="field">
-              <span>How many empty accounts to check before stopping</span>
-              <input id="gap-limit" type="number" min="1" max="50" value="20" />
-              <small>ZECK will stop scanning after this many accounts in a row show no funds. 20 is the recommended value.</small>
-            </label>
+            <div id="gap-limit-row" class="field" style="display:none">
+              <label class="field">
+                <span>Advanced: how many empty accounts before stopping</span>
+                <input id="gap-limit" type="number" min="1" max="50" value="20" />
+                <small>Only change this if you know you had many unused accounts. Default of 20 is fine for almost everyone.</small>
+              </label>
+            </div>
             <label class="field">
               <span>Server preset</span>
               <select id="server-preset">

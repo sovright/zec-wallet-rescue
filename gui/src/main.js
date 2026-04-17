@@ -138,7 +138,7 @@ $("accounts-range").addEventListener("input", () => {
 
 $("auto-gap-limit").addEventListener("change", () => {
   const auto = $("auto-gap-limit").checked;
-  $("gap-limit").disabled = auto;
+  $("gap-limit-row").style.display = auto ? "none" : "block";
   $("accounts-range").disabled = !auto;
   $("accounts-range-value").style.opacity = auto ? "0.4" : "1";
 });
@@ -516,7 +516,7 @@ $("restart-flow").addEventListener("click", () => {
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 $("lightwalletd-url").value = SERVER_PRESETS.mainnet;
-$("gap-limit").disabled = $("auto-gap-limit").checked;
+$("gap-limit-row").style.display = $("auto-gap-limit").checked ? "none" : "block";
 $("accounts-range").disabled = !$("auto-gap-limit").checked;
 goTo("welcome");
 
