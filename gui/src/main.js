@@ -149,6 +149,29 @@ $("auto-gap-limit").addEventListener("change", () => {
   $("accounts-range-value").style.opacity = auto ? "0.4" : "1";
 });
 
+// Approximate mainnet chain tip and scan rate for time estimates
+const APPROX_CHAIN_TIP = 2_730_000;
+const BLOCKS_PER_MINUTE = 38_000;
+
+function updateScanEstimate() {
+  const birthday = parseInt($("birthday-height").value, 10) || 419200;
+  const blocks = Math.max(0, APPROX_CHAIN_TIP - birthday);
+  const minutes = Math.round(blocks / BLOCKS_PER_MINUTE);
+  const el = $("birthday-scan-estimate");
+  if (minutes <= 1) {
+    el.textContent = "Estimated scan time: under 1 minute.";
+  } else if (minutes < 60) {
+    el.textContent = `Estimated scan time: ~${minutes} minutes.`;
+  } else {
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    el.textContent = `Estimated scan time: ~${hours}h ${mins}m.`;
+  }
+}
+
+$("birthday-height").addEventListener("input", updateScanEstimate);
+updateScanEstimate();
+
 $("birthday-estimate").addEventListener("click", async () => {
   const dateVal = $("birthday-date").value;
   if (!dateVal) {
@@ -158,6 +181,7 @@ $("birthday-estimate").addEventListener("click", async () => {
   try {
     const height = await invoke("estimate_birthday_from_date", { date: dateVal });
     $("birthday-height").value = height;
+    updateScanEstimate();
     setStatus("config-status", `Birthday estimated: block ${Number(height).toLocaleString()}`, "success");
   } catch (err) {
     setStatus("config-status", String(err), "error");
