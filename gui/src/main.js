@@ -86,7 +86,13 @@ document.querySelectorAll("[data-next]").forEach((btn) => {
 });
 
 document.querySelectorAll("[data-prev]").forEach((btn) => {
-  btn.addEventListener("click", () => goTo(btn.dataset.prev));
+  btn.addEventListener("click", () => {
+    if (btn.dataset.prev === "config") {
+      $("start-scan").disabled = false;
+      setStatus("config-status", "", "");
+    }
+    goTo(btn.dataset.prev);
+  });
 });
 
 // ─── Step 2: Seed Entry ───────────────────────────────────────────────────────
@@ -329,6 +335,8 @@ $("cancel-scan").addEventListener("click", async () => {
     cleanupListeners();
     setStatus("scan-message", "Scan cancelled. Workspace state preserved on disk.", "");
     $("scan-phase").textContent = "Cancelled";
+    $("back-to-config").style.display = "";
+    $("start-scan").disabled = false;
   } catch (err) {
     setStatus("scan-message", `Cancel failed: ${err}`, "error");
   }
