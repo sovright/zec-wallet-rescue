@@ -448,7 +448,14 @@ async fn run_recovery_scan_inner(
             ));
         }
 
-        run_wallet_sync(&workspace, &network, &mut client).await?;
+        run_wallet_sync_with_retry(
+            &workspace,
+            &network,
+            &mut client,
+            &config.lightwalletd_url,
+            &state,
+        )
+        .await?;
         refresh_scan_progress(&state, &workspace, config.network, effective_birthday).await?;
 
         if config.num_accounts.is_some() || imported_accounts == max_accounts {
@@ -653,6 +660,72 @@ async fn import_accounts(
     let mut guard = state.lock().await;
     guard.tracked_accounts.extend(tracked_accounts);
     Ok(())
+}
+
+const MAX_SYNC_RETRIES: u32 = 10;
+const SYNC_RETRY_DELAY_SECS: u64 = 5;
+
+/// Runs `run_wallet_sync`, reconnecting to lightwalletd on transient transport
+/// errors.  Each reconnection attempt tries all configured endpoints in order.
+/// Permanent errors (wallet database corruption, etc.) are returned immediately.
+async fn run_wallet_sync_with_retry(
+    workspace: &RecoveryWorkspace,
+    network: &zcash_protocol::consensus::Network,
+    client: &mut CompactTxStreamerClient<tonic::transport::Channel>,
+    lightwalletd_url: &str,
+    state: &SharedScanTaskState,
+) -> ZeckResult<()> {
+    let mut attempts = 0u32;
+    loop {
+        match run_wallet_sync(workspace, network, client).await {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                let msg = err.to_string();
+                let is_transport = msg.contains("transport error")
+                    || msg.contains("h2 protocol error")
+                    || msg.contains("GoAway")
+                    || msg.contains("TimedOut")
+                    || msg.contains("close_notify")
+                    || msg.contains("UnexpectedEof");
+
+                if !is_transport || attempts >= MAX_SYNC_RETRIES {
+                    return Err(err);
+                }
+
+                attempts += 1;
+                warn!(
+                    "lightwalletd connection dropped (attempt {attempts}/{MAX_SYNC_RETRIES}), reconnecting in {SYNC_RETRY_DELAY_SECS}s: {msg}"
+                );
+
+                {
+                    let mut guard = state.lock().await;
+                    guard.progress.message = Some(format!(
+                        "Connection dropped — reconnecting (attempt {attempts}/{MAX_SYNC_RETRIES})…"
+                    ));
+                }
+
+                tokio::time::sleep(std::time::Duration::from_secs(SYNC_RETRY_DELAY_SECS)).await;
+
+                match probe_lightwalletd_endpoints(lightwalletd_url).await {
+                    Ok((new_client, endpoint, _)) => {
+                        *client = new_client;
+                        let mut guard = state.lock().await;
+                        guard.progress.message = Some(format!(
+                            "Reconnected to {endpoint}, resuming sync…"
+                        ));
+                        guard.progress.server = Some(crate::lightwalletd::build_probe(
+                            endpoint,
+                            &Default::default(),
+                        ));
+                    }
+                    Err(reconnect_err) => {
+                        warn!("reconnect failed: {reconnect_err}");
+                        // try again next iteration
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub(crate) async fn run_wallet_sync<ChT>(
