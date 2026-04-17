@@ -20,7 +20,8 @@ fn main() {
             commands::propose_sweep,
             commands::execute_sweep,
             commands::estimate_birthday_from_date,
-            commands::save_recovery_report
+            commands::save_recovery_report,
+            commands::default_data_dir
         ])
         .setup(|app| {
             let _window = app.get_webview_window("main");

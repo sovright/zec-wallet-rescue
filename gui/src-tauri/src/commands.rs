@@ -2,7 +2,7 @@ use std::{collections::HashMap, fs, path::PathBuf};
 
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use zeck_core::{
     estimate_birthday_from_date as estimate_birthday, validate_destination_address,
     validate_mnemonic_words, RecoveryService, ScanConfig, ScanHandle, SweepProposal, SweepRequest,
@@ -181,6 +181,15 @@ pub async fn execute_sweep(
     }
 
     Ok(results)
+}
+
+#[tauri::command]
+pub fn default_data_dir(app: AppHandle) -> Result<String, String> {
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("resolving app data dir: {err}"))?;
+    Ok(base.join("workspace").display().to_string())
 }
 
 #[tauri::command]

@@ -276,7 +276,7 @@ $("start-scan").addEventListener("click", async () => {
     const handle = await invoke("start_scan", { config });
     state.scanHandle = handle;
     goTo("scan");
-    startProgressListeners();
+    await startProgressListeners();
   } catch (err) {
     setStatus("config-status", `✗ ${err}`, "error");
     $("start-scan").disabled = false;
@@ -285,7 +285,7 @@ $("start-scan").addEventListener("click", async () => {
 
 // ─── Step 4: Scan Progress ────────────────────────────────────────────────────
 
-function startProgressListeners() {
+async function startProgressListeners() {
   $("scan-phase").textContent = "Starting…";
   $("scan-server").textContent = "Connecting…";
   $("scan-progress-text").textContent = "0 / 0";
@@ -294,17 +294,23 @@ function startProgressListeners() {
   $("scan-rows").innerHTML = "";
   setStatus("scan-message", "", "");
   $("review-sweep").disabled = true;
+  $("back-to-config").style.display = "none";
 
-  listen("scan-progress", (event) => updateScanUI(event.payload)).then(
-    (u) => (state.unlistenProgress = u)
-  );
-
-  listen("scan-complete", (event) => {
-    updateScanUI(event.payload);
-    cleanupListeners();
-  }).then((u) => (state.unlistenComplete = u));
-
-  listen("account-discovered", () => {}).then((u) => (state.unlistenDiscovered = u));
+  // Await all three subscriptions synchronously. If we stored the unlisten
+  // handles via `.then(...)` callbacks, a fast `scan-complete` event could
+  // fire and run `cleanupListeners()` before the handles were assigned,
+  // leaving the subscriptions alive and leaking across scans.
+  const [unlistenProgress, unlistenComplete, unlistenDiscovered] = await Promise.all([
+    listen("scan-progress", (event) => updateScanUI(event.payload)),
+    listen("scan-complete", (event) => {
+      updateScanUI(event.payload);
+      cleanupListeners();
+    }),
+    listen("account-discovered", () => {}),
+  ]);
+  state.unlistenProgress = unlistenProgress;
+  state.unlistenComplete = unlistenComplete;
+  state.unlistenDiscovered = unlistenDiscovered;
 }
 
 function cleanupListeners() {
@@ -378,6 +384,17 @@ function renderAccountRows(accounts) {
     tbody.appendChild(tr);
   });
 }
+
+$("back-to-config").addEventListener("click", () => {
+  // Must release event subscriptions before leaving the scan screen —
+  // otherwise a subsequent start_scan would stack a second set of listeners
+  // on top of the first and double every progress event.
+  cleanupListeners();
+  state.scanHandle = null;
+  $("back-to-config").style.display = "none";
+  $("start-scan").disabled = false;
+  goTo("config");
+});
 
 $("cancel-scan").addEventListener("click", async () => {
   if (!state.scanHandle) return;
@@ -528,8 +545,10 @@ function buildReport(results) {
 }
 
 function buildDefaultReportPath() {
-  const dir = ($("data-dir")?.value ?? "").trim() || "/tmp/zeck_data";
-  return `${dir}/zeck-recovery-report.txt`;
+  const dir = ($("data-dir")?.value ?? "").trim();
+  if (!dir) return "zeck-recovery-report.txt";
+  const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
+  return `${dir}${sep}zeck-recovery-report.txt`;
 }
 
 $("save-report").addEventListener("click", async () => {
@@ -578,5 +597,16 @@ $("lightwalletd-url").value = SERVER_PRESETS.mainnet;
 $("gap-limit-row").style.display = $("auto-gap-limit").checked ? "none" : "block";
 $("accounts-range").disabled = !$("auto-gap-limit").checked;
 goTo("welcome");
+
+// Populate the workspace dir with the OS-appropriate path from Tauri
+// (macOS app data dir, Linux XDG, Windows %APPDATA%) instead of hard-coding
+// `/tmp/zeck_data`, which doesn't exist on Windows.
+invoke("default_data_dir")
+  .then((dir) => {
+    if (dir && !$("data-dir").value.trim()) $("data-dir").value = dir;
+  })
+  .catch(() => {
+    // Non-fatal: user can always type a path manually.
+  });
 
 }); // end DOMContentLoaded

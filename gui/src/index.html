@@ -142,7 +142,7 @@
             </label>
             <label class="field span-two">
               <span>Where to save scan data on this computer</span>
-              <input id="data-dir" type="text" value="/tmp/zeck_data" />
+              <input id="data-dir" type="text" placeholder="platform default populated on load" />
               <small>ZECK saves its progress here so a scan can be resumed if interrupted. Change this to a permanent folder if you want to keep the data after a reboot.</small>
             </label>
             <label class="field span-two">
@@ -223,7 +223,7 @@
           <div class="report-card" id="scan-discoveries"></div>
           <div class="actions split">
             <button class="secondary" id="cancel-scan">Cancel</button>
-            <button class="ghost" id="back-to-config" style="display:none" data-prev="config">← Back to config</button>
+            <button class="ghost" id="back-to-config" style="display:none">← Back to config</button>
             <button class="primary" id="review-sweep" disabled>Review & Sweep</button>
           </div>
         </section>
