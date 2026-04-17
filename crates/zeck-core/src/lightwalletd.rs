@@ -101,7 +101,7 @@ pub fn build_probe(endpoint: String, info: &LightdInfo) -> LightwalletdProbe {
         endpoint,
         vendor: Some(info.vendor.clone()),
         chain_name: Some(info.chain_name.clone()),
-        latest_block_height: u64::try_from(info.block_height).ok(),
+        latest_block_height: Some(info.block_height),
         sapling_activation_height: Some(info.sapling_activation_height),
     }
 }

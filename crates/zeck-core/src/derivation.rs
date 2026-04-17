@@ -197,6 +197,15 @@ fn normalize_words(words: &[String]) -> ZeckResult<String> {
         .join(" "))
 }
 
+impl From<AddressScope> for TransparentKeyScope {
+    fn from(value: AddressScope) -> Self {
+        match value {
+            AddressScope::External => TransparentKeyScope::EXTERNAL,
+            AddressScope::Internal => TransparentKeyScope::INTERNAL,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use secrecy::SecretString;
@@ -307,14 +316,5 @@ mod tests {
         assert_eq!(acc.sapling_path, "m_Sapling / 32' / 133' / 0'");
         assert_eq!(acc.transparent_receive_path, "m / 44' / 133' / 0' / 0 / 0");
         assert_eq!(acc.transparent_change_path, "m / 44' / 133' / 0' / 1 / 0");
-    }
-}
-
-impl From<AddressScope> for TransparentKeyScope {
-    fn from(value: AddressScope) -> Self {
-        match value {
-            AddressScope::External => TransparentKeyScope::EXTERNAL,
-            AddressScope::Internal => TransparentKeyScope::INTERNAL,
-        }
     }
 }

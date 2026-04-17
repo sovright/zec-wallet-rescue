@@ -4,17 +4,12 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ZeckNetwork {
+    #[default]
     Mainnet,
     Testnet,
-}
-
-impl Default for ZeckNetwork {
-    fn default() -> Self {
-        Self::Mainnet
-    }
 }
 
 impl ZeckNetwork {
@@ -99,6 +94,12 @@ pub struct ScanHandle {
 
 impl ScanHandle {
     pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Default for ScanHandle {
+    fn default() -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
         }
