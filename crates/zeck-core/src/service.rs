@@ -1081,4 +1081,35 @@ mod tests {
         assert!(proposal.transactions.is_empty());
         assert_eq!(proposal.skipped_accounts.len(), 1);
     }
+
+    #[test]
+    fn memo_with_ascii_is_accepted() {
+        use super::normalized_memo_text;
+        let result = normalized_memo_text(Some("ZECK recovery"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn memo_with_emoji_is_accepted_when_short_enough() {
+        use super::normalized_memo_text;
+        // emoji are 4 bytes each — a handful should still fit within the 512-byte limit
+        let result = normalized_memo_text(Some("🎉 recovery 🎉"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn memo_exceeding_512_bytes_is_rejected() {
+        use super::normalized_memo_text;
+        // each '🎉' is 4 bytes; 129 of them = 516 bytes, over the 512-byte memo limit
+        let long_memo = "🎉".repeat(129);
+        let result = normalized_memo_text(Some(&long_memo));
+        assert!(result.is_err(), "expected InvalidMemo for oversized memo");
+    }
+
+    #[test]
+    fn empty_memo_falls_back_to_default() {
+        use super::{normalized_memo_text, RECOVERY_MEMO_DEFAULT};
+        let result = normalized_memo_text(Some("   ")).unwrap();
+        assert_eq!(result, RECOVERY_MEMO_DEFAULT);
+    }
 }

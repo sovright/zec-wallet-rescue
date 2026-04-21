@@ -511,6 +511,56 @@ fn print_sweep_preview(proposal: &SweepProposal) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_zatoshi() {
+        assert_eq!(parse_zec_to_zatoshis("0.00000001").unwrap(), 1);
+    }
+
+    #[test]
+    fn whole_zec() {
+        assert_eq!(parse_zec_to_zatoshis("1").unwrap(), 100_000_000);
+    }
+
+    #[test]
+    fn mixed() {
+        assert_eq!(parse_zec_to_zatoshis("0.0002").unwrap(), 20_000);
+    }
+
+    #[test]
+    fn leading_dot() {
+        assert_eq!(parse_zec_to_zatoshis(".5").unwrap(), 50_000_000);
+    }
+
+    #[test]
+    fn too_many_decimals_rejected() {
+        assert!(parse_zec_to_zatoshis("0.999999999").is_err());
+    }
+
+    #[test]
+    fn negative_rejected() {
+        assert!(parse_zec_to_zatoshis("-0.001").is_err());
+    }
+
+    #[test]
+    fn empty_rejected() {
+        assert!(parse_zec_to_zatoshis("").is_err());
+    }
+
+    #[test]
+    fn non_numeric_rejected() {
+        assert!(parse_zec_to_zatoshis("abc").is_err());
+    }
+
+    #[test]
+    fn overflow_rejected() {
+        assert!(parse_zec_to_zatoshis("99999999999999999999").is_err());
+    }
+}
+
 fn format_duration(seconds: u64) -> String {
     let minutes = seconds / 60;
     let remaining_seconds = seconds % 60;

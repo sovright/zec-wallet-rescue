@@ -252,3 +252,53 @@ fn parse_zec_to_zatoshis(input: &str) -> Result<u64, String> {
         .and_then(|whole_zats| whole_zats.checked_add(fractional_digits.checked_mul(scale)?))
         .ok_or_else(|| "max fee is too large".to_owned())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_zatoshi() {
+        assert_eq!(parse_zec_to_zatoshis("0.00000001").unwrap(), 1);
+    }
+
+    #[test]
+    fn whole_zec() {
+        assert_eq!(parse_zec_to_zatoshis("1").unwrap(), 100_000_000);
+    }
+
+    #[test]
+    fn mixed() {
+        assert_eq!(parse_zec_to_zatoshis("0.0002").unwrap(), 20_000);
+    }
+
+    #[test]
+    fn leading_dot() {
+        assert_eq!(parse_zec_to_zatoshis(".5").unwrap(), 50_000_000);
+    }
+
+    #[test]
+    fn too_many_decimals_rejected() {
+        assert!(parse_zec_to_zatoshis("0.999999999").is_err());
+    }
+
+    #[test]
+    fn negative_rejected() {
+        assert!(parse_zec_to_zatoshis("-0.001").is_err());
+    }
+
+    #[test]
+    fn empty_rejected() {
+        assert!(parse_zec_to_zatoshis("").is_err());
+    }
+
+    #[test]
+    fn non_numeric_rejected() {
+        assert!(parse_zec_to_zatoshis("abc").is_err());
+    }
+
+    #[test]
+    fn overflow_rejected() {
+        assert!(parse_zec_to_zatoshis("99999999999999999999").is_err());
+    }
+}

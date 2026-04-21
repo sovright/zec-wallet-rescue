@@ -70,4 +70,10 @@ mod tests {
         let h = estimate_birthday_from_date("2030-01-01").unwrap();
         assert!(h > 2_000_000, "expected large height, got {h}");
     }
+
+    #[test]
+    fn leap_year_february_29_is_handled() {
+        let h = estimate_birthday_from_date("2020-02-29").unwrap();
+        assert!(h > SAPLING_ACTIVATION_HEIGHT, "expected height above activation");
+    }
 }
