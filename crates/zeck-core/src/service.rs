@@ -710,9 +710,13 @@ async fn broadcast_transactions(
             .map_err(|err| ZeckError::Broadcast(err.to_string()))?
             .into_inner();
         if response.error_code != 0 {
+            let reason = if response.error_message.is_empty() {
+                format!("error code {}", response.error_code)
+            } else {
+                response.error_message.clone()
+            };
             return Err(ZeckError::Broadcast(format!(
-                "{label} transaction {txid} was rejected: {}",
-                response.error_message
+                "{label} transaction {txid} was rejected: {reason}"
             )));
         }
 

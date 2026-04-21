@@ -237,6 +237,11 @@ $("destination-validate").addEventListener("click", async () => {
 });
 
 $("start-scan").addEventListener("click", async () => {
+  if (!seedInput.value.trim()) {
+    setStatus("config-status", "Seed phrase is required — go back and enter it.", "error");
+    return;
+  }
+
   const address = $("destination-input").value.trim();
   if (!address) {
     setStatus("config-status", "A destination Unified Address is required.", "error");

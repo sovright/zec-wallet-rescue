@@ -1228,4 +1228,66 @@ mod tests {
         // But with gap_limit=1, trailing 1 = [spent], which has activity -- still no trigger.
         assert!(!trailing_gap_limit_reached(&accounts, 1));
     }
+
+    fn empty_account(index: u32) -> AccountBalancePreview {
+        AccountBalancePreview {
+            account_index: index,
+            sapling_address: "zs".to_owned(),
+            unified_address: "u".to_owned(),
+            transparent_receive_address: "t1".to_owned(),
+            transparent_change_address: "t2".to_owned(),
+            transparent_utxo_count: 0,
+            sapling_zatoshis: 0,
+            orchard_zatoshis: 0,
+            transparent_zatoshis: 0,
+            total_zatoshis: 0,
+            has_activity: false,
+            status: "empty".to_owned(),
+        }
+    }
+
+    fn active_account(index: u32) -> AccountBalancePreview {
+        AccountBalancePreview {
+            account_index: index,
+            sapling_zatoshis: 1,
+            total_zatoshis: 1,
+            has_activity: true,
+            status: "found".to_owned(),
+            ..empty_account(index)
+        }
+    }
+
+    #[test]
+    fn gap_limit_1_triggers_on_single_trailing_empty_account() {
+        // [active, empty] with gap_limit=1 → trailing window is [empty] → fires
+        let accounts = vec![active_account(0), empty_account(1)];
+        assert!(trailing_gap_limit_reached(&accounts, 1));
+    }
+
+    #[test]
+    fn gap_limit_1_does_not_trigger_on_active_tail() {
+        // [empty, active] with gap_limit=1 → trailing window is [active] → no fire
+        let accounts = vec![empty_account(0), active_account(1)];
+        assert!(!trailing_gap_limit_reached(&accounts, 1));
+    }
+
+    #[test]
+    fn gap_limit_triggers_only_when_all_trailing_accounts_inactive() {
+        // [active, empty, empty] with gap_limit=2 → both trailing are inactive → fires
+        let accounts = vec![active_account(0), empty_account(1), empty_account(2)];
+        assert!(trailing_gap_limit_reached(&accounts, 2));
+        // with gap_limit=1 → only last is empty → also fires
+        assert!(trailing_gap_limit_reached(&accounts, 1));
+        // with gap_limit=3 → window covers all 3, first has activity → no fire
+        assert!(!trailing_gap_limit_reached(&accounts, 3));
+    }
+
+    #[test]
+    fn gap_limit_larger_than_account_count_never_triggers() {
+        let accounts = vec![empty_account(0), empty_account(1)];
+        // gap_limit=5 > 2 accounts → window is entire list; but since there are
+        // fewer accounts than the gap_limit, scanning has not yet had enough room
+        // to confirm absence — should not fire.
+        assert!(!trailing_gap_limit_reached(&accounts, 5));
+    }
 }

@@ -511,6 +511,16 @@ fn print_sweep_preview(proposal: &SweepProposal) {
     }
 }
 
+fn format_duration(seconds: u64) -> String {
+    let minutes = seconds / 60;
+    let remaining_seconds = seconds % 60;
+    if minutes == 0 {
+        format!("{remaining_seconds}s")
+    } else {
+        format!("{minutes}m {remaining_seconds:02}s")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,15 +568,5 @@ mod tests {
     #[test]
     fn overflow_rejected() {
         assert!(parse_zec_to_zatoshis("99999999999999999999").is_err());
-    }
-}
-
-fn format_duration(seconds: u64) -> String {
-    let minutes = seconds / 60;
-    let remaining_seconds = seconds % 60;
-    if minutes == 0 {
-        format!("{remaining_seconds}s")
-    } else {
-        format!("{minutes}m {remaining_seconds:02}s")
     }
 }
