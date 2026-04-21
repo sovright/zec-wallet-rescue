@@ -256,7 +256,13 @@ $("start-scan").addEventListener("click", async () => {
 
   state.destination = address;
   state.memo = $("sweep-memo").value.trim() || null;
-  state.maxFeeZec = $("max-fee-zec").value.trim() || null;
+  const maxFeeRaw = $("max-fee-zec").value.trim();
+  if (maxFeeRaw && !/^\d*\.?\d{0,8}$/.test(maxFeeRaw)) {
+    setStatus("config-status", "✗ Max fee must be a valid ZEC amount (e.g. 0.0002)", "error");
+    $("start-scan").disabled = false;
+    return;
+  }
+  state.maxFeeZec = maxFeeRaw || null;
 
   const autoGap = $("auto-gap-limit").checked;
   const config = {
@@ -331,6 +337,9 @@ function updateScanUI(progress) {
     const primary = $("lightwalletd-url").value.split(",")[0].trim();
     const isFallback = progress.server.endpoint !== primary;
     $("scan-server").textContent = progress.server.endpoint + (isFallback ? " (fallback)" : "");
+    $("scan-server").title = isFallback
+      ? "Connected to a fallback server — a different operator can see your scan activity"
+      : "";
   }
 
   const scanned = Number(progress.blocks_scanned);

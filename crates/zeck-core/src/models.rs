@@ -182,6 +182,10 @@ pub struct ScanProgress {
 pub struct SweepRequest {
     pub destination: String,
     pub memo: Option<String>,
+    /// Maximum total fee in zatoshis across all sweep transactions. If actual
+    /// fees exceed this the sweep is aborted with `MaxFeeExceeded`. `None`
+    /// means no limit — use only when the caller has already reviewed the
+    /// proposal fee and explicitly accepted it.
     pub max_fee_zatoshis: Option<u64>,
 }
 
