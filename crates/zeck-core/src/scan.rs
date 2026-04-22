@@ -25,7 +25,9 @@ use zcash_client_backend::{
     },
     proto::{
         compact_formats::CompactBlock,
-        service::{compact_tx_streamer_client::CompactTxStreamerClient, BlockId},
+        service::{
+            compact_tx_streamer_client::CompactTxStreamerClient, BlockId, GetAddressUtxosArg,
+        },
     },
     sync,
 };
@@ -41,8 +43,8 @@ use crate::{
     error::{ZeckError, ZeckResult},
     lightwalletd::{build_probe, describe_lightwalletd_endpoints, probe_lightwalletd_endpoints},
     models::{
-        AccountBalancePreview, AddressScope, DerivedAccount, LightwalletdProbe, RuntimeScanConfig,
-        ScanHandle, ScanPhase, ScanProgress, ScanSummary,
+        AccountBalancePreview, AddressScope, DerivedAccount, DiscoveryPool, LightwalletdProbe,
+        RuntimeScanConfig, ScanDiscovery, ScanHandle, ScanPhase, ScanProgress, ScanSummary,
     },
     workspace::{consensus_network, RecoveryWorkspace},
 };
@@ -412,6 +414,20 @@ async fn run_recovery_scan_inner(
         let mut guard = state.lock().await;
         guard.progress.server = Some(probe);
         guard.progress.blocks_total = block_delta(chain_tip_height, effective_birthday);
+    }
+
+    // Fast transparent-only probe: lightwalletd's GetAddressUtxos answers in
+    // milliseconds for a batch of t-addrs, so we can surface preliminary
+    // transparent balances within seconds — long before the multi-hour
+    // shielded compact-block scan finishes. This either (a) shows users
+    // their funds immediately for transparent-only wallets, or (b) gives
+    // them an early "yes, this seed has something" signal that justifies
+    // the longer wait. Failures here are non-fatal; the shielded scan
+    // below will still discover transparent UTXOs authoritatively.
+    if let Err(err) =
+        run_transparent_quick_probe(&state, &mut client, &initial_accounts, chain_tip_height).await
+    {
+        warn!("transparent quick probe failed (continuing with shielded scan): {err}");
     }
 
     while imported_accounts < target_accounts {
@@ -926,6 +942,132 @@ pub(crate) async fn refresh_scan_progress(
         "Wallet workspace synced through height {}. Review the account table below for authoritative balances.",
         u32::from(summary.fully_scanned_height())
     ));
+
+    Ok(())
+}
+
+/// Fast transparent-balance probe issued before the shielded compact-block
+/// scan begins. Batches every receive + change address from the initial gap
+/// window into a single `GetAddressUtxos` call to lightwalletd, then
+/// surfaces non-zero balances as preliminary discoveries.
+///
+/// Side effects on the shared state:
+/// - Sets `phase = ScanningTransparent` while the probe is in flight.
+/// - Updates `progress.accounts[i].transparent_zatoshis` and
+///   `transparent_utxo_count` so that the subsequent shielded sync's
+///   refresh tick sees these UTXOs as "previously known" and does not
+///   re-emit them as duplicate discoveries.
+/// - Pushes one `ScanDiscovery::Transparent` per account that had any
+///   transparent funds, with `at_block_height = chain_tip_height`.
+async fn run_transparent_quick_probe(
+    state: &SharedScanTaskState,
+    client: &mut CompactTxStreamerClient<tonic::transport::Channel>,
+    accounts: &[DerivedAccount],
+    chain_tip_height: u32,
+) -> ZeckResult<()> {
+    use std::collections::HashMap;
+
+    if accounts.is_empty() {
+        return Ok(());
+    }
+
+    {
+        let mut guard = state.lock().await;
+        guard.progress.phase = ScanPhase::ScanningTransparent;
+        guard.progress.message = Some(format!(
+            "Quick-checking transparent balances for {} accounts via lightwalletd…",
+            accounts.len()
+        ));
+    }
+
+    // Build the address batch — receive + change for every account in the
+    // initial window. Track account ownership so we can fold UTXO results
+    // back into per-account preliminary balances.
+    let mut address_to_account: HashMap<String, u32> = HashMap::new();
+    let mut addresses: Vec<String> = Vec::with_capacity(accounts.len() * 2);
+    for account in accounts {
+        for addr in [
+            &account.transparent_receive_address,
+            &account.transparent_change_address,
+        ] {
+            if !addr.is_empty() && !address_to_account.contains_key(addr) {
+                address_to_account.insert(addr.clone(), account.index);
+                addresses.push(addr.clone());
+            }
+        }
+    }
+    if addresses.is_empty() {
+        return Ok(());
+    }
+
+    let reply = client
+        .get_address_utxos(GetAddressUtxosArg {
+            addresses,
+            start_height: 0,
+            max_entries: 0,
+        })
+        .await
+        .map_err(|err| ZeckError::Lightwalletd(err.to_string()))?
+        .into_inner();
+
+    // Aggregate UTXO value per account.
+    let mut sums: HashMap<u32, (u64, u32)> = HashMap::new();
+    for utxo in &reply.address_utxos {
+        let Some(&account_index) = address_to_account.get(&utxo.address) else {
+            continue;
+        };
+        let entry = sums.entry(account_index).or_insert((0u64, 0u32));
+        let value = u64::try_from(utxo.value_zat).unwrap_or(0);
+        entry.0 = entry.0.saturating_add(value);
+        entry.1 = entry.1.saturating_add(1);
+    }
+
+    if sums.is_empty() {
+        return Ok(());
+    }
+
+    let mut guard = state.lock().await;
+    let chain_tip = u64::from(chain_tip_height);
+    for account in &mut guard.progress.accounts {
+        if let Some(&(zatoshis, utxo_count)) = sums.get(&account.account_index) {
+            if zatoshis == 0 {
+                continue;
+            }
+            account.transparent_zatoshis = zatoshis;
+            account.transparent_utxo_count = utxo_count;
+            account.total_zatoshis = account
+                .sapling_zatoshis
+                .saturating_add(account.orchard_zatoshis)
+                .saturating_add(zatoshis);
+            account.has_activity = true;
+            account.status = format!(
+                "Preliminary: {utxo_count} transparent UTXOs / {zatoshis} zats (shielded scan still pending)."
+            );
+        }
+    }
+    for (account_index, (zatoshis, _)) in sums {
+        if zatoshis == 0 {
+            continue;
+        }
+        let address = guard
+            .progress
+            .accounts
+            .iter()
+            .find(|a| a.account_index == account_index)
+            .map(|a| a.transparent_receive_address.clone())
+            .unwrap_or_default();
+        guard.progress.discoveries.push(ScanDiscovery {
+            account_index,
+            pool: DiscoveryPool::Transparent,
+            zatoshis,
+            at_block_height: chain_tip,
+            address,
+        });
+    }
+    guard.progress.message = Some(
+        "Transparent quick-check complete. Continuing with shielded compact-block scan…"
+            .to_owned(),
+    );
 
     Ok(())
 }

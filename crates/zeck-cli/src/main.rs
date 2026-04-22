@@ -946,6 +946,7 @@ mod tests {
             elapsed_seconds: None,
             estimated_remaining_seconds: None,
             accounts,
+            discoveries: vec![],
             summary: None,
             server: None,
             message: None,
