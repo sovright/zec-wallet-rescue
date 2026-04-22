@@ -53,6 +53,7 @@ struct ScanSession {
     runtime: RuntimeScanConfig,
     started_at: Instant,
     task: Mutex<Option<JoinHandle<()>>>,
+    workspace_root: std::path::PathBuf,
 }
 
 type SharedScanSession = Arc<ScanSession>;
@@ -85,11 +86,29 @@ impl RecoveryService {
             data_dir: config.data_dir,
             network: config.network,
         };
+
+        let workspace_root = RecoveryWorkspace::from_runtime(&runtime)?.root().to_owned();
+
+        // Cancel any existing session targeting the same workspace to prevent
+        // concurrent SQLite writers from locking each other out.
+        let conflicting: Vec<ScanHandle> = {
+            let sessions = self.sessions.read().await;
+            sessions
+                .iter()
+                .filter(|(_, session)| session.workspace_root == workspace_root)
+                .map(|(id, _)| ScanHandle { id: id.clone() })
+                .collect()
+        };
+        for conflicting_handle in conflicting {
+            let _ = self.cancel_scan(&conflicting_handle).await;
+        }
+
         let session = Arc::new(ScanSession {
             state: state.clone(),
             runtime: runtime.clone(),
             started_at: Instant::now(),
             task: Mutex::new(None),
+            workspace_root,
         });
 
         self.sessions
@@ -111,10 +130,12 @@ impl RecoveryService {
     pub async fn get_scan_progress(&self, handle: &ScanHandle) -> ZeckResult<ScanProgress> {
         let session = self.session(handle).await?;
         let mut progress = session.state.lock().await.progress.clone();
-        let elapsed_seconds = session.started_at.elapsed().as_secs();
-        progress.elapsed_seconds = Some(elapsed_seconds);
-        progress.estimated_remaining_seconds =
-            estimate_remaining_seconds(&progress, elapsed_seconds);
+        let session_elapsed = session.started_at.elapsed().as_secs();
+        // Use scan-phase elapsed (set by ProgressPoller from when scanning began) for
+        // the rate calculation so pre-scan phases don't dilute the blocks/sec estimate.
+        let scan_elapsed = progress.elapsed_seconds.unwrap_or(session_elapsed);
+        progress.elapsed_seconds = Some(session_elapsed);
+        progress.estimated_remaining_seconds = estimate_remaining_seconds(&progress, scan_elapsed);
         Ok(progress)
     }
 
@@ -937,7 +958,7 @@ fn estimate_remaining_seconds(progress: &ScanProgress, elapsed_seconds: u64) -> 
     if progress.blocks_scanned >= progress.blocks_total {
         return Some(0);
     }
-    if progress.blocks_scanned == 0 || elapsed_seconds == 0 {
+    if progress.blocks_scanned < 100 || elapsed_seconds < 5 {
         return None;
     }
 

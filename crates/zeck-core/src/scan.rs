@@ -319,6 +319,55 @@ impl ScanTaskState {
 
 pub type SharedScanTaskState = Arc<Mutex<ScanTaskState>>;
 
+struct ProgressPoller {
+    stop: Arc<AtomicBool>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl ProgressPoller {
+    fn start(
+        workspace: RecoveryWorkspace,
+        network: crate::models::ZeckNetwork,
+        state: SharedScanTaskState,
+        effective_birthday: u32,
+    ) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_clone = stop.clone();
+        let task = tokio::spawn(async move {
+            let scan_started = std::time::Instant::now();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                if stop_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                if let Ok(db) = WalletDb::for_path(
+                    workspace.wallet_db_path(),
+                    consensus_network(network),
+                    SystemClock,
+                    OsRng,
+                ) {
+                    if let Ok(Some(summary)) = db.get_wallet_summary(ConfirmationsPolicy::MIN) {
+                        let mut guard = state.lock().await;
+                        guard.progress.blocks_scanned =
+                            block_delta(summary.fully_scanned_height().into(), effective_birthday);
+                        // Store scan-phase elapsed so get_scan_progress can compute an
+                        // accurate rate that excludes pre-scan phases (seed validation,
+                        // key derivation, lightwalletd probing).
+                        guard.progress.elapsed_seconds =
+                            Some(scan_started.elapsed().as_secs());
+                    }
+                }
+            }
+        });
+        Self { stop, task }
+    }
+
+    async fn stop(self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = self.task.await;
+    }
+}
+
 pub async fn run_recovery_scan(state: SharedScanTaskState, config: RuntimeScanConfig) {
     match run_recovery_scan_inner(state.clone(), config).await {
         Ok(()) | Err(ZeckError::Cancelled) => {}
@@ -470,14 +519,22 @@ async fn run_recovery_scan_inner(
             ));
         }
 
-        run_wallet_sync_with_retry(
+        let poller = ProgressPoller::start(
+            workspace.clone(),
+            config.network,
+            state.clone(),
+            effective_birthday,
+        );
+        let sync_result = run_wallet_sync_with_retry(
             &workspace,
             &network,
             &mut client,
             &config.lightwalletd_url,
             &state,
         )
-        .await?;
+        .await;
+        poller.stop().await;
+        sync_result?;
         refresh_scan_progress(&state, &workspace, config.network, effective_birthday).await?;
 
         if config.num_accounts.is_some() || imported_accounts == max_accounts {
@@ -1205,6 +1262,77 @@ fn account_has_note_activity(
         params![account_id],
         |row| row.get(0),
     )
+}
+
+/// Imports account-0 into a probe workspace without requiring a `SharedScanTaskState`.
+/// Used by `birthday::probe_shielded_window` to set up a fresh temporary workspace
+/// before running a time-limited sync to detect shielded activity.
+pub(crate) fn import_probe_account(
+    workspace: &RecoveryWorkspace,
+    network: crate::models::ZeckNetwork,
+    seed: &[u8; 64],
+    birthday: &AccountBirthday,
+    transparent_account: &zcash_transparent::keys::AccountPrivKey,
+) -> ZeckResult<()> {
+    let seed_fingerprint = SeedFingerprint::from_seed(seed).ok_or_else(|| {
+        ZeckError::Internal("mnemonic seed length is out of the ZIP 32 range".to_owned())
+    })?;
+    let mut wallet_db = WalletDb::for_path(
+        workspace.wallet_db_path(),
+        consensus_network(network),
+        SystemClock,
+        OsRng,
+    )
+    .map_err(|err| {
+        ZeckError::Storage(format!(
+            "opening probe wallet database {}: {err}",
+            workspace.wallet_db_path().display()
+        ))
+    })?;
+
+    let zip32_index = AccountId::ZERO;
+    let derivation = Zip32Derivation::new(seed_fingerprint, zip32_index);
+
+    if wallet_db
+        .get_derived_account(&derivation)
+        .map_err(|err| ZeckError::Wallet(format!("checking probe account: {err}")))?
+        .is_none()
+    {
+        wallet_db
+            .import_account_hd(
+                "probe_account_0",
+                &SecretVec::new(seed.to_vec()),
+                zip32_index,
+                birthday,
+                None,
+            )
+            .map_err(|err| ZeckError::Wallet(format!("importing probe account: {err}")))?;
+    }
+
+    let wallet_account_id = wallet_db
+        .get_derived_account(&derivation)
+        .map_err(|err| ZeckError::Wallet(format!("loading probe account after import: {err}")))?
+        .ok_or_else(|| ZeckError::Wallet("probe account missing after import".to_owned()))?
+        .id();
+
+    let external_pubkey =
+        legacy_transparent_pubkey(transparent_account, AddressScope::External, 0)?;
+    let existing_receivers = wallet_db
+        .get_transparent_receivers(wallet_account_id, true, true)
+        .map_err(|err| {
+            ZeckError::Wallet(format!("loading probe transparent receivers: {err}"))
+        })?;
+    let external_address = TransparentAddress::from_pubkey(&external_pubkey);
+
+    if !existing_receivers.contains_key(&external_address) {
+        wallet_db
+            .import_standalone_transparent_pubkey(wallet_account_id, external_pubkey)
+            .map_err(|err| {
+                ZeckError::Wallet(format!("importing probe transparent receiver: {err}"))
+            })?;
+    }
+
+    Ok(())
 }
 
 fn block_delta(height: u32, birthday: u32) -> u64 {

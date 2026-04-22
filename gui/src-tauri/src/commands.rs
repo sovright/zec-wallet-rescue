@@ -6,9 +6,9 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use zeck_core::{
-    estimate_birthday_from_date as estimate_birthday, validate_destination_address,
-    validate_mnemonic_words, RecoveryService, ScanConfig, ScanHandle, SweepProposal, SweepRequest,
-    TxBroadcastResult, ZeckNetwork,
+    detect_birthday as zeck_detect_birthday, estimate_birthday_from_date as estimate_birthday,
+    validate_destination_address, validate_mnemonic_words, BirthdayDetectResult, RecoveryService,
+    ScanConfig, ScanHandle, SweepProposal, SweepRequest, TxBroadcastResult, ZeckNetwork,
 };
 
 #[derive(Clone)]
@@ -200,6 +200,27 @@ pub fn default_data_dir(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub async fn estimate_birthday_from_date(date: String) -> Result<u32, String> {
     estimate_birthday(&date).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub async fn detect_birthday(
+    app: AppHandle,
+    seed: String,
+    lightwalletd_url: String,
+    network: ZeckNetwork,
+) -> Result<BirthdayDetectResult, String> {
+    let seed_phrase = SecretString::new(seed);
+    let app_clone = app.clone();
+    zeck_detect_birthday(
+        &seed_phrase,
+        network,
+        &lightwalletd_url,
+        move |msg: &str| {
+            let _ = app_clone.emit("birthday-probe-progress", msg.to_owned());
+        },
+    )
+    .await
+    .map_err(|err| err.to_string())
 }
 
 #[tauri::command]

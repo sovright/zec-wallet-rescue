@@ -225,7 +225,7 @@ seedInput.addEventListener("keydown", (e) => {
 // ─── Step 3: Configuration ────────────────────────────────────────────────────
 
 const SERVER_PRESETS = {
-  mainnet: "https://mainnet.lightwalletd.com:9067,https://zec.rocks:443,https://na.zec.rocks:443",
+  mainnet: "https://zec.rocks:443,https://na.zec.rocks:443",
   testnet: "https://lightwalletd.testnet.electriccoin.co:9067",
 };
 
@@ -282,6 +282,39 @@ function updateScanEstimate() {
 
 $("birthday-height").addEventListener("input", updateScanEstimate);
 updateScanEstimate();
+
+$("birthday-autodetect").addEventListener("click", async () => {
+  const seedVal = seedInput.value.trim();
+  if (!seedVal) {
+    setStatus("config-status", "Enter your seed phrase on step 2 first.", "error");
+    return;
+  }
+  $("birthday-autodetect").disabled = true;
+  $("birthday-probe-status").textContent = "Starting detection…";
+  setStatus("config-status", "", "");
+
+  const unlistenProbe = await listen("birthday-probe-progress", (event) => {
+    $("birthday-probe-status").textContent = event.payload;
+  });
+
+  try {
+    const result = await invoke("detect_birthday", {
+      seed: seedVal.toLowerCase(),
+      lightwalletdUrl: $("lightwalletd-url").value.trim(),
+      network: $("network-select").value,
+    });
+    $("birthday-height").value = result.birthday;
+    updateScanEstimate();
+    $("birthday-probe-status").textContent = "";
+    setStatus("config-status", `✓ ${result.message}`, "success");
+  } catch (err) {
+    $("birthday-probe-status").textContent = "";
+    setStatus("config-status", `✗ Birthday detection failed: ${err}`, "error");
+  } finally {
+    $("birthday-autodetect").disabled = false;
+    unlistenProbe();
+  }
+});
 
 $("birthday-estimate").addEventListener("click", async () => {
   const dateVal = $("birthday-date").value;
@@ -365,7 +398,7 @@ $("start-scan").addEventListener("click", async () => {
     num_accounts: autoGap ? null : parseInt($("accounts-range").value, 10),
     gap_limit: autoGap ? parseInt($("gap-limit").value, 10) : 20,
     lightwalletd_url: $("lightwalletd-url").value.trim(),
-    data_dir: $("data-dir").value.trim() || "./zeck_data",
+    data_dir: $("data-dir").value.trim() || "/tmp/zeck_data",
     network: $("network-select").value,
   };
 

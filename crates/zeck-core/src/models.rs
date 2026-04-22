@@ -270,6 +270,14 @@ pub struct SweepProposal {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BirthdayDetectResult {
+    pub birthday: u32,
+    /// "transparent" | "shielded_probe" | "no_activity"
+    pub method: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TxBroadcastResult {
     pub source_account: u32,
     pub txid: Option<String>,

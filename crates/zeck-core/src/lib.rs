@@ -9,7 +9,7 @@ pub mod service;
 pub mod workspace;
 
 pub use address::validate_destination_address;
-pub use birthday::estimate_birthday_from_date;
+pub use birthday::{detect_birthday, estimate_birthday_from_date};
 pub use derivation::{derive_accounts, validate_mnemonic_words};
 pub use error::{ZeckError, ZeckResult};
 pub use models::*;

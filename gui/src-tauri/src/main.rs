@@ -20,6 +20,7 @@ fn main() {
             commands::propose_sweep,
             commands::execute_sweep,
             commands::estimate_birthday_from_date,
+            commands::detect_birthday,
             commands::save_recovery_report,
             commands::default_data_dir,
             commands::notify_user

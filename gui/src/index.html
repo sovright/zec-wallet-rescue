@@ -102,8 +102,12 @@
             <label class="field">
               <span>Approximate wallet creation date</span>
               <input id="birthday-date" type="date" />
-              <button class="ghost" id="birthday-estimate" style="margin-top:6px">Estimate from this date</button>
-              <small>Pick roughly when you first created your ZecWallet Lite — ZECK will fill in the block number for you.</small>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+                <button class="ghost" id="birthday-estimate">Estimate from this date</button>
+                <button class="ghost" id="birthday-autodetect">Auto-detect (probes node)</button>
+              </div>
+              <small id="birthday-probe-status" style="color:var(--color-muted,#888)"></small>
+              <small>Pick roughly when you first created your ZecWallet Lite — ZECK will fill in the block number for you. Or use <strong>Auto-detect</strong> to probe the blockchain (requires your seed phrase from step 2).</small>
             </label>
             <label class="field">
               <span>Number of accounts to scan</span>
@@ -137,7 +141,7 @@
               <input
                 id="lightwalletd-url"
                 type="text"
-                value="https://mainnet.lightwalletd.com:9067,https://zec.rocks:443,https://na.zec.rocks:443"
+                value="https://zec.rocks:443,https://na.zec.rocks:443"
               />
               <small>The server ZECK connects to for blockchain data. Auto-filled by the preset above. You can add backup servers separated by commas.</small>
             </label>
