@@ -34,3 +34,6 @@ zcash_proofs.workspace = true
 zcash_protocol.workspace = true
 zcash_transparent.workspace = true
 zip32.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

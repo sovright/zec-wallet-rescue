@@ -1849,4 +1849,170 @@ mod tests {
             "authoritative refresh must not re-emit a probe discovery"
         );
     }
+
+    /// Cancel-then-resume workspace persistence tests.
+    ///
+    /// These tests exercise the invariant that:
+    ///   1. `import_accounts` leaves a persistent SQLite wallet DB on disk
+    ///      (matching what happens when a scan task is `abort()`-ed mid-flight).
+    ///   2. A second scan started with the same `RuntimeScanConfig` resolves to
+    ///      the same workspace directory and does not duplicate already-imported
+    ///      accounts.
+    ///
+    /// A mock lightwalletd gRPC server is not required because these properties
+    /// live entirely in the workspace-keying and SQLite layers; they do not
+    /// depend on `run_wallet_sync_with_retry` advancing `fully_scanned_height`.
+    mod cancel_resume {
+        use std::sync::Arc;
+
+        use secrecy::SecretString;
+        use tokio::sync::Mutex;
+        use zcash_client_backend::data_api::{chain::ChainState, AccountBirthday, WalletRead};
+        use zcash_client_sqlite::{util::SystemClock, WalletDb};
+        use zcash_primitives::block::BlockHash;
+        use zcash_protocol::consensus::BlockHeight;
+
+        use super::super::{import_accounts, ScanTaskState};
+        use crate::{
+            derivation::{derive_accounts, legacy_transparent_account_key, mnemonic_seed},
+            models::{RuntimeScanConfig, ScanHandle, ZeckNetwork},
+            workspace::{consensus_network, RecoveryWorkspace},
+        };
+
+        const TEST_SEED: &str = "abandon abandon abandon abandon abandon abandon \
+                                  abandon abandon abandon abandon abandon abandon \
+                                  abandon abandon abandon abandon abandon abandon \
+                                  abandon abandon abandon abandon abandon art";
+
+        fn test_config(data_dir: std::path::PathBuf) -> RuntimeScanConfig {
+            RuntimeScanConfig {
+                seed_phrase: SecretString::new(TEST_SEED.to_owned()),
+                birthday: 419_200,
+                num_accounts: Some(2),
+                gap_limit: 5,
+                lightwalletd_url: "https://example.invalid:443".to_owned(),
+                data_dir,
+                network: ZeckNetwork::Mainnet,
+            }
+        }
+
+        fn test_birthday() -> AccountBirthday {
+            // Sapling activation is at 419200; the prior chain state is block 419199.
+            // ChainState::empty sets empty commitment trees — valid for a scan
+            // that doesn't need real note data (account-import idempotency tests).
+            AccountBirthday::from_parts(
+                ChainState::empty(BlockHeight::from_u32(419_199), BlockHash([0u8; 32])),
+                None,
+            )
+        }
+
+        #[tokio::test]
+        async fn wallet_db_persists_after_workspace_handle_is_dropped() {
+            let tempdir = tempfile::tempdir().expect("temp dir");
+            let config = test_config(tempdir.path().to_owned());
+            let workspace = RecoveryWorkspace::from_runtime(&config).expect("workspace");
+            let seed = mnemonic_seed(&config.seed_phrase).expect("seed");
+            workspace.initialize(config.network, &seed).expect("workspace.initialize");
+            let transparent_account =
+                legacy_transparent_account_key(&config.seed_phrase, config.network)
+                    .expect("transparent account key");
+            let accounts =
+                derive_accounts(&config.seed_phrase, config.network, 2).expect("accounts");
+            let state = Arc::new(Mutex::new(ScanTaskState::new(ScanHandle::new())));
+
+            import_accounts(
+                &workspace,
+                config.network,
+                &seed,
+                &test_birthday(),
+                &transparent_account,
+                &accounts,
+                &state,
+            )
+            .await
+            .expect("import_accounts should succeed");
+
+            let db_path = workspace.wallet_db_path().to_owned();
+            // Simulated abort: drop all in-memory state.
+            drop(workspace);
+            drop(state);
+
+            assert!(
+                db_path.exists(),
+                "wallet DB must persist on disk after the workspace handle is dropped (resume contract)"
+            );
+        }
+
+        #[tokio::test]
+        async fn resume_reuses_same_workspace_and_does_not_duplicate_accounts() {
+            let tempdir = tempfile::tempdir().expect("temp dir");
+            let config = test_config(tempdir.path().to_owned());
+            let seed = mnemonic_seed(&config.seed_phrase).expect("seed");
+            let transparent_account =
+                legacy_transparent_account_key(&config.seed_phrase, config.network)
+                    .expect("transparent account key");
+            let accounts =
+                derive_accounts(&config.seed_phrase, config.network, 2).expect("accounts");
+            let state = Arc::new(Mutex::new(ScanTaskState::new(ScanHandle::new())));
+
+            // ── First scan pass: import 2 accounts then simulate abort ──────────
+            let workspace1 = RecoveryWorkspace::from_runtime(&config).expect("workspace");
+            workspace1.initialize(config.network, &seed).expect("workspace.initialize");
+            import_accounts(
+                &workspace1,
+                config.network,
+                &seed,
+                &test_birthday(),
+                &transparent_account,
+                &accounts,
+                &state,
+            )
+            .await
+            .expect("first import_accounts should succeed");
+
+            let root1 = workspace1.root().to_owned();
+            let db_path = workspace1.wallet_db_path().to_owned();
+            drop(workspace1);
+
+            // ── Resume: same config must resolve to the same workspace ───────────
+            let workspace2 = RecoveryWorkspace::from_runtime(&config).expect("workspace (resume)");
+            assert_eq!(
+                workspace2.root(),
+                root1,
+                "resume must reuse the same workspace directory"
+            );
+            workspace2.initialize(config.network, &seed).expect("workspace2.initialize");
+
+            // Re-importing the same accounts must be idempotent.
+            import_accounts(
+                &workspace2,
+                config.network,
+                &seed,
+                &test_birthday(),
+                &transparent_account,
+                &accounts,
+                &state,
+            )
+            .await
+            .expect("resume import_accounts should succeed");
+
+            // Open the DB and verify account count is still 2, not 4.
+            let wallet_db = WalletDb::for_path(
+                db_path,
+                consensus_network(config.network),
+                SystemClock,
+                rand_core::OsRng,
+            )
+            .expect("WalletDb::for_path should succeed");
+
+            let account_ids = wallet_db
+                .get_account_ids()
+                .expect("get_account_ids should succeed");
+            assert_eq!(
+                account_ids.len(),
+                2,
+                "re-importing the same 2 accounts must yield exactly 2 in the DB (not 4)"
+            );
+        }
+    }
 }
