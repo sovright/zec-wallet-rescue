@@ -1,5 +1,5 @@
 use std::{fs, path::PathBuf};
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use std::process::Command;
 
 use secrecy::SecretString;
@@ -273,12 +273,40 @@ pub async fn notify_user(title: String, body: String) -> Result<(), String> {
         let _ = Command::new("notify-send").arg(&title).arg(&body).status();
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        let script = format!(
+            "Add-Type -AssemblyName System.Windows.Forms;\
+             $n=[System.Windows.Forms.NotifyIcon]::new();\
+             $n.Icon=[System.Drawing.SystemIcons]::Information;\
+             $n.Visible=$true;\
+             $n.ShowBalloonTip(5000,{title},{body},0);\
+             Start-Sleep 2;\
+             $n.Dispose()",
+            title = powershell_quote(&title),
+            body = powershell_quote(&body),
+        );
+        let _ = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .status();
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         let _ = (title, body);
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_quote(input: &str) -> String {
+    let escaped: String = input
+        .chars()
+        .filter(|c| !c.is_control())
+        .map(|c| if c == '\'' { "''".to_string() } else { c.to_string() })
+        .collect();
+    format!("'{escaped}'")
 }
 
 #[cfg(target_os = "macos")]

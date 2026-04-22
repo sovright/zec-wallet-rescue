@@ -1,5 +1,5 @@
 use std::{collections::VecDeque, fs, io::Write, path::PathBuf, time::{Duration, Instant}};
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
@@ -742,10 +742,25 @@ fn notify_scan_complete(progress: &zeck_core::ScanProgress) {
         let _ = Command::new("notify-send").arg(title).arg(&body).status();
     }
 
-    // Windows toast notifications would need a separate dependency
-    // (e.g. winrt-notification); intentionally deferred to keep this PR
-    // dependency-free. The terminal bell still fires.
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        let script = format!(
+            "Add-Type -AssemblyName System.Windows.Forms;\
+             $n=[System.Windows.Forms.NotifyIcon]::new();\
+             $n.Icon=[System.Drawing.SystemIcons]::Information;\
+             $n.Visible=$true;\
+             $n.ShowBalloonTip(5000,{title},{body},0);\
+             Start-Sleep 2;\
+             $n.Dispose()",
+            title = powershell_quote(title),
+            body = powershell_quote(&body),
+        );
+        let _ = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .status();
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         let _ = (title, body);
     }
@@ -792,6 +807,18 @@ fn applescript_quote(input: &str) -> String {
         })
         .collect();
     format!("\"{escaped}\"")
+}
+
+#[cfg(target_os = "windows")]
+fn powershell_quote(input: &str) -> String {
+    // PowerShell single-quoted string: only single-quotes need escaping (doubled).
+    // Strip control chars to avoid shell injection.
+    let escaped: String = input
+        .chars()
+        .filter(|c| !c.is_control())
+        .map(|c| if c == '\'' { "''".to_string() } else { c.to_string() })
+        .collect();
+    format!("'{escaped}'")
 }
 
 #[cfg(test)]
