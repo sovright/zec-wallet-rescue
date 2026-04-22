@@ -568,6 +568,8 @@ function updateScanUI(progress) {
 
   renderAccountRows(progress.accounts);
 
+  const terminal = ["complete", "cancelled", "error"].includes(progress.phase);
+  $("cancel-scan").style.display = terminal ? "none" : "";
   if (progress.phase === "complete") {
     $("review-sweep").disabled = false;
   }
