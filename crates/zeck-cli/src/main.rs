@@ -10,9 +10,9 @@ use secrecy::SecretString;
 use tracing_subscriber::EnvFilter;
 use zeck_core::{
     detect_birthday, derive_accounts, estimate_birthday_from_date, validate_destination_address,
-    RecoveryService, ScanConfig, ScanHandle, ScanPhase, SweepProposal, SweepRequest, ZeckNetwork,
+    RecoveryService, ScanConfig, ScanDiscovery, ScanHandle, ScanPhase, SweepProposal, SweepRequest,
+    ZeckNetwork,
 };
-use zeck_core::ScanDiscovery;
 
 #[derive(Debug, Parser)]
 #[command(
