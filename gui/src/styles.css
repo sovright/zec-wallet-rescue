@@ -326,6 +326,11 @@ button:disabled {
   background: rgba(255, 245, 228, 0.96);
 }
 
+.banner.info {
+  color: #1d3a4f;
+  background: rgba(225, 240, 250, 0.96);
+}
+
 .progress-shell {
   width: 100%;
   height: 12px;

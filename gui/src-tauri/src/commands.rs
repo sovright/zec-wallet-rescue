@@ -1,4 +1,6 @@
 use std::{collections::HashMap, fs, path::PathBuf};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::process::Command;
 
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -213,6 +215,53 @@ pub async fn save_recovery_report(path: String, report: String) -> Result<String
     }
     fs::write(&path, report).map_err(|err| format!("writing {}: {err}", path.display()))?;
     Ok(path.display().to_string())
+}
+
+/// Best-effort OS-level notification used when a long scan finishes. Mirrors
+/// the CLI implementation: shells out to platform tools so we don't pull in a
+/// new Tauri plugin or Rust dependency. Errors are swallowed because the
+/// notification is convenience, not a guarantee.
+#[tauri::command]
+pub async fn notify_user(title: String, body: String) -> Result<(), String> {
+    if title.trim().is_empty() {
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display notification {body} with title {title}",
+            title = applescript_quote(&title),
+            body = applescript_quote(&body),
+        );
+        let _ = Command::new("osascript").arg("-e").arg(script).status();
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = Command::new("notify-send").arg(&title).arg(&body).status();
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (title, body);
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn applescript_quote(input: &str) -> String {
+    let escaped: String = input
+        .chars()
+        .filter(|c| !c.is_control())
+        .map(|c| match c {
+            '\\' => "\\\\".to_string(),
+            '"' => "\\\"".to_string(),
+            other => other.to_string(),
+        })
+        .collect();
+    format!("\"{escaped}\"")
 }
 
 fn parse_zec_to_zatoshis(input: &str) -> Result<u64, String> {

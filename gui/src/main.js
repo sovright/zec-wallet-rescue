@@ -56,6 +56,78 @@ function fmtSeconds(s) {
   return r > 0 ? `${m}m ${r}s` : `${m}m`;
 }
 
+// Friendly, deliberately imprecise ETA banding. Mirrors `format_eta_range` in
+// zeck-cli; if you change one, change both.
+function formatEtaRange(secs) {
+  if (secs == null || !Number.isFinite(secs) || secs < 0) return null;
+  if (secs < 60) return "less than a minute remaining";
+  if (secs < 5 * 60) return "less than 5 minutes remaining";
+  if (secs < 30 * 60) {
+    const mins = Math.round(secs / 60 / 5) * 5;
+    return `about ${mins} minutes remaining`;
+  }
+  if (secs < 60 * 60) return "less than an hour remaining";
+  const hours = secs / 3600;
+  if (hours < 2) return "about 1-2 hours remaining";
+  const lo = Math.floor(hours);
+  return `about ${lo}-${lo + 1} hours remaining`;
+}
+
+// Map a block height to its approximate calendar year on mainnet so users can
+// feel the scan moving through time. Mirrors `era_hint` in zeck-cli.
+function eraHint(height) {
+  if (!height) return null;
+  const SAPLING_HEIGHT = 419_200;
+  const SAPLING_YEAR = 2018;
+  const SECONDS_PER_BLOCK = 82;
+  if (height < SAPLING_HEIGHT) return "pre-Sapling era";
+  const elapsedSecs = (height - SAPLING_HEIGHT) * SECONDS_PER_BLOCK;
+  const elapsedYears = elapsedSecs / (365.25 * 86400);
+  return String(SAPLING_YEAR + Math.floor(elapsedYears + 0.18));
+}
+
+// Sliding-window ETA tracker — see `EtaTracker` in zeck-cli.
+const eta = (() => {
+  const WINDOW_MS = 45_000;
+  const WARMUP_MS = 15_000;
+  let samples = [];
+  let lastTotal = 0;
+  let startedAt = null;
+
+  return {
+    reset() {
+      samples = [];
+      lastTotal = 0;
+      startedAt = performance.now();
+    },
+    observe(scanned, total) {
+      if (!total) return;
+      lastTotal = total;
+      const now = performance.now();
+      samples.push([now, scanned]);
+      const cutoff = now - WINDOW_MS;
+      while (samples.length > 2 && samples[0][0] < cutoff) samples.shift();
+    },
+    estimate() {
+      if (startedAt == null || samples.length < 2 || !lastTotal) return { kind: "warmup" };
+      const elapsed = performance.now() - startedAt;
+      const [tFirst, blocksFirst] = samples[0];
+      const [tLast, blocksLast] = samples[samples.length - 1];
+      const remaining = lastTotal - blocksLast;
+      if (remaining <= 0) return { kind: "done" };
+      const windowMs = tLast - tFirst;
+      const scannedInWindow = blocksLast - blocksFirst;
+      if (elapsed < WARMUP_MS || windowMs < 5_000 || scannedInWindow < 50) {
+        return { kind: "warmup" };
+      }
+      const rate = scannedInWindow / (windowMs / 1000);
+      if (rate <= 0) return { kind: "warmup" };
+      const secs = Math.round(remaining / rate);
+      return { kind: "range", text: formatEtaRange(secs) };
+    },
+  };
+})();
+
 function escapeHtml(text) {
   return String(text)
     .replace(/&/g, "&amp;")
@@ -317,12 +389,13 @@ async function startProgressListeners() {
   $("scan-phase").textContent = "Starting…";
   $("scan-server").textContent = "Connecting…";
   $("scan-progress-text").textContent = "0 / 0";
-  $("scan-eta").textContent = "0s / —";
+  $("scan-eta").textContent = "Estimating remaining time…";
   $("scan-progress-bar").style.width = "0%";
   $("scan-rows").innerHTML = "";
   setStatus("scan-message", "", "");
   $("review-sweep").disabled = true;
   $("back-to-config").style.display = "none";
+  eta.reset();
 
   // Await all three subscriptions before returning. If we stored the unlisten
   // handles via .then() callbacks, a fast scan-complete event could fire and
@@ -334,6 +407,7 @@ async function startProgressListeners() {
     listen("scan-progress", (event) => updateScanUI(event.payload)),
     listen("scan-complete", (event) => {
       updateScanUI(event.payload);
+      notifyScanComplete(event.payload);
       cleanupListeners();
     }),
     listen("account-discovered", (event) => {
@@ -347,6 +421,26 @@ async function startProgressListeners() {
   state.unlistenProgress = unlistenProgress;
   state.unlistenComplete = unlistenComplete;
   state.unlistenDiscovered = unlistenDiscovered;
+}
+
+function scanCompletionSummary(progress) {
+  if (progress.error) return progress.error;
+  const funded = (progress.accounts || []).filter((a) => Number(a.total_zatoshis) > 0);
+  if (funded.length === 0) return "No funds were found across all scanned accounts.";
+  const total = funded.reduce((sum, a) => sum + Number(a.total_zatoshis), 0);
+  const noun = funded.length === 1 ? "account" : "accounts";
+  return `Found ${fmt(total)} ${funded.length === 1 ? "on 1" : `across ${funded.length}`} ${noun}.`;
+}
+
+function notifyScanComplete(progress) {
+  let title;
+  switch (progress.phase) {
+    case "complete":  title = "ZECK scan complete"; break;
+    case "cancelled": title = "ZECK scan cancelled"; break;
+    case "error":     title = "ZECK scan failed"; break;
+    default: return;
+  }
+  invoke("notify_user", { title, body: scanCompletionSummary(progress) }).catch(() => {});
 }
 
 function cleanupListeners() {
@@ -382,8 +476,19 @@ function updateScanUI(progress) {
       `${Math.min(100, (scanned / total) * 100).toFixed(1)}%`;
   }
 
-  $("scan-eta").textContent =
-    `${fmtSeconds(progress.elapsed_seconds)} / ${fmtSeconds(progress.estimated_remaining_seconds)}`;
+  eta.observe(scanned, total);
+  const era = eraHint(scanned);
+  const etaState = eta.estimate();
+  let etaText;
+  if (etaState.kind === "warmup") {
+    etaText = "Estimating remaining time…";
+  } else if (etaState.kind === "done") {
+    etaText = "";
+  } else {
+    etaText = etaState.text;
+  }
+  if (era) etaText = etaText ? `${etaText} · scanning ~${era}` : `scanning ~${era}`;
+  $("scan-eta").textContent = etaText;
 
   if (progress.error) {
     setStatus("scan-message", progress.error, "error");
