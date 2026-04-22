@@ -12,6 +12,7 @@ use zeck_core::{
     derive_accounts, estimate_birthday_from_date, validate_destination_address, RecoveryService,
     ScanConfig, ScanHandle, ScanPhase, SweepProposal, SweepRequest, ZeckNetwork,
 };
+use zeck_core::ScanDiscovery;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -383,9 +384,22 @@ async fn wait_for_scan(
     let mut bar_has_total = false;
     let mut eta = EtaTracker::new();
     let started_at = Instant::now();
+    let mut discoveries_seen = 0usize;
 
     loop {
         let progress = service.get_scan_progress(handle).await?;
+
+        // Surface any new discoveries above the progress bar so users see
+        // "Found X ZEC on account N" the moment a refresh tick observes it,
+        // instead of waiting for the scan to finish. The bar.println call
+        // routes through indicatif so the progress bar is preserved on the
+        // line below.
+        if progress.discoveries.len() > discoveries_seen {
+            for d in &progress.discoveries[discoveries_seen..] {
+                bar.println(format_discovery(d));
+            }
+            discoveries_seen = progress.discoveries.len();
+        }
 
         // Upgrade spinner → progress bar the first time we have block counts.
         if !bar_has_total && progress.blocks_total > 0 {
@@ -565,6 +579,16 @@ fn era_hint(height: u64) -> Option<String> {
     // activation read as 2019, not 2018.
     let year = SAPLING_YEAR + (elapsed_years + 0.18) as i32;
     Some(year.to_string())
+}
+
+fn format_discovery(discovery: &ScanDiscovery) -> String {
+    format!(
+        "[block {}] account {}  +{} {}",
+        discovery.at_block_height,
+        discovery.account_index,
+        format_zec(discovery.zatoshis),
+        discovery.pool.label(),
+    )
 }
 
 fn print_scan_result(progress: &zeck_core::ScanProgress) {
