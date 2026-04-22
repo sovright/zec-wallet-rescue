@@ -785,6 +785,7 @@ $("save-report").addEventListener("click", async () => {
 
 $("restart-flow").addEventListener("click", () => {
   cleanupListeners();
+  furthestStep = 0;
   Object.assign(state, {
     scanHandle: null,
     lastProgress: null,
@@ -804,6 +805,23 @@ $("restart-flow").addEventListener("click", () => {
   $("max-fee-zec").value = "";
   $("sweep-memo").value = "";
   $("start-scan").disabled = false;
+
+  // Reset scan screen to blank state so stale results aren't visible if the
+  // user navigates forward via the sidebar before starting a new scan.
+  $("scan-phase").textContent = "Idle";
+  $("scan-server").textContent = "Not connected";
+  $("scan-progress-text").textContent = "0 / 0";
+  $("scan-eta").textContent = "Estimating remaining time…";
+  $("scan-progress-bar").style.width = "0%";
+  $("scan-rows").innerHTML = "";
+  $("scan-discoveries").innerHTML = "";
+  $("scan-discoveries").style.display = "none";
+  $("scan-totals").textContent = "Grand total: 0.00000000 ZEC across 0 accounts.";
+  $("scan-workspace").textContent = "Workspace: not initialized";
+  setStatus("scan-message", "", "");
+  $("review-sweep").disabled = true;
+  $("back-to-config").style.display = "none";
+  $("cancel-scan").style.display = "";
 
   goTo("welcome");
 });
