@@ -57,12 +57,12 @@ struct Cli {
     birthday: u32,
 
     /// Wallet creation date (YYYY-MM-DD). Estimates birthday height automatically.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "birthday_auto_detect")]
     birthday_date: Option<String>,
 
     /// Probe lightwalletd to auto-detect the wallet birthday from on-chain history.
-    /// Overrides --birthday and --birthday-date. Requires --lightwalletd-url.
-    #[arg(long)]
+    /// Supersedes --birthday and --birthday-date. Requires --lightwalletd-url.
+    #[arg(long, conflicts_with = "birthday_date")]
     birthday_auto_detect: bool,
 
     /// Zcash network to use.
