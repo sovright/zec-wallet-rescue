@@ -434,7 +434,14 @@ async fn wait_for_scan(
             EtaEstimate::Range(text) => format!(" · {text}"),
             EtaEstimate::Done => String::new(),
         };
-        let era_label = era_hint(progress.blocks_scanned)
+        // era_hint expects an absolute Zcash chain height. blocks_scanned is
+        // a delta from the effective birthday, so feeding it directly would
+        // misreport the era for any wallet whose birthday is past Sapling
+        // activation. Use synced_to_height (set by refresh_scan_progress and
+        // the background incremental tick) when available.
+        let era_label = progress
+            .synced_to_height
+            .and_then(era_hint)
             .map(|era| format!(" · scanning ~{era}"))
             .unwrap_or_default();
 
@@ -747,6 +754,13 @@ fn scan_completion_summary(progress: &zeck_core::ScanProgress) -> String {
     if let Some(error) = &progress.error {
         return error.clone();
     }
+    // Reserve "no funds were found" for actually-completed scans. A
+    // cancelled scan that hadn't yet observed any funds shouldn't claim
+    // the seed is empty — it just stopped early.
+    if progress.phase == ScanPhase::Cancelled {
+        return "Scan stopped before completion. Re-run with the same flags to resume."
+            .to_string();
+    }
     let funded: Vec<_> = progress
         .accounts
         .iter()
@@ -897,6 +911,28 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_scan_does_not_claim_no_funds() {
+        // Regression: an early Ctrl-C used to send a notification body of
+        // "No funds were found..." even though the scan never finished.
+        let progress = make_progress(ScanPhase::Cancelled, &[]);
+        assert_eq!(
+            scan_completion_summary(&progress),
+            "Scan stopped before completion. Re-run with the same flags to resume."
+        );
+    }
+
+    #[test]
+    fn cancelled_scan_with_partial_funds_still_signals_incomplete() {
+        // Even if some funds were observed before cancellation, the body
+        // should make clear the scan didn't finish.
+        let progress = make_progress(ScanPhase::Cancelled, &[(0, 50_000_000)]);
+        assert_eq!(
+            scan_completion_summary(&progress),
+            "Scan stopped before completion. Re-run with the same flags to resume."
+        );
+    }
+
+    #[test]
     fn completion_summary_one_account() {
         let progress = make_progress(ScanPhase::Complete, &[(0, 50_000_000)]);
         assert_eq!(
@@ -953,6 +989,7 @@ mod tests {
             phase,
             blocks_scanned: 0,
             blocks_total: 0,
+            synced_to_height: None,
             elapsed_seconds: None,
             estimated_remaining_seconds: None,
             accounts,

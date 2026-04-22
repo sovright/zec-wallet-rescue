@@ -207,6 +207,12 @@ pub struct ScanProgress {
     pub phase: ScanPhase,
     pub blocks_scanned: u64,
     pub blocks_total: u64,
+    /// Absolute Zcash chain height the wallet workspace has scanned up to,
+    /// or `None` before the first authoritative refresh. Use this (not
+    /// `blocks_scanned`, which is a delta from `effective_birthday`) when
+    /// mapping scan progress to calendar era or mined-block context.
+    #[serde(default)]
+    pub synced_to_height: Option<u64>,
     pub elapsed_seconds: Option<u64>,
     pub estimated_remaining_seconds: Option<u64>,
     pub accounts: Vec<AccountBalancePreview>,

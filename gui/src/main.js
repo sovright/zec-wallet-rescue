@@ -464,6 +464,12 @@ async function startProgressListeners() {
 
 function scanCompletionSummary(progress) {
   if (progress.error) return progress.error;
+  // Reserve "no funds were found" for actually-completed scans. A
+  // cancelled scan that hadn't yet observed any funds shouldn't claim
+  // the seed is empty — it just stopped early.
+  if (progress.phase === "cancelled") {
+    return "Scan stopped before completion. Re-run with the same flags to resume.";
+  }
   const funded = (progress.accounts || []).filter((a) => Number(a.total_zatoshis) > 0);
   if (funded.length === 0) return "No funds were found across all scanned accounts.";
   const total = funded.reduce((sum, a) => sum + Number(a.total_zatoshis), 0);
@@ -516,7 +522,11 @@ function updateScanUI(progress) {
   }
 
   eta.observe(scanned, total);
-  const era = eraHint(scanned);
+  // eraHint expects an absolute Zcash chain height. blocks_scanned is a
+  // delta from effective_birthday — passing it directly mislabels the era
+  // for any wallet whose birthday is past Sapling activation. Use
+  // synced_to_height (set by the backend) when available.
+  const era = progress.synced_to_height ? eraHint(Number(progress.synced_to_height)) : null;
   const etaState = eta.estimate();
   let etaText;
   if (etaState.kind === "warmup") {

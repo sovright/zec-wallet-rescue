@@ -1006,6 +1006,7 @@ mod tests {
             phase: ScanPhase::Complete,
             blocks_scanned: 1,
             blocks_total: 1,
+            synced_to_height: None,
             elapsed_seconds: None,
             estimated_remaining_seconds: None,
             accounts: vec![account],

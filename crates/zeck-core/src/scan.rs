@@ -301,6 +301,7 @@ impl ScanTaskState {
                 phase: ScanPhase::Idle,
                 blocks_scanned: 0,
                 blocks_total: 0,
+                synced_to_height: None,
                 elapsed_seconds: None,
                 estimated_remaining_seconds: None,
                 accounts: vec![],
@@ -347,9 +348,11 @@ impl ProgressPoller {
                     OsRng,
                 ) {
                     if let Ok(Some(summary)) = db.get_wallet_summary(ConfirmationsPolicy::MIN) {
+                        let scanned_height = u32::from(summary.fully_scanned_height());
                         let mut guard = state.lock().await;
                         guard.progress.blocks_scanned =
-                            block_delta(summary.fully_scanned_height().into(), effective_birthday);
+                            block_delta(scanned_height, effective_birthday);
+                        guard.progress.synced_to_height = Some(u64::from(scanned_height));
                         // Store scan-phase elapsed so get_scan_progress can compute an
                         // accurate rate that excludes pre-scan phases (seed validation,
                         // key derivation, lightwalletd probing).
@@ -978,6 +981,8 @@ pub(crate) async fn refresh_scan_progress(
         block_delta(summary.chain_tip_height().into(), effective_birthday);
     guard.progress.blocks_scanned =
         block_delta(summary.fully_scanned_height().into(), effective_birthday);
+    guard.progress.synced_to_height =
+        Some(u64::from(u32::from(summary.fully_scanned_height())));
     guard.progress.summary = Some(ScanSummary {
         total_zatoshis,
         authoritative_balances: true,
