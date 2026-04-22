@@ -179,10 +179,11 @@
             ZECK persists a local wallet workspace while it syncs compact blocks and transparent
             UTXOs. Cancelling a session keeps that on-disk state for later reuse.
           </div>
-          <div class="banner info" id="scan-safe-to-close">
-            <strong>Safe to close.</strong> Long scans can take several hours for old wallets.
-            Progress is saved automatically — you can quit and re-run with the same settings to
-            resume. ZECK will notify you when the scan completes.
+          <div class="banner info" id="scan-resume-info">
+            <strong>Safe to interrupt.</strong> Progress is saved automatically — quit ZECK or
+            cancel the scan at any time, then re-run with the same data directory, network,
+            birthday, and gap limit to resume from the last persisted block. Changing any of
+            those settings intentionally starts a fresh scan from the new birthday.
           </div>
           <div class="metric-panel">
             <div>
