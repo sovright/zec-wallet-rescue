@@ -661,16 +661,6 @@ function renderSweepProposal(proposal) {
     tbody.appendChild(tr);
   });
 
-  $("sweep-rows").addEventListener("click", (e) => {
-    const cell = e.target.closest("[data-copy]");
-    if (!cell) return;
-    navigator.clipboard.writeText(cell.dataset.copy).then(() => {
-      const orig = cell.innerHTML;
-      cell.innerHTML = "Copied!";
-      setTimeout(() => { cell.innerHTML = orig; }, 1200);
-    });
-  });
-
   $("sweep-summary").textContent =
     `Net received: ${fmt(proposal.net_received_zatoshis)} after ${fmt(proposal.total_fee_zatoshis)} in fees.` +
     (proposal.warning ? `  ⚠ ${proposal.warning}` : "");
@@ -691,6 +681,18 @@ function renderSweepProposal(proposal) {
   $("irreversible-check").checked = false;
   $("execute-sweep").disabled = true;
 }
+
+// Copy-address click handler for sweep table — wired once here so it doesn't
+// accumulate duplicates if renderSweepProposal is called more than once.
+$("sweep-rows").addEventListener("click", (e) => {
+  const cell = e.target.closest("[data-copy]");
+  if (!cell) return;
+  navigator.clipboard.writeText(cell.dataset.copy).then(() => {
+    const orig = cell.innerHTML;
+    cell.innerHTML = "Copied!";
+    setTimeout(() => { cell.innerHTML = orig; }, 1200);
+  });
+});
 
 $("irreversible-check").addEventListener("change", () => {
   $("execute-sweep").disabled = !$("irreversible-check").checked;
