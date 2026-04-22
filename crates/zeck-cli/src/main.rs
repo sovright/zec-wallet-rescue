@@ -171,6 +171,7 @@ async fn main() -> Result<()> {
             for account in accounts {
                 println!("━━━ Account {} ━━━", account.index);
                 println!("  Unified address     {}", account.unified_address);
+                println!("  Orchard path        {}", account.orchard_path);
                 println!("  Sapling address     {}", account.sapling_address);
                 println!("  Sapling path        {}", account.sapling_path);
                 println!(
