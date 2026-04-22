@@ -410,11 +410,15 @@ async function startProgressListeners() {
       notifyScanComplete(event.payload);
       cleanupListeners();
     }),
-    listen("account-discovered", (event) => {
-      const acc = event.payload;
+    listen("scan-discovery", (event) => {
+      const d = event.payload;
       const div = document.createElement("div");
       div.className = "discovery-toast";
-      div.textContent = `Account ${acc.account_index} — ${fmt(acc.total_zatoshis)} found`;
+      const heightHint = d.at_block_height
+        ? ` (block ${d.at_block_height.toLocaleString()})`
+        : "";
+      div.textContent =
+        `Found ${fmt(d.zatoshis)} on account ${d.account_index} — ${d.pool}${heightHint}`;
       $("scan-discoveries").appendChild(div);
     }),
   ]);

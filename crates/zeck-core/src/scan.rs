@@ -302,6 +302,7 @@ impl ScanTaskState {
                 elapsed_seconds: None,
                 estimated_remaining_seconds: None,
                 accounts: vec![],
+                discoveries: vec![],
                 summary: None,
                 server: None,
                 message: None,
@@ -893,6 +894,19 @@ pub(crate) async fn refresh_scan_progress(
     }
 
     let mut guard = state.lock().await;
+    let scanned_height = u64::from(u32::from(summary.fully_scanned_height()));
+    {
+        // Split disjoint borrows on the progress struct so we can compare
+        // the prior account snapshot against the new one while extending
+        // the discovery log in place.
+        let progress = &mut guard.progress;
+        append_new_discoveries(
+            &mut progress.discoveries,
+            &progress.accounts,
+            &account_rows,
+            scanned_height,
+        );
+    }
     guard.progress.accounts = account_rows;
     guard.progress.blocks_total =
         block_delta(summary.chain_tip_height().into(), effective_birthday);
@@ -914,6 +928,64 @@ pub(crate) async fn refresh_scan_progress(
     ));
 
     Ok(())
+}
+
+/// Walk the new account snapshot, append a `ScanDiscovery` to `discoveries`
+/// for every (account, pool) pair that newly has a non-zero balance compared
+/// to the previous snapshot. Append-only: discoveries already in the log are
+/// never modified or removed, even if the corresponding balance later falls
+/// to zero (so users can see "yes, this seed had funds" even if the wallet
+/// was already swept).
+fn append_new_discoveries(
+    discoveries: &mut Vec<crate::models::ScanDiscovery>,
+    previous: &[AccountBalancePreview],
+    current: &[AccountBalancePreview],
+    at_block_height: u64,
+) {
+    use crate::models::{DiscoveryPool, ScanDiscovery};
+
+    let prev_by_index: std::collections::HashMap<u32, &AccountBalancePreview> =
+        previous.iter().map(|a| (a.account_index, a)).collect();
+
+    for account in current {
+        let was_zero = |amount: u64, accessor: fn(&AccountBalancePreview) -> u64| {
+            if amount == 0 {
+                return false;
+            }
+            match prev_by_index.get(&account.account_index) {
+                Some(prev) => accessor(prev) == 0,
+                None => true,
+            }
+        };
+
+        if was_zero(account.transparent_zatoshis, |a| a.transparent_zatoshis) {
+            discoveries.push(ScanDiscovery {
+                account_index: account.account_index,
+                pool: DiscoveryPool::Transparent,
+                zatoshis: account.transparent_zatoshis,
+                at_block_height,
+                address: account.transparent_receive_address.clone(),
+            });
+        }
+        if was_zero(account.sapling_zatoshis, |a| a.sapling_zatoshis) {
+            discoveries.push(ScanDiscovery {
+                account_index: account.account_index,
+                pool: DiscoveryPool::Sapling,
+                zatoshis: account.sapling_zatoshis,
+                at_block_height,
+                address: account.sapling_address.clone(),
+            });
+        }
+        if was_zero(account.orchard_zatoshis, |a| a.orchard_zatoshis) {
+            discoveries.push(ScanDiscovery {
+                account_index: account.account_index,
+                pool: DiscoveryPool::Orchard,
+                zatoshis: account.orchard_zatoshis,
+                at_block_height,
+                address: account.unified_address.clone(),
+            });
+        }
+    }
 }
 
 fn build_account_status(
@@ -1018,8 +1090,13 @@ async fn check_cancelled(state: &SharedScanTaskState) -> ZeckResult<()> {
 mod tests {
     use secrecy::SecretString;
 
-    use super::{build_account_status, resolve_max_account_count, trailing_gap_limit_reached};
-    use crate::models::{AccountBalancePreview, RuntimeScanConfig, ZeckNetwork};
+    use super::{
+        append_new_discoveries, build_account_status, resolve_max_account_count,
+        trailing_gap_limit_reached,
+    };
+    use crate::models::{
+        AccountBalancePreview, DiscoveryPool, RuntimeScanConfig, ScanDiscovery, ZeckNetwork,
+    };
 
     fn config(num_accounts: Option<u32>) -> RuntimeScanConfig {
         RuntimeScanConfig {
@@ -1289,5 +1366,101 @@ mod tests {
         // fewer accounts than the gap_limit, scanning has not yet had enough room
         // to confirm absence — should not fire.
         assert!(!trailing_gap_limit_reached(&accounts, 5));
+    }
+
+    fn account_with(
+        index: u32,
+        sapling: u64,
+        orchard: u64,
+        transparent: u64,
+    ) -> AccountBalancePreview {
+        AccountBalancePreview {
+            account_index: index,
+            sapling_zatoshis: sapling,
+            orchard_zatoshis: orchard,
+            transparent_zatoshis: transparent,
+            total_zatoshis: sapling + orchard + transparent,
+            has_activity: sapling + orchard + transparent > 0,
+            ..empty_account(index)
+        }
+    }
+
+    #[test]
+    fn first_observation_emits_one_discovery_per_funded_pool() {
+        let mut log = Vec::new();
+        let new_snapshot = vec![account_with(0, 100, 200, 300)];
+        append_new_discoveries(&mut log, &[], &new_snapshot, 3_280_500);
+        assert_eq!(log.len(), 3);
+        let pools: Vec<DiscoveryPool> = log.iter().map(|d| d.pool).collect();
+        assert!(pools.contains(&DiscoveryPool::Transparent));
+        assert!(pools.contains(&DiscoveryPool::Sapling));
+        assert!(pools.contains(&DiscoveryPool::Orchard));
+        for d in &log {
+            assert_eq!(d.account_index, 0);
+            assert_eq!(d.at_block_height, 3_280_500);
+            assert!(d.zatoshis > 0);
+        }
+    }
+
+    #[test]
+    fn empty_accounts_emit_no_discoveries() {
+        let mut log = Vec::new();
+        let snapshot = vec![empty_account(0), empty_account(1)];
+        append_new_discoveries(&mut log, &[], &snapshot, 100);
+        assert!(log.is_empty());
+    }
+
+    #[test]
+    fn unchanged_balance_does_not_re_emit() {
+        let mut log = Vec::new();
+        let prev = vec![account_with(0, 100, 0, 0)];
+        let next = vec![account_with(0, 100, 0, 0)];
+        append_new_discoveries(&mut log, &prev, &next, 100);
+        assert!(
+            log.is_empty(),
+            "discovery already in prior snapshot must not be re-emitted"
+        );
+    }
+
+    #[test]
+    fn newly_funded_pool_on_existing_account_emits_one_discovery() {
+        // Account 0 gained orchard funds; sapling was already known.
+        let mut log = Vec::new();
+        let prev = vec![account_with(0, 100, 0, 0)];
+        let next = vec![account_with(0, 100, 50, 0)];
+        append_new_discoveries(&mut log, &prev, &next, 200);
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].pool, DiscoveryPool::Orchard);
+        assert_eq!(log[0].zatoshis, 50);
+    }
+
+    #[test]
+    fn balance_dropping_to_zero_does_not_remove_existing_discovery() {
+        // First tick discovers Sapling 100; second tick shows it spent.
+        // The existing discovery must remain (append-only).
+        let mut log = vec![ScanDiscovery {
+            account_index: 0,
+            pool: DiscoveryPool::Sapling,
+            zatoshis: 100,
+            at_block_height: 50,
+            address: "zs".to_owned(),
+        }];
+        let prev = vec![account_with(0, 100, 0, 0)];
+        let next = vec![account_with(0, 0, 0, 0)];
+        append_new_discoveries(&mut log, &prev, &next, 75);
+        assert_eq!(log.len(), 1, "previous discovery must be preserved");
+        assert_eq!(log[0].zatoshis, 100, "stored zatoshis must not be mutated");
+    }
+
+    #[test]
+    fn newly_appearing_account_emits_for_each_funded_pool() {
+        // Gap-limit extension can introduce new accounts mid-scan.
+        let mut log = Vec::new();
+        let prev = vec![account_with(0, 100, 0, 0)];
+        let next = vec![account_with(0, 100, 0, 0), account_with(7, 0, 50, 0)];
+        append_new_discoveries(&mut log, &prev, &next, 300);
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].account_index, 7);
+        assert_eq!(log[0].pool, DiscoveryPool::Orchard);
     }
 }

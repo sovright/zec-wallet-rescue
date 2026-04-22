@@ -64,18 +64,21 @@ pub async fn start_scan(
     let pump_service = state.service.clone();
     let pump_handle = handle.clone();
     tokio::spawn(async move {
-        let mut seen_totals = HashMap::<u32, u64>::new();
+        // Track how many entries of the append-only discovery log we've
+        // already forwarded — emit only the new tail each tick so the
+        // frontend gets one event per discovery, never duplicates.
+        let mut emitted_discoveries = 0usize;
         loop {
             let progress = match pump_service.get_scan_progress(&pump_handle).await {
                 Ok(progress) => progress,
                 Err(_) => break,
             };
 
-            for account in &progress.accounts {
-                let previous = seen_totals.insert(account.account_index, account.total_zatoshis);
-                if account.total_zatoshis > 0 && previous != Some(account.total_zatoshis) {
-                    let _ = app.emit("account-discovered", account);
+            if progress.discoveries.len() > emitted_discoveries {
+                for discovery in &progress.discoveries[emitted_discoveries..] {
+                    let _ = app.emit("scan-discovery", discovery);
                 }
+                emitted_discoveries = progress.discoveries.len();
             }
             let _ = app.emit("scan-progress", &progress);
 

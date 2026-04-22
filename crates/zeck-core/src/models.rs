@@ -163,6 +163,44 @@ pub struct ScanSummary {
     pub workspace_dir: String,
 }
 
+/// A funded position discovered on a derived account during scanning.
+/// Emitted as soon as a refresh tick observes a new non-zero balance for an
+/// (account, pool) pair, so users see "Found X ZEC on account N" without
+/// waiting for the scan to complete. The list is append-only across the
+/// scan; once a discovery is appended it stays put even if the balance
+/// later drops.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanDiscovery {
+    pub account_index: u32,
+    pub pool: DiscoveryPool,
+    pub zatoshis: u64,
+    /// Block height of the most recent refresh tick that produced this
+    /// discovery — useful for "found at block 3,289,541" UX.
+    pub at_block_height: u64,
+    /// User-facing address for the pool: the unified address for orchard,
+    /// the sapling z-addr for sapling, the transparent receive t-addr for
+    /// transparent.
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryPool {
+    Transparent,
+    Sapling,
+    Orchard,
+}
+
+impl DiscoveryPool {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Transparent => "transparent",
+            Self::Sapling => "sapling",
+            Self::Orchard => "orchard",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanProgress {
     pub handle: ScanHandle,
@@ -172,6 +210,11 @@ pub struct ScanProgress {
     pub elapsed_seconds: Option<u64>,
     pub estimated_remaining_seconds: Option<u64>,
     pub accounts: Vec<AccountBalancePreview>,
+    /// Append-only log of (account, pool) discoveries observed during the
+    /// scan. Consumers render new entries as incremental "found X" toasts
+    /// without waiting for the scan to finish.
+    #[serde(default)]
+    pub discoveries: Vec<ScanDiscovery>,
     pub summary: Option<ScanSummary>,
     pub server: Option<LightwalletdProbe>,
     pub message: Option<String>,
