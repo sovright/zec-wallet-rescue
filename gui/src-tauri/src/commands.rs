@@ -409,4 +409,28 @@ mod tests {
     fn overflow_rejected() {
         assert!(parse_zec_to_zatoshis("99999999999999999999").is_err());
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn applescript_quote_simple() {
+        assert_eq!(applescript_quote("hello"), "\"hello\"");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn applescript_quote_escapes_double_quote() {
+        assert_eq!(applescript_quote("say \"hi\""), "\"say \\\"hi\\\"\"");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn applescript_quote_escapes_backslash() {
+        assert_eq!(applescript_quote("C:\\path"), "\"C:\\\\path\"");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn applescript_quote_strips_control_chars() {
+        assert_eq!(applescript_quote("abc\x00def"), "\"abcdef\"");
+    }
 }

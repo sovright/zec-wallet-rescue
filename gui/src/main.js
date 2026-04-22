@@ -391,6 +391,18 @@ $("start-scan").addEventListener("click", async () => {
   }
   state.maxFeeZec = maxFeeRaw || null;
 
+  let dataDirVal = $("data-dir").value.trim();
+  if (!dataDirVal) {
+    try {
+      dataDirVal = await invoke("default_data_dir");
+      $("data-dir").value = dataDirVal;
+    } catch (_) {
+      setStatus("config-status", "✗ Could not determine a data directory. Please enter one manually.", "error");
+      $("start-scan").disabled = false;
+      return;
+    }
+  }
+
   const autoGap = $("auto-gap-limit").checked;
   const config = {
     seed: seedInput.value.trim().toLowerCase(),
@@ -398,7 +410,7 @@ $("start-scan").addEventListener("click", async () => {
     num_accounts: autoGap ? null : parseInt($("accounts-range").value, 10),
     gap_limit: autoGap ? parseInt($("gap-limit").value, 10) : 20,
     lightwalletd_url: $("lightwalletd-url").value.trim(),
-    data_dir: $("data-dir").value.trim() || "/tmp/zeck_data",
+    data_dir: dataDirVal,
     network: $("network-select").value,
   };
 

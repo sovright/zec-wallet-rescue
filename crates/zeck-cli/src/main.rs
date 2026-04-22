@@ -1028,4 +1028,47 @@ mod tests {
             error: None,
         }
     }
+
+    #[test]
+    fn format_zec_whole() {
+        assert_eq!(format_zec(100_000_000), "1 ZEC");
+    }
+
+    #[test]
+    fn format_zec_fractional() {
+        assert_eq!(format_zec(50_000_000), "0.50000000 ZEC");
+    }
+
+    #[test]
+    fn format_zec_one_zatoshi() {
+        assert_eq!(format_zec(1), "0.00000001 ZEC");
+    }
+
+    #[test]
+    fn format_zec_zero() {
+        assert_eq!(format_zec(0), "0 ZEC");
+    }
+
+    #[test]
+    fn format_zec_large() {
+        assert_eq!(format_zec(2_100_000_000_000_000), "21000000 ZEC");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn powershell_quote_simple() {
+        assert_eq!(powershell_quote("hello"), "'hello'");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn powershell_quote_single_quote_escaped() {
+        assert_eq!(powershell_quote("it's done"), "'it''s done'");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn powershell_quote_strips_control_chars() {
+        assert_eq!(powershell_quote("abc\x00def"), "'abcdef'");
+    }
 }
