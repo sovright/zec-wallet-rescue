@@ -394,6 +394,13 @@ async fn wait_for_scan(
         // instead of waiting for the scan to finish. The bar.println call
         // routes through indicatif so the progress bar is preserved on the
         // line below.
+        //
+        // Self-heal the cursor: the discovery log is contractually
+        // append-only, but if a future bug ever shrinks it, clamp so we
+        // don't index past the end and don't silently skip later events.
+        if discoveries_seen > progress.discoveries.len() {
+            discoveries_seen = progress.discoveries.len();
+        }
         if progress.discoveries.len() > discoveries_seen {
             for d in &progress.discoveries[discoveries_seen..] {
                 bar.println(format_discovery(d));
@@ -582,8 +589,11 @@ fn era_hint(height: u64) -> Option<String> {
 }
 
 fn format_discovery(discovery: &ScanDiscovery) -> String {
+    // `at_block_height` is the scan frontier when the discovery was first
+    // observed — not the transaction's mined height. Label accordingly so
+    // users don't read it as transaction provenance.
     format!(
-        "[block {}] account {}  +{} {}",
+        "[scanned through block {}] account {}  +{} {}",
         discovery.at_block_height,
         discovery.account_index,
         format_zec(discovery.zatoshis),

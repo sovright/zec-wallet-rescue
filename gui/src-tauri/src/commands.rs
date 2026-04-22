@@ -74,6 +74,13 @@ pub async fn start_scan(
                 Err(_) => break,
             };
 
+            // Self-heal: the discovery log is contractually append-only,
+            // but if a future bug ever shrinks it, clamp the cursor so
+            // we don't index past the end and don't silently skip later
+            // events.
+            if emitted_discoveries > progress.discoveries.len() {
+                emitted_discoveries = progress.discoveries.len();
+            }
             if progress.discoveries.len() > emitted_discoveries {
                 for discovery in &progress.discoveries[emitted_discoveries..] {
                     let _ = app.emit("scan-discovery", discovery);

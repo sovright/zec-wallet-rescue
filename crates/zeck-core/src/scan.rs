@@ -968,18 +968,11 @@ pub(crate) async fn refresh_scan_progress(
 
     let mut guard = state.lock().await;
     let scanned_height = u64::from(u32::from(summary.fully_scanned_height()));
-    {
-        // Split disjoint borrows on the progress struct so we can compare
-        // the prior account snapshot against the new one while extending
-        // the discovery log in place.
-        let progress = &mut guard.progress;
-        append_new_discoveries(
-            &mut progress.discoveries,
-            &progress.accounts,
-            &account_rows,
-            scanned_height,
-        );
-    }
+    append_new_discoveries(
+        &mut guard.progress.discoveries,
+        &account_rows,
+        scanned_height,
+    );
     guard.progress.accounts = account_rows;
     guard.progress.blocks_total =
         block_delta(summary.chain_tip_height().into(), effective_birthday);
@@ -1135,55 +1128,73 @@ async fn run_transparent_quick_probe(
 /// never modified or removed, even if the corresponding balance later falls
 /// to zero (so users can see "yes, this seed had funds" even if the wallet
 /// was already swept).
+/// Dedupe `(account, pool)` discoveries against the existing append-only
+/// `discoveries` log rather than against the previous account snapshot.
+///
+/// The previous-snapshot approach was unsound: the gap-limit loop calls
+/// `initialize_accounts` between batches, which replaces `progress.accounts`
+/// with fresh zero-balance previews. Diffing against that zeroed snapshot
+/// causes already-known discoveries to be re-emitted on every gap-extension
+/// pass, and likewise causes the transparent quick probe's preliminary
+/// values to be re-emitted by the first authoritative refresh.
+///
+/// The append-only log is the authoritative source of "has this
+/// `(account, pool)` been surfaced to the user yet?", so dedupe against it.
 fn append_new_discoveries(
     discoveries: &mut Vec<crate::models::ScanDiscovery>,
-    previous: &[AccountBalancePreview],
     current: &[AccountBalancePreview],
     at_block_height: u64,
 ) {
     use crate::models::{DiscoveryPool, ScanDiscovery};
 
-    let prev_by_index: std::collections::HashMap<u32, &AccountBalancePreview> =
-        previous.iter().map(|a| (a.account_index, a)).collect();
+    let mut seen: std::collections::HashSet<(u32, DiscoveryPool)> = discoveries
+        .iter()
+        .map(|d| (d.account_index, d.pool))
+        .collect();
 
-    for account in current {
-        let was_zero = |amount: u64, accessor: fn(&AccountBalancePreview) -> u64| {
-            if amount == 0 {
-                return false;
+    let mut try_append =
+        |discoveries: &mut Vec<ScanDiscovery>,
+         account_index: u32,
+         pool: DiscoveryPool,
+         zatoshis: u64,
+         address: String| {
+            if zatoshis == 0 {
+                return;
             }
-            match prev_by_index.get(&account.account_index) {
-                Some(prev) => accessor(prev) == 0,
-                None => true,
+            if !seen.insert((account_index, pool)) {
+                return;
             }
+            discoveries.push(ScanDiscovery {
+                account_index,
+                pool,
+                zatoshis,
+                at_block_height,
+                address,
+            });
         };
 
-        if was_zero(account.transparent_zatoshis, |a| a.transparent_zatoshis) {
-            discoveries.push(ScanDiscovery {
-                account_index: account.account_index,
-                pool: DiscoveryPool::Transparent,
-                zatoshis: account.transparent_zatoshis,
-                at_block_height,
-                address: account.transparent_receive_address.clone(),
-            });
-        }
-        if was_zero(account.sapling_zatoshis, |a| a.sapling_zatoshis) {
-            discoveries.push(ScanDiscovery {
-                account_index: account.account_index,
-                pool: DiscoveryPool::Sapling,
-                zatoshis: account.sapling_zatoshis,
-                at_block_height,
-                address: account.sapling_address.clone(),
-            });
-        }
-        if was_zero(account.orchard_zatoshis, |a| a.orchard_zatoshis) {
-            discoveries.push(ScanDiscovery {
-                account_index: account.account_index,
-                pool: DiscoveryPool::Orchard,
-                zatoshis: account.orchard_zatoshis,
-                at_block_height,
-                address: account.unified_address.clone(),
-            });
-        }
+    for account in current {
+        try_append(
+            discoveries,
+            account.account_index,
+            DiscoveryPool::Transparent,
+            account.transparent_zatoshis,
+            account.transparent_receive_address.clone(),
+        );
+        try_append(
+            discoveries,
+            account.account_index,
+            DiscoveryPool::Sapling,
+            account.sapling_zatoshis,
+            account.sapling_address.clone(),
+        );
+        try_append(
+            discoveries,
+            account.account_index,
+            DiscoveryPool::Orchard,
+            account.orchard_zatoshis,
+            account.unified_address.clone(),
+        );
     }
 }
 
@@ -1659,7 +1670,7 @@ mod tests {
     fn first_observation_emits_one_discovery_per_funded_pool() {
         let mut log = Vec::new();
         let new_snapshot = vec![account_with(0, 100, 200, 300)];
-        append_new_discoveries(&mut log, &[], &new_snapshot, 3_280_500);
+        append_new_discoveries(&mut log, &new_snapshot, 3_280_500);
         assert_eq!(log.len(), 3);
         let pools: Vec<DiscoveryPool> = log.iter().map(|d| d.pool).collect();
         assert!(pools.contains(&DiscoveryPool::Transparent));
@@ -1676,32 +1687,34 @@ mod tests {
     fn empty_accounts_emit_no_discoveries() {
         let mut log = Vec::new();
         let snapshot = vec![empty_account(0), empty_account(1)];
-        append_new_discoveries(&mut log, &[], &snapshot, 100);
+        append_new_discoveries(&mut log, &snapshot, 100);
         assert!(log.is_empty());
     }
 
     #[test]
-    fn unchanged_balance_does_not_re_emit() {
+    fn second_call_with_same_funded_account_does_not_re_emit() {
+        // First call discovers sapling. Second call (e.g. another refresh
+        // tick) must not re-emit the same (account, pool) discovery.
         let mut log = Vec::new();
-        let prev = vec![account_with(0, 100, 0, 0)];
-        let next = vec![account_with(0, 100, 0, 0)];
-        append_new_discoveries(&mut log, &prev, &next, 100);
-        assert!(
-            log.is_empty(),
-            "discovery already in prior snapshot must not be re-emitted"
-        );
+        let snapshot = vec![account_with(0, 100, 0, 0)];
+        append_new_discoveries(&mut log, &snapshot, 100);
+        assert_eq!(log.len(), 1);
+        append_new_discoveries(&mut log, &snapshot, 200);
+        assert_eq!(log.len(), 1, "duplicate discovery must not be appended");
     }
 
     #[test]
     fn newly_funded_pool_on_existing_account_emits_one_discovery() {
-        // Account 0 gained orchard funds; sapling was already known.
+        // Account 0 already has sapling discovered; second call shows
+        // orchard funds appearing on the same account.
         let mut log = Vec::new();
-        let prev = vec![account_with(0, 100, 0, 0)];
-        let next = vec![account_with(0, 100, 50, 0)];
-        append_new_discoveries(&mut log, &prev, &next, 200);
-        assert_eq!(log.len(), 1);
-        assert_eq!(log[0].pool, DiscoveryPool::Orchard);
-        assert_eq!(log[0].zatoshis, 50);
+        let first = vec![account_with(0, 100, 0, 0)];
+        let second = vec![account_with(0, 100, 50, 0)];
+        append_new_discoveries(&mut log, &first, 100);
+        append_new_discoveries(&mut log, &second, 200);
+        assert_eq!(log.len(), 2);
+        assert_eq!(log[1].pool, DiscoveryPool::Orchard);
+        assert_eq!(log[1].zatoshis, 50);
     }
 
     #[test]
@@ -1715,22 +1728,77 @@ mod tests {
             at_block_height: 50,
             address: "zs".to_owned(),
         }];
-        let prev = vec![account_with(0, 100, 0, 0)];
         let next = vec![account_with(0, 0, 0, 0)];
-        append_new_discoveries(&mut log, &prev, &next, 75);
+        append_new_discoveries(&mut log, &next, 75);
         assert_eq!(log.len(), 1, "previous discovery must be preserved");
         assert_eq!(log[0].zatoshis, 100, "stored zatoshis must not be mutated");
     }
 
     #[test]
     fn newly_appearing_account_emits_for_each_funded_pool() {
-        // Gap-limit extension can introduce new accounts mid-scan.
+        // Gap-limit extension can introduce new accounts between calls.
         let mut log = Vec::new();
-        let prev = vec![account_with(0, 100, 0, 0)];
-        let next = vec![account_with(0, 100, 0, 0), account_with(7, 0, 50, 0)];
-        append_new_discoveries(&mut log, &prev, &next, 300);
+        let first = vec![account_with(0, 100, 0, 0)];
+        let second = vec![account_with(0, 100, 0, 0), account_with(7, 0, 50, 0)];
+        append_new_discoveries(&mut log, &first, 100);
+        append_new_discoveries(&mut log, &second, 200);
+        assert_eq!(log.len(), 2);
+        assert_eq!(log[1].account_index, 7);
+        assert_eq!(log[1].pool, DiscoveryPool::Orchard);
+    }
+
+    #[test]
+    fn initialize_accounts_zeroing_does_not_cause_duplicate_emission() {
+        // Regression test for the gap-limit-extension bug. The real scan
+        // loop calls initialize_accounts() between batches, which zeros
+        // the in-memory snapshot. The dedup logic must not re-emit the
+        // same (account, pool) just because the snapshot was wiped and
+        // refilled.
+        //
+        // Scenario:
+        //   1. Authoritative refresh observes account 0 with 500 sapling.
+        //   2. Loop extends gap range; initialize_accounts wipes snapshot
+        //      to zeros (this is what previous logic compared against).
+        //   3. Next refresh observes account 0 still with 500 sapling
+        //      (it didn't disappear from WalletDb).
+        // Expected: only one Sapling discovery for account 0 in the log.
+        let mut log = Vec::new();
+        let funded = vec![account_with(0, 500, 0, 0)];
+        append_new_discoveries(&mut log, &funded, 100);
         assert_eq!(log.len(), 1);
-        assert_eq!(log[0].account_index, 7);
-        assert_eq!(log[0].pool, DiscoveryPool::Orchard);
+        // Step 2: snapshot was zeroed by initialize_accounts. Step 3:
+        // refresh sees the same funded account again. Old logic would
+        // see prev=0, current=500, and re-emit. New logic dedupes
+        // against the existing discovery log.
+        append_new_discoveries(&mut log, &funded, 200);
+        assert_eq!(
+            log.len(),
+            1,
+            "gap-limit extension must not produce duplicate discoveries"
+        );
+    }
+
+    #[test]
+    fn transparent_quick_probe_followed_by_authoritative_refresh_dedupes() {
+        // Regression test for PR #13's invariant. The transparent quick
+        // probe pushes ScanDiscovery::Transparent directly. The first
+        // authoritative refresh then calls append_new_discoveries with
+        // a snapshot that may or may not have transparent_zatoshis set.
+        // Either way, the existing discovery in the log must dedupe it.
+        let mut log = vec![ScanDiscovery {
+            account_index: 0,
+            pool: DiscoveryPool::Transparent,
+            zatoshis: 500_000,
+            at_block_height: 3_280_500,
+            address: "t1".to_owned(),
+        }];
+        // Refresh sees the same balance authoritatively; must not duplicate.
+        let snapshot = vec![account_with(0, 0, 0, 500_000)];
+        append_new_discoveries(&mut log, &snapshot, 3_281_000);
+        assert_eq!(
+            log.len(),
+            1,
+            "authoritative refresh must not re-emit a probe discovery"
+        );
     }
 }

@@ -108,6 +108,12 @@ where
     on_progress("No transparent history found. Probing shielded history by year…");
     let seed = mnemonic_seed(seed_phrase)?;
     let transparent_account = legacy_transparent_account_key(seed_phrase, network)?;
+    let probe_keys = ShieldedProbeKeys {
+        seed_phrase,
+        seed: &seed,
+        transparent_account: &transparent_account,
+        sapling_floor,
+    };
 
     // Build probe points: sapling_floor, +1yr, +2yr, … stop when too close to tip.
     let probe_heights: Vec<u32> = (0u32..)
@@ -124,12 +130,9 @@ where
         let found = probe_shielded_window(
             &mut client,
             lightwalletd_url,
-            seed_phrase,
-            &seed,
-            &transparent_account,
+            &probe_keys,
             network,
             probe_height,
-            sapling_floor,
         )
         .await
         .unwrap_or(false);
@@ -206,6 +209,13 @@ async fn probe_transparent(
     Ok(earliest)
 }
 
+struct ShieldedProbeKeys<'a> {
+    seed_phrase: &'a SecretString,
+    seed: &'a [u8; 64],
+    transparent_account: &'a zcash_transparent::keys::AccountPrivKey,
+    sapling_floor: u32,
+}
+
 /// Create a temporary workspace at `probe_height`, import account-0, run a
 /// time-limited compact-block sync (≤`PROBE_TIMEOUT_SECS` seconds), then check
 /// whether any notes were written to the wallet DB.  Cleans up the temp
@@ -213,13 +223,14 @@ async fn probe_transparent(
 async fn probe_shielded_window(
     client: &mut CompactTxStreamerClient<Channel>,
     lightwalletd_url: &str,
-    seed_phrase: &SecretString,
-    seed: &[u8; 64],
-    transparent_account: &zcash_transparent::keys::AccountPrivKey,
+    keys: &ShieldedProbeKeys<'_>,
     network: ZeckNetwork,
     probe_height: u32,
-    sapling_floor: u32,
 ) -> ZeckResult<bool> {
+    let seed_phrase = keys.seed_phrase;
+    let seed = keys.seed;
+    let transparent_account = keys.transparent_account;
+    let sapling_floor = keys.sapling_floor;
     let probe_dir = std::env::temp_dir().join(format!("zeck_probe_{}", Uuid::new_v4()));
     let effective_height = probe_height.max(sapling_floor.saturating_add(1));
 

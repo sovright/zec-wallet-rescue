@@ -447,8 +447,10 @@ async function startProgressListeners() {
       const d = event.payload;
       const div = document.createElement("div");
       div.className = "discovery-toast";
+      // at_block_height is the scan frontier when first observed, not the
+      // mined height of the funding transaction — label it that way.
       const heightHint = d.at_block_height
-        ? ` (block ${d.at_block_height.toLocaleString()})`
+        ? ` (scanned through block ${d.at_block_height.toLocaleString()})`
         : "";
       div.textContent =
         `Found ${fmt(d.zatoshis)} on account ${d.account_index} — ${d.pool}${heightHint}`;
