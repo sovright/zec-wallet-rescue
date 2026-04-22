@@ -468,20 +468,6 @@ async fn run_recovery_scan_inner(
         guard.progress.blocks_total = block_delta(chain_tip_height, effective_birthday);
     }
 
-    // Fast transparent-only probe: lightwalletd's GetAddressUtxos answers in
-    // milliseconds for a batch of t-addrs, so we can surface preliminary
-    // transparent balances within seconds — long before the multi-hour
-    // shielded compact-block scan finishes. This either (a) shows users
-    // their funds immediately for transparent-only wallets, or (b) gives
-    // them an early "yes, this seed has something" signal that justifies
-    // the longer wait. Failures here are non-fatal; the shielded scan
-    // below will still discover transparent UTXOs authoritatively.
-    if let Err(err) =
-        run_transparent_quick_probe(&state, &mut client, &initial_accounts, chain_tip_height).await
-    {
-        warn!("transparent quick probe failed (continuing with shielded scan): {err}");
-    }
-
     while imported_accounts < target_accounts {
         check_cancelled(&state).await?;
 
@@ -497,6 +483,28 @@ async fn run_recovery_scan_inner(
         let derived_accounts =
             derive_accounts(&config.seed_phrase, config.network, target_accounts)?;
         initialize_accounts(&state, &derived_accounts).await;
+
+        // Fast transparent-only probe over the newly-added slice for this
+        // iteration. lightwalletd's GetAddressUtxos answers in milliseconds
+        // and surfaces preliminary t-addr balances long before the shielded
+        // sync finishes. Probing per gap-extension iteration (rather than
+        // only the first batch) means a funded account that only appears
+        // after gap extension still gets the early-discovery UX.
+        //
+        // Safety: the probe dedupes its discovery pushes against the
+        // existing log, and we slice to only the newly-derived range, so
+        // repeated calls don't produce duplicate events. Failures are
+        // non-fatal — the shielded scan below is authoritative.
+        let new_slice_start = usize::try_from(imported_accounts)
+            .map_err(|_| ZeckError::Internal("account index overflowed usize".to_owned()))?;
+        let new_slice_end = usize::try_from(target_accounts)
+            .map_err(|_| ZeckError::Internal("account index overflowed usize".to_owned()))?;
+        let new_accounts = &derived_accounts[new_slice_start..new_slice_end];
+        if let Err(err) =
+            run_transparent_quick_probe(&state, &mut client, new_accounts, chain_tip_height).await
+        {
+            warn!("transparent quick probe failed (continuing with shielded scan): {err}");
+        }
 
         import_accounts(
             &workspace,
@@ -1002,25 +1010,30 @@ pub(crate) async fn refresh_scan_progress(
 }
 
 /// Fast transparent-balance probe issued before the shielded compact-block
-/// scan begins. Batches every receive + change address from the initial gap
-/// window into a single `GetAddressUtxos` call to lightwalletd, then
+/// scan begins. Batches every receive + change address from the supplied
+/// slice into a single `GetAddressUtxos` call to lightwalletd, then
 /// surfaces non-zero balances as preliminary discoveries.
+///
+/// Safe to call multiple times during a scan (e.g. once per gap-limit
+/// extension): every discovery push is deduped against the existing
+/// `progress.discoveries` log, so probing an already-probed account is
+/// a no-op rather than a duplicate emission. Pass only the new account
+/// slice each iteration to avoid wasted gRPC traffic.
 ///
 /// Side effects on the shared state:
 /// - Sets `phase = ScanningTransparent` while the probe is in flight.
 /// - Updates `progress.accounts[i].transparent_zatoshis` and
-///   `transparent_utxo_count` so that the subsequent shielded sync's
-///   refresh tick sees these UTXOs as "previously known" and does not
-///   re-emit them as duplicate discoveries.
-/// - Pushes one `ScanDiscovery::Transparent` per account that had any
-///   transparent funds, with `at_block_height = chain_tip_height`.
+///   `transparent_utxo_count` for any matched account so the subsequent
+///   shielded refresh observes the same number authoritatively.
+/// - Pushes a `ScanDiscovery::Transparent` per *newly-funded* account
+///   with `at_block_height = chain_tip_height`.
 async fn run_transparent_quick_probe(
     state: &SharedScanTaskState,
     client: &mut CompactTxStreamerClient<tonic::transport::Channel>,
     accounts: &[DerivedAccount],
     chain_tip_height: u32,
 ) -> ZeckResult<()> {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     if accounts.is_empty() {
         return Ok(());
@@ -1036,7 +1049,7 @@ async fn run_transparent_quick_probe(
     }
 
     // Build the address batch — receive + change for every account in the
-    // initial window. Track account ownership so we can fold UTXO results
+    // supplied slice. Track account ownership so we can fold UTXO results
     // back into per-account preliminary balances.
     let mut address_to_account: HashMap<String, u32> = HashMap::new();
     let mut addresses: Vec<String> = Vec::with_capacity(accounts.len() * 2);
@@ -1065,14 +1078,27 @@ async fn run_transparent_quick_probe(
         .map_err(|err| ZeckError::Lightwalletd(err.to_string()))?
         .into_inner();
 
-    // Aggregate UTXO value per account.
+    // Aggregate UTXO value per account. A negative value_zat from
+    // lightwalletd is misbehaving-server data — log it loudly and skip
+    // the entry rather than silently coercing to 0, which would mask
+    // the bug from the user.
     let mut sums: HashMap<u32, (u64, u32)> = HashMap::new();
     for utxo in &reply.address_utxos {
         let Some(&account_index) = address_to_account.get(&utxo.address) else {
             continue;
         };
+        let value = match u64::try_from(utxo.value_zat) {
+            Ok(v) => v,
+            Err(_) => {
+                warn!(
+                    "lightwalletd returned negative value_zat={} for address {} \
+                     (account {}); skipping entry",
+                    utxo.value_zat, utxo.address, account_index
+                );
+                continue;
+            }
+        };
         let entry = sums.entry(account_index).or_insert((0u64, 0u32));
-        let value = u64::try_from(utxo.value_zat).unwrap_or(0);
         entry.0 = entry.0.saturating_add(value);
         entry.1 = entry.1.saturating_add(1);
     }
@@ -1083,6 +1109,11 @@ async fn run_transparent_quick_probe(
 
     let mut guard = state.lock().await;
     let chain_tip = u64::from(chain_tip_height);
+
+    // Preliminary balance write into the in-memory snapshot. This
+    // intentionally clobbers existing preliminary values — a re-probe
+    // on the same account should reflect the latest lightwalletd
+    // numbers, not the previous tick's.
     for account in &mut guard.progress.accounts {
         if let Some(&(zatoshis, utxo_count)) = sums.get(&account.account_index) {
             if zatoshis == 0 {
@@ -1100,8 +1131,20 @@ async fn run_transparent_quick_probe(
             );
         }
     }
+
+    // Discovery push deduped against the existing log so safe to call
+    // the probe multiple times per scan (gap-extension iterations).
+    let already_discovered: HashSet<(u32, DiscoveryPool)> = guard
+        .progress
+        .discoveries
+        .iter()
+        .map(|d| (d.account_index, d.pool))
+        .collect();
     for (account_index, (zatoshis, _)) in sums {
         if zatoshis == 0 {
+            continue;
+        }
+        if already_discovered.contains(&(account_index, DiscoveryPool::Transparent)) {
             continue;
         }
         let address = guard
