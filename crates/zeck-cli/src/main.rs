@@ -9,8 +9,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use secrecy::SecretString;
 use tracing_subscriber::EnvFilter;
 use zeck_core::{
-    derive_accounts, estimate_birthday_from_date, validate_destination_address, RecoveryService,
-    ScanConfig, ScanHandle, ScanPhase, SweepProposal, SweepRequest, ZeckNetwork,
+    detect_birthday, derive_accounts, estimate_birthday_from_date, validate_destination_address,
+    RecoveryService, ScanConfig, ScanHandle, ScanPhase, SweepProposal, SweepRequest, ZeckNetwork,
 };
 use zeck_core::ScanDiscovery;
 
@@ -59,6 +59,11 @@ struct Cli {
     /// Wallet creation date (YYYY-MM-DD). Estimates birthday height automatically.
     #[arg(long)]
     birthday_date: Option<String>,
+
+    /// Probe lightwalletd to auto-detect the wallet birthday from on-chain history.
+    /// Overrides --birthday and --birthday-date. Requires --lightwalletd-url.
+    #[arg(long)]
+    birthday_auto_detect: bool,
 
     /// Zcash network to use.
     #[arg(long, value_enum, default_value_t = NetworkArg::Mainnet)]
@@ -125,13 +130,26 @@ async fn main() -> Result<()> {
     init_tracing(cli.verbose)?;
 
     let network: ZeckNetwork = cli.network.into();
-    let birthday = if let Some(date) = &cli.birthday_date {
+
+    let seed_phrase = load_seed_phrase(cli.seed, cli.seed_file)?;
+
+    let birthday = if cli.birthday_auto_detect {
+        eprintln!("Auto-detecting wallet birthday from on-chain history…");
+        let result = detect_birthday(
+            &seed_phrase,
+            network,
+            &cli.lightwalletd_url,
+            |msg| eprintln!("  {msg}"),
+        )
+        .await
+        .context("birthday auto-detection failed")?;
+        eprintln!("✓ {}", result.message);
+        result.birthday
+    } else if let Some(date) = &cli.birthday_date {
         estimate_birthday_from_date(date)?
     } else {
         cli.birthday
     };
-
-    let seed_phrase = load_seed_phrase(cli.seed, cli.seed_file)?;
     let account_count = cli.num_accounts.unwrap_or(20);
 
     if matches!(cli.command, Commands::Scan | Commands::Sweep { .. }) {
