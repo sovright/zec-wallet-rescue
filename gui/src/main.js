@@ -447,6 +447,7 @@ async function startProgressListeners() {
   // run cleanupListeners() before the handles were assigned, leaking the
   // subscriptions across scans.
   $("scan-discoveries").innerHTML = "";
+  $("scan-discoveries").style.display = "none";
 
   const [unlistenProgress, unlistenComplete, unlistenDiscovered] = await Promise.all([
     listen("scan-progress", (event) => updateScanUI(event.payload)),
@@ -466,7 +467,9 @@ async function startProgressListeners() {
         : "";
       div.textContent =
         `Found ${fmt(d.zatoshis)} on account ${d.account_index} — ${d.pool}${heightHint}`;
-      $("scan-discoveries").appendChild(div);
+      const container = $("scan-discoveries");
+      container.appendChild(div);
+      container.style.display = "";
     }),
   ]);
   state.unlistenProgress = unlistenProgress;

@@ -449,6 +449,17 @@ pre {
   color: var(--muted);
 }
 
+.discovery-toast {
+  padding: 8px 12px;
+  margin: 6px 0;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 6px;
+  font-size: 0.875rem;
+  color: var(--ink);
+  animation: rise 240ms ease;
+}
+
 @keyframes rise {
   from {
     opacity: 0;
