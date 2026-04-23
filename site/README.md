@@ -9,6 +9,8 @@ rescue wallet subdomain.
 - `guide.html`: user guide
 - `styles.css`: shared site styles
 - `assets/zeck-icon.png`: app icon copied from the Tauri bundle
+- `assets/zeck-og.png`: 1200x630 Open Graph and Twitter Card preview image
+- `assets/zeck-og.svg`: editable source for the social preview image
 - `CNAME`: GitHub Pages custom-domain hint for `rescue.sovright.com`
 
 ## Hosting

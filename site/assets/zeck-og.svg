@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">ZECK Rescue Wallet</title>
+  <desc id="desc">A Sovright social preview card for the ZECK Rescue Wallet static site.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fbf8f1"/>
+      <stop offset="0.62" stop-color="#f3eadc"/>
+      <stop offset="1" stop-color="#edf4ec"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fffdf8"/>
+      <stop offset="1" stop-color="#f7f1e7"/>
+    </linearGradient>
+    <filter id="soft-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="22" stdDeviation="18" flood-color="#221f18" flood-opacity="0.16"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="630" fill="url(#background)"/>
+  <rect x="58" y="54" width="1084" height="522" rx="26" fill="url(#panel)" stroke="#d8d1c4" filter="url(#soft-shadow)"/>
+
+  <g transform="translate(100 92)">
+    <circle cx="24" cy="24" r="24" fill="#1f6b56"/>
+    <path d="M24 12v24M12 24h24M16 16l16 16M32 16 16 32" stroke="#fffdf8" stroke-width="3" stroke-linecap="round"/>
+    <text x="64" y="32" font-family="Avenir Next, Helvetica, Arial, sans-serif" font-size="24" font-weight="800" fill="#17221d">ZECK</text>
+  </g>
+
+  <g transform="translate(910 98)" opacity="0.58">
+    <circle cx="16" cy="16" r="15" fill="none" stroke="#143d34" stroke-width="2"/>
+    <path d="M16 6v20M8 18h18" stroke="#143d34" stroke-width="2" stroke-linecap="round" transform="rotate(-24 16 16)"/>
+    <text x="42" y="23" font-family="Avenir Next, Helvetica, Arial, sans-serif" font-size="16" font-weight="800" letter-spacing="2" fill="#143d34">SOVRIGHT</text>
+  </g>
+
+  <g transform="translate(100 194)">
+    <text font-family="Georgia, Times New Roman, serif" font-size="68" font-weight="700" fill="#17221d">ZECK Rescue Wallet</text>
+    <text y="74" font-family="Avenir Next, Helvetica, Arial, sans-serif" font-size="30" fill="#5d685f">Recover legacy ZecWallet Lite seeds with a</text>
+    <text y="116" font-family="Avenir Next, Helvetica, Arial, sans-serif" font-size="30" fill="#5d685f">local-first desktop flow.</text>
+
+    <g transform="translate(0 174)">
+      <rect width="220" height="44" rx="9" fill="#eef4ec" stroke="#d3dfcf"/>
+      <text x="18" y="29" font-family="Avenir Next, Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#143d34">Seed-only recovery</text>
+      <rect x="238" width="176" height="44" rx="9" fill="#eef4ec" stroke="#d3dfcf"/>
+      <text x="256" y="29" font-family="Avenir Next, Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#143d34">Local Rust core</text>
+      <rect x="432" width="244" height="44" rx="9" fill="#eef4ec" stroke="#d3dfcf"/>
+      <text x="450" y="29" font-family="Avenir Next, Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#143d34">Unified Address sweep</text>
+    </g>
+  </g>
+
+  <g transform="translate(790 250)">
+    <rect width="286" height="230" rx="18" fill="#20362f"/>
+    <rect x="0" y="0" width="286" height="42" rx="18" fill="#143d34"/>
+    <circle cx="26" cy="22" r="5" fill="#c99649"/>
+    <circle cx="44" cy="22" r="5" fill="#e9d3a0"/>
+    <circle cx="62" cy="22" r="5" fill="#70a38d"/>
+    <rect x="26" y="68" width="102" height="16" rx="8" fill="#95c9ae"/>
+    <rect x="26" y="102" width="232" height="14" rx="7" fill="#405d51"/>
+    <rect x="26" y="102" width="160" height="14" rx="7" fill="#c99649"/>
+    <rect x="26" y="138" width="232" height="54" rx="10" fill="#fffdf8"/>
+    <rect x="44" y="156" width="56" height="10" rx="5" fill="#5d685f"/>
+    <rect x="122" y="156" width="42" height="10" rx="5" fill="#1f6b56"/>
+    <rect x="186" y="156" width="54" height="10" rx="5" fill="#c99649"/>
+  </g>
+</svg>
