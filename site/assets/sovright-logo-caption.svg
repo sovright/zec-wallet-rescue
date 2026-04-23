@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="684 425 90 34" role="img" aria-labelledby="title desc">
+  <title id="title">Sovright — Caption Wordmark</title>
+  <desc id="desc">The sovright wordmark at caption scale (20px). The letter “o” is rendered as a minimalist skeleton key with a diamond ward.</desc>
+
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT@9..144,300..700,0..100&amp;display=swap');
+
+      text { text-rendering: geometricPrecision; }
+
+      .wm { font-family: 'Fraunces', 'Times New Roman', Georgia, serif; fill: #100F0D; }
+      .wm-micro { font-size: 20px; font-weight: 500; font-variation-settings: 'opsz' 20, 'wght' 500, 'SOFT' 20; letter-spacing: -0.35px; }
+
+      .key { fill: #100F0D; stroke: none; }
+    </style>
+
+    <mask id="bow-mask-caption">
+      <rect x="684" y="425" width="90" height="34" fill="white"/>
+      <circle cx="710.5" cy="441.75" r="3.9" fill="black"/>
+    </mask>
+  </defs>
+
+  <text x="694" y="448" class="wm wm-micro">s</text>
+  <g class="key">
+    <circle cx="710.5" cy="441.75" r="6.25" mask="url(#bow-mask-caption)"/>
+    <rect x="709.75" y="447.3" width="1.5" height="8"/>
+    <rect x="709.75" y="449.3" width="6.5" height="2.3"/>
+    <rect x="709.75" y="452.3" width="5"   height="2.3"/>
+  </g>
+  <text x="718" y="448" class="wm wm-micro">vright</text>
+</svg>

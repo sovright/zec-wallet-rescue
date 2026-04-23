@@ -98,48 +98,19 @@ a {
 .sovright-mark {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  color: rgba(23, 34, 29, 0.48);
-  font-size: 0.76rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
+  opacity: 0.58;
   text-decoration: none;
-  text-transform: uppercase;
+  transition: opacity 140ms ease;
 }
 
 .sovright-mark:hover {
-  color: var(--green-dark);
+  opacity: 0.86;
 }
 
-.sovright-symbol {
-  position: relative;
-  width: 19px;
-  height: 19px;
-  border: 1px solid currentColor;
-  border-radius: 50%;
-}
-
-.sovright-symbol::before,
-.sovright-symbol::after {
-  position: absolute;
-  content: "";
-  background: currentColor;
-}
-
-.sovright-symbol::before {
-  left: 8px;
-  top: 3px;
-  width: 1px;
-  height: 11px;
-  transform: rotate(34deg);
-}
-
-.sovright-symbol::after {
-  left: 5px;
-  top: 8px;
-  width: 9px;
-  height: 1px;
-  transform: rotate(-18deg);
+.sovright-mark img {
+  display: block;
+  width: 90px;
+  height: auto;
 }
 
 .hero {
