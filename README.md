@@ -15,7 +15,7 @@ ZECK now includes the major recovery phases end to end:
 - BIP-39 validation and normalization
 - ZecWallet Lite-compatible Sapling, Orchard, and transparent derivation
 - Unified-address destination validation
-- Persisted recovery workspaces under `--data-dir` / the GUI workspace directory field
+- Persisted recovery workspaces under random per-session subdirectories of `--data-dir` / the GUI workspace directory field
 - `zcash_client_sqlite`-backed compact-block sync for authoritative transparent, Sapling, and Orchard balances
 - Shared scan/sweep command surface for the CLI and GUI
 - Real sweep planning with ZIP 317 fee estimation, memo support, and max-fee guards
@@ -25,12 +25,15 @@ ZECK now includes the major recovery phases end to end:
 
 ## Operational Notes
 
-- Recovery sessions persist wallet/cache state on disk so repeated scans can reuse the same workspace.
+- Recovery sessions persist wallet/cache state on disk for auditability and sweep construction. Workspace subdirectories are random per session so the path does not reveal a stable seed fingerprint.
+- On Unix platforms, ZECK creates recovery workspace directories with private `0700` permissions and wallet/cache database files with `0600` permissions.
 - Transparent funds are imported into the wallet workspace using ZECK's audited legacy derivation, not modern per-account transparent derivation.
+- Public lightwalletd servers learn scan metadata such as requested block ranges. Use your own lightwalletd or a local privacy proxy when that metadata matters.
+- Custom lightwalletd endpoints must use HTTPS unless they target localhost/loopback for local testing.
 - Broadcasted transactions are polled for confirmation during a bounded wait window. If they are still unmined at the end of that window, ZECK reports them as pending instead of pretending they confirmed.
 - Sprout recovery is still out of scope for seed-only flows because ZecWallet Lite did not derive Sprout keys from the HD seed.
 - The GUI defaults to auto gap-limit mode and can switch to an explicit account count when the user wants an exact scan depth.
-- The desktop complete screen can now save a plain-text recovery report inside the persisted workspace or any other chosen path.
+- The desktop complete screen can save a plain-text recovery report inside the persisted workspace.
 
 ## Workspace
 

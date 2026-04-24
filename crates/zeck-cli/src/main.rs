@@ -24,11 +24,8 @@ use zeck_core::{
     version
 )]
 struct Cli {
-    /// BIP-39 seed phrase (24 words). Omit to be prompted securely.
-    #[arg(long, conflicts_with = "seed_file")]
-    seed: Option<String>,
-
-    /// Path to a plain-text file containing the 24-word seed phrase.
+    /// Path to a plain-text file containing the 24-word seed phrase. Must be
+    /// chmod 600 (owner read/write only) on Unix.
     #[arg(long)]
     seed_file: Option<PathBuf>,
 
@@ -131,7 +128,7 @@ async fn main() -> Result<()> {
 
     let network: ZeckNetwork = cli.network.into();
 
-    let seed_phrase = load_seed_phrase(cli.seed, cli.seed_file)?;
+    let seed_phrase = load_seed_phrase(cli.seed_file)?;
 
     let birthday = if cli.birthday_auto_detect {
         eprintln!("Auto-detecting wallet birthday from on-chain history…");
@@ -319,12 +316,14 @@ fn init_tracing(verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn load_seed_phrase(seed: Option<String>, seed_file: Option<PathBuf>) -> Result<SecretString> {
-    if let Some(seed) = seed {
-        return Ok(SecretString::new(seed.trim().to_owned()));
-    }
-
+fn load_seed_phrase(seed_file: Option<PathBuf>) -> Result<SecretString> {
     if let Some(path) = seed_file {
+        let metadata = fs::metadata(&path)
+            .with_context(|| format!("failed to inspect seed file {}", path.display()))?;
+        if !metadata.is_file() {
+            bail!("seed file {} is not a regular file", path.display());
+        }
+        validate_seed_file_permissions(&path, &metadata)?;
         let contents = fs::read_to_string(&path)
             .with_context(|| format!("failed to read seed file {}", path.display()))?;
         return Ok(SecretString::new(contents.trim().to_owned()));
@@ -337,6 +336,29 @@ fn load_seed_phrase(seed: Option<String>, seed_file: Option<PathBuf>) -> Result<
         .context("failed to read seed phrase from terminal")?;
 
     Ok(SecretString::new(phrase.trim().to_owned()))
+}
+
+fn validate_seed_file_permissions(path: &std::path::Path, metadata: &fs::Metadata) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = metadata.permissions().mode();
+        if mode & 0o077 != 0 {
+            bail!(
+                "seed file {} is readable by group or other users; run `chmod 600 {}` first",
+                path.display(),
+                path.display()
+            );
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = (path, metadata);
+    }
+
+    Ok(())
 }
 
 /// Parse a ZEC string (e.g. "0.001") into zatoshis.

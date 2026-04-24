@@ -1,14 +1,13 @@
 use rusqlite::Connection;
 use secrecy::{ExposeSecret, SecretString};
-use time::{Date, Duration, Month};
 use tonic::transport::Channel;
+use uuid::Uuid;
 use zcash_client_backend::{
     data_api::AccountBirthday,
     proto::service::{
         compact_tx_streamer_client::CompactTxStreamerClient, BlockId, GetAddressUtxosArg,
     },
 };
-use uuid::Uuid;
 
 use crate::{
     derivation::{derive_accounts, legacy_transparent_account_key, mnemonic_seed},
@@ -20,8 +19,13 @@ use crate::{
 };
 
 const SAPLING_ACTIVATION_HEIGHT: u32 = 419_200;
-const SAPLING_ACTIVATION_DATE: (i32, Month, u8) = (2018, Month::October, 28);
+const SAPLING_ACTIVATION_DATE: CalendarDate = CalendarDate {
+    year: 2018,
+    month: 10,
+    day: 28,
+};
 const AVERAGE_BLOCK_SECONDS: i64 = 75;
+const DAY_SECONDS: i64 = 86_400;
 
 /// Approximate blocks per year at 75 s/block.
 const PROBE_YEAR_STEP: u32 = 420_480;
@@ -32,25 +36,97 @@ const BIRTHDAY_BUFFER_BLOCKS: u32 = 10_000;
 /// Number of accounts (and their transparent addresses) to check for transparent activity.
 const PROBE_ACCOUNT_COUNT: u32 = 5;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct CalendarDate {
+    year: i32,
+    month: u8,
+    day: u8,
+}
+
 pub fn estimate_birthday_from_date(date: &str) -> ZeckResult<u32> {
-    let format = time::macros::format_description!("[year]-[month]-[day]");
-    let parsed =
-        Date::parse(date, &format).map_err(|err| ZeckError::InvalidDate(err.to_string()))?;
-    let anchor = Date::from_calendar_date(
-        SAPLING_ACTIVATION_DATE.0,
-        SAPLING_ACTIVATION_DATE.1,
-        SAPLING_ACTIVATION_DATE.2,
-    )
-    .map_err(|err| ZeckError::InvalidDate(err.to_string()))?;
+    let parsed = CalendarDate::parse(date)?;
+    let anchor = SAPLING_ACTIVATION_DATE;
 
     if parsed <= anchor {
         return Ok(SAPLING_ACTIVATION_HEIGHT);
     }
 
-    let seconds = (parsed - anchor).whole_days() * Duration::DAY.whole_seconds();
+    let seconds = parsed
+        .days_since_unix_epoch()
+        .saturating_sub(anchor.days_since_unix_epoch())
+        .saturating_mul(DAY_SECONDS);
     let estimated_blocks = seconds / AVERAGE_BLOCK_SECONDS;
 
     Ok(SAPLING_ACTIVATION_HEIGHT.saturating_add(estimated_blocks.max(0) as u32))
+}
+
+impl CalendarDate {
+    fn parse(input: &str) -> ZeckResult<Self> {
+        let mut parts = input.split('-');
+        let year = parts
+            .next()
+            .ok_or_else(|| ZeckError::InvalidDate("expected YYYY-MM-DD".to_owned()))?
+            .parse::<i32>()
+            .map_err(|_| ZeckError::InvalidDate("invalid year".to_owned()))?;
+        let month = parts
+            .next()
+            .ok_or_else(|| ZeckError::InvalidDate("expected YYYY-MM-DD".to_owned()))?
+            .parse::<u8>()
+            .map_err(|_| ZeckError::InvalidDate("invalid month".to_owned()))?;
+        let day = parts
+            .next()
+            .ok_or_else(|| ZeckError::InvalidDate("expected YYYY-MM-DD".to_owned()))?
+            .parse::<u8>()
+            .map_err(|_| ZeckError::InvalidDate("invalid day".to_owned()))?;
+        if parts.next().is_some() {
+            return Err(ZeckError::InvalidDate("expected YYYY-MM-DD".to_owned()));
+        }
+        let date = Self { year, month, day };
+        date.validate()?;
+        Ok(date)
+    }
+
+    fn validate(self) -> ZeckResult<()> {
+        if !(1..=12).contains(&self.month) {
+            return Err(ZeckError::InvalidDate(
+                "month must be 1 through 12".to_owned(),
+            ));
+        }
+        let max_day = days_in_month(self.year, self.month);
+        if self.day == 0 || self.day > max_day {
+            return Err(ZeckError::InvalidDate(format!(
+                "day must be 1 through {max_day}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn days_since_unix_epoch(self) -> i64 {
+        let year = i64::from(self.year) - if self.month <= 2 { 1 } else { 0 };
+        let era = if year >= 0 { year } else { year - 399 } / 400;
+        let year_of_era = year - era * 400;
+        let month = i64::from(self.month);
+        let day = i64::from(self.day);
+        let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+        let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+
+        era * 146_097 + day_of_era - 719_468
+    }
+}
+
+fn days_in_month(year: i32, month: u8) -> u8 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        // CalendarDate::validate has already rejected month outside 1..=12.
+        _ => unreachable!("month {month} should have been rejected by validate()"),
+    }
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
 /// Probe the blockchain to find the earliest block height where account-0 shows
@@ -345,6 +421,16 @@ mod tests {
     #[test]
     fn leap_year_february_29_is_handled() {
         let h = estimate_birthday_from_date("2020-02-29").unwrap();
-        assert!(h > SAPLING_ACTIVATION_HEIGHT, "expected height above activation");
+        assert!(
+            h > SAPLING_ACTIVATION_HEIGHT,
+            "expected height above activation"
+        );
+    }
+
+    #[test]
+    fn date_parser_rejects_invalid_calendar_dates() {
+        assert!(CalendarDate::parse("2024-02-30").is_err());
+        assert!(CalendarDate::parse("2024-13-01").is_err());
+        assert!(CalendarDate::parse("2025-04-31").is_err());
     }
 }

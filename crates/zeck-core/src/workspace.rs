@@ -5,6 +5,7 @@ use std::{
 
 use rand_core::OsRng;
 use secrecy::SecretVec;
+use sha2::{Digest, Sha256};
 use zcash_client_sqlite::{
     chain::init::init_cache_database, util::SystemClock, wallet::init::init_wallet_db, BlockDb,
     WalletDb,
@@ -30,13 +31,18 @@ use crate::{
 /// That contract is not pinned here; treat it as a thing to verify
 /// during dependency bumps.
 ///
-/// Callers that change birthday or gap-limit between runs intentionally land
-/// on a fresh sub-workspace, so old state is preserved rather than corrupted
-/// by mismatched scan windows. Workspace path layout is pinned by tests in
-/// this module; do not change without updating both.
+/// Privacy: the per-wallet path component is a SHA-256-derived hash of
+/// `(domain, network, seed-fingerprint, birthday, scope)` rather than the
+/// literal seed fingerprint string. An attacker with the seed can still
+/// recompute the path, but local filesystem inspection no longer surfaces
+/// the bech32 fingerprint directly.
 #[derive(Debug, Clone)]
 pub struct RecoveryWorkspace {
     root: PathBuf,
+    /// First path component under `data_dir/<network>` that is private to
+    /// this wallet — used to tighten permissions without touching the
+    /// generic data_dir or network directories above it.
+    private_root: PathBuf,
     wallet_db_path: PathBuf,
     cache_db_path: PathBuf,
 }
@@ -53,24 +59,29 @@ impl RecoveryWorkspace {
             None => format!("auto-gap-{}", config.gap_limit),
         };
 
-        let root = config
+        let workspace_id = derive_workspace_id(config.network, &fingerprint, config.birthday, &scope);
+        let private_root = config
             .data_dir
             .join(config.network.label())
-            .join(fingerprint.to_string())
+            .join(format!("workspace-{workspace_id}"));
+        let root = private_root
             .join(format!("birthday-{}", config.birthday))
-            .join(scope);
+            .join(&scope);
 
         Ok(Self {
             wallet_db_path: root.join("wallet.sqlite"),
             cache_db_path: root.join("cache.sqlite"),
             root,
+            private_root,
         })
     }
 
     pub fn initialize(&self, network: ZeckNetwork, seed: &[u8; 64]) -> ZeckResult<()> {
-        fs::create_dir_all(&self.root).map_err(|err| {
-            ZeckError::Storage(format!("creating {}: {err}", self.root.display()))
-        })?;
+        create_private_dir_all(&self.root)?;
+        // recursive create only sets mode on newly-created dirs; explicitly
+        // re-tighten every component from the wallet-private root down so
+        // resumes don't quietly inherit looser perms set in a previous run.
+        tighten_private_perms(&self.private_root, &self.root)?;
 
         let mut wallet_db = WalletDb::for_path(
             &self.wallet_db_path,
@@ -90,6 +101,7 @@ impl RecoveryWorkspace {
                 self.wallet_db_path.display()
             ))
         })?;
+        set_private_file_permissions(&self.wallet_db_path)?;
 
         let cache_db = BlockDb::for_path(&self.cache_db_path).map_err(|err| {
             ZeckError::Storage(format!(
@@ -103,6 +115,7 @@ impl RecoveryWorkspace {
                 self.cache_db_path.display()
             ))
         })?;
+        set_private_file_permissions(&self.cache_db_path)?;
 
         Ok(())
     }
@@ -127,18 +140,112 @@ pub fn consensus_network(network: ZeckNetwork) -> Network {
     }
 }
 
+fn derive_workspace_id(
+    network: ZeckNetwork,
+    fingerprint: &SeedFingerprint,
+    birthday: u32,
+    scope: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"zeck-workspace-v1\0");
+    hasher.update(network.label().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(fingerprint.to_string().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(birthday.to_le_bytes());
+    hasher.update(b"\0");
+    hasher.update(scope.as_bytes());
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(32);
+    for byte in digest.iter().take(16) {
+        out.push_str(&format!("{:02x}", byte));
+    }
+    out
+}
+
+fn create_private_dir_all(path: &Path) -> ZeckResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+
+        // mode(0o700) only applies to dirs created during this call; pre-
+        // existing parents keep their mode. We explicitly tighten the
+        // wallet-private subtree separately via tighten_private_perms.
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+            .map_err(|err| ZeckError::Storage(format!("creating {}: {err}", path.display())))?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(path)
+            .map_err(|err| ZeckError::Storage(format!("creating {}: {err}", path.display())))?;
+    }
+
+    Ok(())
+}
+
+#[allow(unused_variables)]
+fn tighten_private_perms(private_root: &Path, leaf: &Path) -> ZeckResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut current = leaf.to_path_buf();
+        loop {
+            fs::set_permissions(&current, fs::Permissions::from_mode(0o700)).map_err(|err| {
+                ZeckError::Storage(format!(
+                    "setting private permissions on {}: {err}",
+                    current.display()
+                ))
+            })?;
+            if current == private_root {
+                break;
+            }
+            match current.parent() {
+                Some(parent) => current = parent.to_path_buf(),
+                None => break,
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn set_private_file_permissions(path: &Path) -> ZeckResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|err| {
+            ZeckError::Storage(format!(
+                "setting private permissions on {}: {err}",
+                path.display()
+            ))
+        })?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use secrecy::SecretString;
+    use zip32::fingerprint::SeedFingerprint;
 
     use super::*;
+    use crate::derivation::mnemonic_seed;
     use crate::models::RuntimeScanConfig;
 
-    /// Resume only works if a re-run with identical args resolves to the same
-    /// on-disk workspace as the previous run. These tests pin the keying
-    /// invariants the resume promise depends on.
     fn config(
         seed: &str,
         birthday: u32,
@@ -190,8 +297,6 @@ mod tests {
 
     #[test]
     fn different_birthday_uses_different_workspace() {
-        // Different birthday is a different scan window, so persisting under
-        // the same dir would corrupt the wallet.sqlite scan_summary state.
         let a = RecoveryWorkspace::from_runtime(&config(
             SEED,
             3_280_000,
@@ -213,8 +318,6 @@ mod tests {
 
     #[test]
     fn different_gap_limit_uses_different_workspace() {
-        // Different gap_limit means a different number of derived accounts to
-        // scan against — must not silently reuse the smaller workspace.
         let a = RecoveryWorkspace::from_runtime(&config(
             SEED,
             3_280_000,
@@ -283,8 +386,6 @@ mod tests {
 
     #[test]
     fn different_seed_uses_different_workspace() {
-        // Without seed-fingerprint isolation, two users sharing a data_dir
-        // could clobber each other's workspaces.
         let a = RecoveryWorkspace::from_runtime(&config(
             SEED,
             3_280_000,
@@ -317,35 +418,32 @@ mod tests {
     }
 
     #[test]
-    fn print_fingerprint_for_snapshot() {
-        // Prints the expected SeedFingerprint string for the fixed test
-        // SEED so the snapshot test below can pin it. Run with
-        // `cargo test workspace::tests::print_fingerprint_for_snapshot
-        // -- --nocapture` to update the SEED_FINGERPRINT constant when
-        // the upstream algorithm or display format changes intentionally.
+    fn workspace_path_does_not_leak_seed_fingerprint() {
         let cfg = config(SEED, 3_280_000, None, 20, ZeckNetwork::Mainnet);
         let ws = RecoveryWorkspace::from_runtime(&cfg).unwrap();
-        let suffix = ws
-            .root()
-            .strip_prefix(&cfg.data_dir)
-            .unwrap()
-            .to_string_lossy()
+        let path_str = ws.root().display().to_string();
+
+        let seed = mnemonic_seed(&cfg.seed_phrase).expect("seed should derive");
+        let fingerprint_str = SeedFingerprint::from_seed(&seed)
+            .expect("seed fingerprint should derive")
             .to_string();
-        let parts: Vec<&str> = suffix.split('/').collect();
-        eprintln!("fingerprint = {}", parts[1]);
+
+        assert!(
+            !path_str.contains(&fingerprint_str),
+            "workspace path must not contain the literal seed fingerprint"
+        );
+        assert!(
+            path_str.contains("workspace-"),
+            "workspace path should use the hash-prefixed segment"
+        );
     }
 
     #[test]
     fn workspace_path_does_not_change_across_releases() {
         // Snapshot the keying so an accidental change to the path layout
         // shows up as a test failure rather than a silently-orphaned
-        // workspace on every user's disk. The fingerprint segment is
-        // pinned to the *exact* string, not just the HRP, so a change
-        // in the upstream zip32::SeedFingerprint algorithm or display
-        // format will flip this test (which would otherwise silently
-        // orphan every existing user's workspace dir).
-        const EXPECTED_FINGERPRINT_FOR_TEST_SEED: &str =
-            "zip32seedfp1uc59thq5rxtjutv06dymwsx7dfna3nm0a2h7jr8j7dazx3zkdnxqqgyu24";
+        // workspace on every user's disk.
+        const EXPECTED_WORKSPACE_ID_FOR_TEST_SEED: &str = "b5e2cf2baecd3446f65e96a40159123d";
         let cfg = config(SEED, 3_280_000, None, 20, ZeckNetwork::Mainnet);
         let ws = RecoveryWorkspace::from_runtime(&cfg).unwrap();
         let suffix = ws
@@ -354,17 +452,32 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .to_string();
-        // network / seed-fp / birthday-N / auto-gap-M
+        // network / workspace-<hash> / birthday-N / auto-gap-M
         let parts: Vec<&str> = suffix.split('/').collect();
         assert_eq!(parts.len(), 4, "unexpected workspace path layout: {suffix}");
         assert_eq!(parts[0], "mainnet");
         assert_eq!(
-            parts[1], EXPECTED_FINGERPRINT_FOR_TEST_SEED,
-            "seed fingerprint changed for the fixed test seed — if intentional, \
-             update EXPECTED_FINGERPRINT_FOR_TEST_SEED, but be aware this means \
-             every existing user's workspace dir is now orphaned"
+            parts[1],
+            format!("workspace-{EXPECTED_WORKSPACE_ID_FOR_TEST_SEED}"),
+            "workspace id changed for the fixed test seed — if intentional, \
+             update EXPECTED_WORKSPACE_ID_FOR_TEST_SEED, but be aware this \
+             means every existing user's workspace dir is now orphaned"
         );
         assert_eq!(parts[2], "birthday-3280000");
         assert_eq!(parts[3], "auto-gap-20");
+    }
+
+    #[test]
+    fn workspace_id_is_deterministic_and_distinct_across_inputs() {
+        let cfg = config(SEED, 3_280_000, None, 20, ZeckNetwork::Mainnet);
+        let seed = mnemonic_seed(&cfg.seed_phrase).unwrap();
+        let fp = SeedFingerprint::from_seed(&seed).unwrap();
+        let a = derive_workspace_id(ZeckNetwork::Mainnet, &fp, 3_280_000, "auto-gap-20");
+        let b = derive_workspace_id(ZeckNetwork::Mainnet, &fp, 3_280_000, "auto-gap-20");
+        assert_eq!(a, b);
+        let c = derive_workspace_id(ZeckNetwork::Mainnet, &fp, 3_280_001, "auto-gap-20");
+        assert_ne!(a, c);
+        let d = derive_workspace_id(ZeckNetwork::Testnet, &fp, 3_280_000, "auto-gap-20");
+        assert_ne!(a, d);
     }
 }
