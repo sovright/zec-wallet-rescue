@@ -41,7 +41,10 @@ use crate::{
         derive_accounts, legacy_transparent_account_key, legacy_transparent_pubkey, mnemonic_seed,
     },
     error::{ZeckError, ZeckResult},
-    lightwalletd::{build_probe, describe_lightwalletd_endpoints, probe_lightwalletd_endpoints},
+    lightwalletd::{
+        build_probe, describe_lightwalletd_endpoints, probe_lightwalletd_endpoints,
+        validate_lightwalletd_network,
+    },
     models::{
         AccountBalancePreview, AddressScope, DerivedAccount, DiscoveryPool, LightwalletdProbe,
         RuntimeScanConfig, ScanDiscovery, ScanHandle, ScanPhase, ScanProgress, ScanSummary,
@@ -439,6 +442,7 @@ async fn run_recovery_scan_inner(
     let _ = default_provider().install_default();
     let (mut client, endpoint, response) =
         probe_lightwalletd_endpoints(&config.lightwalletd_url).await?;
+    validate_lightwalletd_network(config.network, &response)?;
     let chain_tip_height = u32::try_from(response.block_height)
         .map_err(|_| ZeckError::Lightwalletd("chain tip height overflowed u32".to_owned()))?;
     let probe: LightwalletdProbe = build_probe(endpoint, &response);
@@ -891,9 +895,7 @@ pub(crate) async fn refresh_scan_progress(
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|err| {
-        ZeckError::Storage(format!(
-            "opening wallet database for activity check: {err}"
-        ))
+        ZeckError::Storage(format!("opening wallet database for activity check: {err}"))
     })?;
 
     let target_height = (summary.chain_tip_height() + 1).into();
@@ -942,16 +944,13 @@ pub(crate) async fn refresh_scan_progress(
                     })
                 })?;
 
-        let has_activity = account_has_note_activity(
-            &raw_conn,
-            &tracked.wallet_account_id,
-        )
-        .map_err(|err| {
-            ZeckError::Wallet(format!(
-                "checking note activity for account {}: {err}",
-                tracked.derived.index
-            ))
-        })?;
+        let has_activity = account_has_note_activity(&raw_conn, &tracked.wallet_account_id)
+            .map_err(|err| {
+                ZeckError::Wallet(format!(
+                    "checking note activity for account {}: {err}",
+                    tracked.derived.index
+                ))
+            })?;
 
         account_rows.push(AccountBalancePreview {
             account_index: tracked.derived.index,

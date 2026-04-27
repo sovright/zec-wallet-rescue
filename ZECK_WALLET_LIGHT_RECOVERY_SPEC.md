@@ -340,7 +340,6 @@ COMMANDS:
   show-keys  Derive and display all keys/addresses (for debugging)
 
 GLOBAL OPTIONS:
-  --seed <PHRASE>              24-word BIP-39 mnemonic (prompted interactively if omitted)
   --seed-file <PATH>           Read seed phrase from file (one line, trimmed)
   --destination <UA>           Zcash Unified Address for sweep destination
   --lightwalletd-url <URL>     lightwalletd gRPC endpoint
@@ -559,7 +558,7 @@ cargo tauri build --target <target>
 ### 7.6 GUI design principles
 
 - **Trust-first aesthetic:** Clean, minimal design. No flashy animations. Muted color palette. Users are recovering potentially significant funds — the UI should feel serious and reliable.
-- **No persistent state beyond the session:** The GUI does not save seed phrases, wallet files, or credentials to disk. The `zcash_client_sqlite` database used during scanning is stored in a temp directory and wiped on close (with an option to keep it for resume).
+- **Persistent recovery workspace:** The GUI and CLI persist `zcash_client_sqlite` wallet/cache databases under the user-selected workspace directory so scans and sweep construction use authoritative wallet state. Workspace subdirectories MUST be random per session rather than seed-derived, MUST avoid exposing seed fingerprints in paths, and SHOULD be created with private filesystem permissions where the platform supports them.
 - **Offline-capable for key derivation:** The seed validation and address display screens work fully offline. Network is only required for scanning and sweeping.
 - **Accessible:** Keyboard navigation, screen reader labels, high contrast support. Many users encountering this tool will not be crypto-native.
 
@@ -628,7 +627,7 @@ Frontend (npm, in `gui/`):
 
 ### 9.1 Seed phrase handling
 
-- **CLI:** Seed phrase MUST be read from stdin or file, never from command-line arguments (which appear in process lists and shell history). If `--seed` is not provided, prompt interactively with terminal echo disabled.
+- **CLI:** Seed phrase MUST be read from stdin or file, never from command-line arguments (which appear in process lists and shell history). If `--seed-file` is not provided, prompt interactively with terminal echo disabled. On Unix platforms, seed files SHOULD be rejected when group/other users can read them.
 - **GUI:** Seed phrase is entered in a masked input field. It is passed to the Tauri Rust backend via IPC command and immediately wrapped in `secrecy::Secret`. The frontend clears the input buffer after submission. The Tauri IPC channel is local (no network exposure).
 - All seed and key material in memory MUST use `secrecy::Secret<>` or `zeroize::Zeroize` for automatic zeroing on drop.
 
@@ -636,6 +635,7 @@ Frontend (npm, in `gui/`):
 
 - The lightwalletd server learns which blocks the client is interested in (but not which specific notes are being decrypted).
 - Users concerned about metadata leakage should run their own lightwalletd instance or connect via Tor.
+- Custom lightwalletd endpoints MUST use HTTPS unless they target localhost/loopback for local testing, and the reported chain metadata MUST match the selected ZECK network before scanning or sweeping.
 - Document this in the tool's help text and README.
 
 ### 9.3 Transaction safety
@@ -658,7 +658,7 @@ Frontend (npm, in `gui/`):
 ### 10.1 Key derivation verification
 
 - **Unit test:** Given a known 24-word mnemonic, verify that ZECK produces the exact same Sapling, transparent, and Orchard addresses as ZecWallet Lite for accounts 0–9.
-- **Reference data:** Generate addresses from `zecwallet-light-cli --seed "..." ` and hard-code expected outputs.
+- **Reference data:** Generate addresses from a local `zecwallet-light-cli` seed fixture and hard-code expected outputs.
 - **Cross-reference:** Also verify against `uzw-parser` (james_katz) output.
 
 ### 10.2 Integration testing
@@ -786,7 +786,7 @@ adityapk00/zecwallet-light-cli/
 │       └── grpc_connector.rs   ← lightwalletd gRPC client
 ├── cli/
 │   └── src/
-│       └── main.rs             ← CLI argument parsing, --seed, --recover flags
+│       └── main.rs             ← CLI argument parsing, seed-file, --recover flags
 └── Cargo.toml                  ← Dependency versions (pinned librustzcash revisions)
 ```
 

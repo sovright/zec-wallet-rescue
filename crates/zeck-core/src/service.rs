@@ -31,7 +31,10 @@ use crate::{
     address::validate_destination_address,
     derivation::{legacy_transparent_account_key, legacy_transparent_secret_key, mnemonic_seed},
     error::{ZeckError, ZeckResult},
-    lightwalletd::{connect_lightwalletd_endpoints, parse_lightwalletd_endpoints},
+    lightwalletd::{
+        connect_lightwalletd_endpoints, validate_lightwalletd_network,
+        validated_lightwalletd_endpoints,
+    },
     models::{
         ProposedTx, ProposedTxKind, RuntimeScanConfig, ScanConfig, ScanHandle, ScanPhase,
         ScanProgress, SkippedSweepAccount, SweepProposal, SweepRequest, TxBroadcastResult,
@@ -232,11 +235,7 @@ fn validate_scan_config(config: &ScanConfig) -> ZeckResult<()> {
             ));
         }
     }
-    if parse_lightwalletd_endpoints(&config.lightwalletd_url).is_empty() {
-        return Err(ZeckError::InvalidConfig(
-            "at least one lightwalletd endpoint is required".to_owned(),
-        ));
-    }
+    validated_lightwalletd_endpoints(&config.lightwalletd_url)?;
 
     Ok(())
 }
@@ -450,6 +449,12 @@ async fn execute_sweep_for_session(
         .map(|server| server.endpoint.as_str());
     let (mut client, _) =
         connect_lightwalletd_endpoints(&runtime.lightwalletd_url, preferred_endpoint).await?;
+    let lightwalletd_info = client
+        .get_lightd_info(zcash_client_backend::proto::service::Empty {})
+        .await
+        .map_err(|err| ZeckError::Lightwalletd(err.to_string()))?
+        .into_inner();
+    validate_lightwalletd_network(runtime.network, &lightwalletd_info)?;
 
     run_wallet_sync(&workspace, &network, &mut client).await?;
     refresh_scan_progress(
