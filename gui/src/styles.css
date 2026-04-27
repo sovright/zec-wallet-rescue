@@ -87,19 +87,22 @@ table {
 .sidebar-credit {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   margin: 0;
   color: var(--muted);
-  font-size: 0.84rem;
-  letter-spacing: 0.02em;
-  opacity: 0.75;
+  font-family: "IBM Plex Sans", "Avenir Next", "Helvetica Neue", sans-serif;
+  font-size: 0.88rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  opacity: 1;
   text-decoration: none;
   cursor: pointer;
-  transition: opacity 0.18s ease;
+  transition: opacity 0.18s ease, color 0.18s ease;
 }
 
 .sidebar-credit:hover {
-  opacity: 0.95;
+  color: var(--ink);
+  opacity: 1;
 }
 
 .sidebar-credit-prefix {
@@ -108,22 +111,9 @@ table {
 }
 
 .sidebar-credit-mark {
-  /* The SVG ships at viewBox="684 425 90 34" — width:height ≈ 90:34.
-     Render via CSS mask so background-color (= currentColor) tints the
-     wordmark to match the surrounding muted text instead of using the
-     SVG's hardcoded fill. <img src> can't inherit text color. */
   display: inline-block;
-  height: 0.84rem;
-  width: calc(0.84rem * (90 / 34));
-  background-color: currentColor;
-  mask-image: url("./assets/sovright-caption.svg");
-  -webkit-mask-image: url("./assets/sovright-caption.svg");
-  mask-repeat: no-repeat;
-  -webkit-mask-repeat: no-repeat;
-  mask-size: contain;
-  -webkit-mask-size: contain;
-  mask-position: center;
-  -webkit-mask-position: center;
+  height: 1.6rem;
+  width: auto;
 }
 
 .main-panel {
