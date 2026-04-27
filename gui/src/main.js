@@ -425,6 +425,11 @@ $("start-scan").addEventListener("click", async () => {
   } catch (err) {
     setStatus("config-status", `✗ ${err}`, "error");
     $("start-scan").disabled = false;
+  } finally {
+    // Clear the seed phrase from the DOM regardless of whether start_scan
+    // succeeded; on failure the user can retype, and a successful scan no
+    // longer needs the cleartext phrase visible.
+    seedInput.value = "";
   }
 });
 
@@ -580,19 +585,23 @@ function updateScanUI(progress) {
 
 function renderAccountRows(accounts) {
   const tbody = $("scan-rows");
-  tbody.innerHTML = "";
+  tbody.replaceChildren();
   accounts.forEach((acc) => {
     const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${acc.account_index}</td>
-      <td>${fmt(acc.sapling_zatoshis)}</td>
-      <td>${fmt(acc.orchard_zatoshis)}</td>
-      <td>${fmt(acc.transparent_zatoshis)}</td>
-      <td>${fmt(acc.total_zatoshis)}</td>
-      <td>${escapeHtml(acc.status)}</td>
-    `;
+    appendCell(tr, String(acc.account_index));
+    appendCell(tr, fmt(acc.sapling_zatoshis));
+    appendCell(tr, fmt(acc.orchard_zatoshis));
+    appendCell(tr, fmt(acc.transparent_zatoshis));
+    appendCell(tr, fmt(acc.total_zatoshis));
+    appendCell(tr, String(acc.status));
     tbody.appendChild(tr);
   });
+}
+
+function appendCell(tr, text) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  tr.appendChild(td);
 }
 
 $("back-to-config").addEventListener("click", () => {
@@ -641,7 +650,7 @@ $("review-sweep").addEventListener("click", async () => {
 
 function renderSweepProposal(proposal) {
   const tbody = $("sweep-rows");
-  tbody.innerHTML = "";
+  tbody.replaceChildren();
 
   proposal.transactions.forEach((tx) => {
     const kindLabel = tx.kind === "shield_transparent" ? "Shield" : "Sweep";
@@ -649,15 +658,23 @@ function renderSweepProposal(proposal) {
     const shortDest =
       dest.length > 26 ? dest.slice(0, 12) + "…" + dest.slice(-10) : dest;
     const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${tx.source_account}</td>
-      <td>${kindLabel}</td>
-      <td title="${escapeHtml(dest)}" style="cursor:pointer" data-copy="${escapeHtml(dest)}">${escapeHtml(shortDest)} <small>📋</small></td>
-      <td>${fmt(tx.gross_zatoshis)}</td>
-      <td>${fmt(tx.fee_zatoshis)}</td>
-      <td>${fmt(tx.net_zatoshis)}</td>
-      <td>${escapeHtml(tx.memo ?? "—")}</td>
-    `;
+    appendCell(tr, String(tx.source_account));
+    appendCell(tr, kindLabel);
+
+    const destCell = document.createElement("td");
+    destCell.title = dest;
+    destCell.style.cursor = "pointer";
+    destCell.dataset.copy = dest;
+    destCell.appendChild(document.createTextNode(shortDest + " "));
+    const clip = document.createElement("small");
+    clip.textContent = "📋";
+    destCell.appendChild(clip);
+    tr.appendChild(destCell);
+
+    appendCell(tr, fmt(tx.gross_zatoshis));
+    appendCell(tr, fmt(tx.fee_zatoshis));
+    appendCell(tr, fmt(tx.net_zatoshis));
+    appendCell(tr, String(tx.memo ?? "—"));
     tbody.appendChild(tr);
   });
 
@@ -666,16 +683,23 @@ function renderSweepProposal(proposal) {
     (proposal.warning ? `  ⚠ ${proposal.warning}` : "");
 
   const skippedEl = $("sweep-skipped");
+  skippedEl.replaceChildren();
   if (proposal.skipped_accounts.length > 0) {
-    const items = proposal.skipped_accounts
-      .map(
-        (s) =>
-          `<li>Account ${s.account_index}: ${escapeHtml(s.reason)} (${fmt(s.gross_zatoshis)})</li>`
-      )
-      .join("");
-    skippedEl.innerHTML = `<p style="margin:6px 0 4px;font-weight:700;color:var(--muted)">Skipped accounts</p><ul class="discovery-list">${items}</ul>`;
-  } else {
-    skippedEl.innerHTML = "";
+    const heading = document.createElement("p");
+    heading.style.margin = "6px 0 4px";
+    heading.style.fontWeight = "700";
+    heading.style.color = "var(--muted)";
+    heading.textContent = "Skipped accounts";
+    skippedEl.appendChild(heading);
+
+    const list = document.createElement("ul");
+    list.className = "discovery-list";
+    proposal.skipped_accounts.forEach((s) => {
+      const li = document.createElement("li");
+      li.textContent = `Account ${s.account_index}: ${s.reason} (${fmt(s.gross_zatoshis)})`;
+      list.appendChild(li);
+    });
+    skippedEl.appendChild(list);
   }
 
   $("irreversible-check").checked = false;
@@ -688,9 +712,11 @@ $("sweep-rows").addEventListener("click", (e) => {
   const cell = e.target.closest("[data-copy]");
   if (!cell) return;
   navigator.clipboard.writeText(cell.dataset.copy).then(() => {
-    const orig = cell.innerHTML;
-    cell.innerHTML = "Copied!";
-    setTimeout(() => { cell.innerHTML = orig; }, 1200);
+    const orig = cell.cloneNode(true);
+    cell.replaceChildren(document.createTextNode("Copied!"));
+    setTimeout(() => {
+      cell.replaceChildren(...orig.childNodes);
+    }, 1200);
   });
 });
 
@@ -714,8 +740,10 @@ $("execute-sweep").addEventListener("click", async () => {
   } catch (err) {
     $("execute-sweep").disabled = false;
     $("irreversible-check").disabled = false;
-    $("sweep-skipped").innerHTML =
-      `<p class="status-line error">✗ Sweep failed: ${escapeHtml(String(err))}</p>`;
+    const failMsg = document.createElement("p");
+    failMsg.className = "status-line error";
+    failMsg.textContent = `✗ Sweep failed: ${err}`;
+    $("sweep-skipped").replaceChildren(failMsg);
   }
 });
 
@@ -739,7 +767,9 @@ function renderCompleteScreen(results) {
     })
     .join("\n\n");
 
-  $("complete-report").innerHTML = `<pre>${escapeHtml(rows)}</pre>`;
+  const reportBlock = document.createElement("pre");
+  reportBlock.textContent = rows;
+  $("complete-report").replaceChildren(reportBlock);
 
   const report = buildReport(results);
   $("save-report").dataset.report = report;
@@ -764,10 +794,9 @@ function buildReport(results) {
 }
 
 function buildDefaultReportPath() {
-  const dir = ($("data-dir")?.value ?? "").trim();
-  if (!dir) return "zeck-recovery-report.txt";
-  const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
-  return `${dir}${sep}zeck-recovery-report.txt`;
+  // Paths are resolved relative to the recovery workspace by the backend's
+  // resolve_report_path, so we just return the bare file name here.
+  return "zeck-recovery-report.txt";
 }
 
 $("save-report").addEventListener("click", async () => {
@@ -778,7 +807,11 @@ $("save-report").addEventListener("click", async () => {
     return;
   }
   try {
-    const saved = await invoke("save_recovery_report", { path, report });
+    const saved = await invoke("save_recovery_report", {
+      handle: state.scanHandle,
+      path,
+      report,
+    });
     setStatus("save-report-status", `✓ Saved to ${saved}`, "success");
   } catch (err) {
     setStatus("save-report-status", `✗ ${err}`, "error");

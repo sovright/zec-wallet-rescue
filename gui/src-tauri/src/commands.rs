@@ -1,4 +1,8 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    path::{Component, Path, PathBuf},
+};
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use std::process::Command;
 
@@ -231,21 +235,91 @@ pub async fn detect_birthday(
 }
 
 #[tauri::command]
-pub async fn save_recovery_report(path: String, report: String) -> Result<String, String> {
-    let path = PathBuf::from(path.trim());
-    if path.as_os_str().is_empty() {
+pub async fn save_recovery_report(
+    state: State<'_, AppState>,
+    handle: ScanHandle,
+    path: String,
+    report: String,
+) -> Result<String, String> {
+    let progress = state
+        .service
+        .get_scan_progress(&handle)
+        .await
+        .map_err(|err| err.to_string())?;
+    let workspace_dir = progress
+        .summary
+        .as_ref()
+        .map(|summary| PathBuf::from(&summary.workspace_dir))
+        .ok_or_else(|| "recovery report can only be saved after workspace sync".to_owned())?;
+    let path = resolve_report_path(&workspace_dir, path.trim())?;
+
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        if metadata.file_type().is_symlink() {
+            return Err("report path must not be a symlink".to_owned());
+        }
+        if !metadata.is_file() {
+            return Err("report path must refer to a regular file".to_owned());
+        }
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&path)
+        .map_err(|err| format!("opening {}: {err}", path.display()))?;
+    file.write_all(report.as_bytes())
+        .map_err(|err| format!("writing {}: {err}", path.display()))?;
+    Ok(path.display().to_string())
+}
+
+fn resolve_report_path(workspace_dir: &Path, requested: &str) -> Result<PathBuf, String> {
+    if requested.is_empty() {
         return Err("report path cannot be empty".to_owned());
     }
 
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
+    let requested = PathBuf::from(requested);
+    if requested
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
     {
+        return Err("report path must stay inside the recovery workspace".to_owned());
+    }
+
+    let workspace_root = fs::canonicalize(workspace_dir).map_err(|err| {
+        format!(
+            "opening recovery workspace {}: {err}",
+            workspace_dir.display()
+        )
+    })?;
+    let candidate = if requested.is_absolute() {
+        requested
+    } else {
+        workspace_root.join(requested)
+    };
+    let parent = candidate
+        .parent()
+        .ok_or_else(|| "report path must include a file name".to_owned())?;
+
+    // Auto-create relative subdirectories under the workspace, but never blindly
+    // mkdir for absolute user-supplied paths — those must already exist so the
+    // canonicalize-and-prefix-check below can guard against escapes.
+    if !parent.exists() && parent.starts_with(&workspace_root) {
         fs::create_dir_all(parent)
             .map_err(|err| format!("creating {}: {err}", parent.display()))?;
     }
-    fs::write(&path, report).map_err(|err| format!("writing {}: {err}", path.display()))?;
-    Ok(path.display().to_string())
+
+    let canonical_parent = fs::canonicalize(parent)
+        .map_err(|err| format!("report directory must be inside the workspace: {err}"))?;
+    if !canonical_parent.starts_with(&workspace_root) {
+        return Err("report path must stay inside the recovery workspace".to_owned());
+    }
+    let file_name = candidate
+        .file_name()
+        .filter(|file_name| !file_name.is_empty())
+        .ok_or_else(|| "report path must include a file name".to_owned())?;
+
+    Ok(canonical_parent.join(file_name))
 }
 
 /// Best-effort OS-level notification used when a long scan finishes. Mirrors
@@ -363,7 +437,99 @@ fn parse_zec_to_zatoshis(input: &str) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
+
+    fn temp_workspace() -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "zeck-report-path-test-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("temp workspace should be created");
+        path
+    }
+
+    #[test]
+    fn report_path_resolves_inside_workspace() {
+        let workspace = temp_workspace();
+        let path = resolve_report_path(&workspace, "zeck-recovery-report.txt")
+            .expect("report path should resolve");
+
+        assert!(path.starts_with(fs::canonicalize(&workspace).expect("canonical workspace")));
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("zeck-recovery-report.txt")
+        );
+
+        fs::remove_dir_all(workspace).expect("temp workspace should be removed");
+    }
+
+    #[test]
+    fn report_path_rejects_parent_traversal() {
+        let workspace = temp_workspace();
+        let err = resolve_report_path(&workspace, "../outside.txt")
+            .expect_err("parent traversal should be rejected");
+
+        assert!(err.contains("inside the recovery workspace"));
+
+        fs::remove_dir_all(workspace).expect("temp workspace should be removed");
+    }
+
+    #[test]
+    fn report_path_auto_creates_subdir_inside_workspace() {
+        let workspace = temp_workspace();
+        let path = resolve_report_path(&workspace, "reports/zeck-recovery-report.txt")
+            .expect("subdir should be auto-created");
+
+        let canonical_workspace = fs::canonicalize(&workspace).expect("canonical workspace");
+        assert!(path.starts_with(&canonical_workspace));
+        assert!(path.parent().expect("parent").exists());
+
+        fs::remove_dir_all(workspace).expect("temp workspace should be removed");
+    }
+
+    #[test]
+    fn report_path_accepts_absolute_path_inside_workspace() {
+        let workspace = temp_workspace();
+        let canonical_workspace = fs::canonicalize(&workspace).expect("canonical workspace");
+        let absolute = canonical_workspace.join("zeck-recovery-report.txt");
+
+        let path = resolve_report_path(
+            &workspace,
+            absolute.to_str().expect("absolute path should be utf-8"),
+        )
+        .expect("absolute path inside workspace should resolve");
+
+        assert_eq!(path, absolute);
+
+        fs::remove_dir_all(workspace).expect("temp workspace should be removed");
+    }
+
+    #[test]
+    fn report_path_rejects_absolute_path_outside_workspace() {
+        let workspace = temp_workspace();
+        let outside = std::env::temp_dir().join("zeck-outside-report.txt");
+
+        let err = resolve_report_path(
+            &workspace,
+            outside.to_str().expect("outside path should be utf-8"),
+        )
+        .expect_err("absolute path outside workspace should be rejected");
+
+        // Either the parent canonicalization fails (parent missing) or the
+        // prefix check fails — both are acceptable rejections.
+        assert!(
+            err.contains("inside the recovery workspace")
+                || err.contains("must be inside the workspace")
+        );
+
+        fs::remove_dir_all(workspace).expect("temp workspace should be removed");
+    }
 
     #[test]
     fn one_zatoshi() {

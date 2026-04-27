@@ -168,7 +168,15 @@
           </p>
           <label class="field">
             <span>Seed phrase</span>
-            <textarea id="seed-input" rows="5" class="masked"></textarea>
+            <textarea
+              id="seed-input"
+              rows="5"
+              class="masked"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+            ></textarea>
           </label>
           <div class="inline-actions">
             <label class="checkline">
@@ -388,7 +396,8 @@
           <div class="report-card" id="complete-report"></div>
           <label class="field">
             <span>Recovery report path</span>
-            <input id="report-path" type="text" value="./zeck_data/zeck-recovery-report.txt" />
+            <input id="report-path" type="text" value="zeck-recovery-report.txt" />
+            <small class="hint">Saved inside the recovery workspace. Subdirectories are created if needed.</small>
           </label>
           <div class="inline-actions">
             <button class="ghost" id="save-report">Save recovery report</button>
