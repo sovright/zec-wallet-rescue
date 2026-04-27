@@ -89,11 +89,12 @@ table {
   align-items: center;
   gap: 6px;
   margin: 0;
-  /* Subtle: low contrast, small, no underline noise. */
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.84rem;
   letter-spacing: 0.02em;
-  opacity: 0.65;
+  opacity: 0.75;
+  text-decoration: none;
+  cursor: pointer;
   transition: opacity 0.18s ease;
 }
 
@@ -112,8 +113,8 @@ table {
      wordmark to match the surrounding muted text instead of using the
      SVG's hardcoded fill. <img src> can't inherit text color. */
   display: inline-block;
-  height: 0.72rem;
-  width: calc(0.72rem * (90 / 34));
+  height: 0.84rem;
+  width: calc(0.84rem * (90 / 34));
   background-color: currentColor;
   mask-image: url("./assets/sovright-caption.svg");
   -webkit-mask-image: url("./assets/sovright-caption.svg");
