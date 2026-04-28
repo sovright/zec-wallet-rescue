@@ -1066,7 +1066,8 @@ mod tests {
             server: None,
             message: None,
             error: None,
-            sleep_detected: false,
+            sleep_event: None,
+            in_sandblasting_zone: false,
         }
     }
 
