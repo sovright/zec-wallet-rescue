@@ -313,6 +313,7 @@ impl ScanTaskState {
                 server: None,
                 message: None,
                 error: None,
+                sleep_detected: false,
             },
             cancelled: Arc::new(AtomicBool::new(false)),
             workspace: None,
@@ -339,11 +340,33 @@ impl ProgressPoller {
         let stop_clone = stop.clone();
         let task = tokio::spawn(async move {
             let scan_started = std::time::Instant::now();
+            // Sleep detection: each tick records (Instant, SystemTime). If
+            // wall-clock advances much more than the monotonic delta between
+            // two consecutive ticks, the OS almost certainly suspended us.
+            // Threshold of 30s avoids false positives from scheduler hiccups
+            // while still catching the shortest realistic suspend.
+            const SLEEP_DETECTION_THRESHOLD: std::time::Duration =
+                std::time::Duration::from_secs(30);
+            let mut last_tick: Option<(std::time::Instant, std::time::SystemTime)> = None;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 if stop_clone.load(Ordering::Relaxed) {
                     break;
                 }
+                let now_mono = std::time::Instant::now();
+                let now_wall = std::time::SystemTime::now();
+                let suspended = match last_tick {
+                    Some((prev_mono, prev_wall)) => {
+                        let mono_delta = now_mono.saturating_duration_since(prev_mono);
+                        let wall_delta = now_wall
+                            .duration_since(prev_wall)
+                            .unwrap_or(std::time::Duration::ZERO);
+                        wall_delta.saturating_sub(mono_delta) >= SLEEP_DETECTION_THRESHOLD
+                    }
+                    None => false,
+                };
+                last_tick = Some((now_mono, now_wall));
+
                 if let Ok(db) = WalletDb::for_path(
                     workspace.wallet_db_path(),
                     consensus_network(network),
@@ -361,7 +384,13 @@ impl ProgressPoller {
                         // key derivation, lightwalletd probing).
                         guard.progress.elapsed_seconds =
                             Some(scan_started.elapsed().as_secs());
+                        if suspended {
+                            guard.progress.sleep_detected = true;
+                        }
                     }
+                } else if suspended {
+                    // DB open failed but we still want to record the resume.
+                    state.lock().await.progress.sleep_detected = true;
                 }
             }
         });

@@ -427,6 +427,7 @@ async fn wait_for_scan(
     let mut eta = EtaTracker::new();
     let started_at = Instant::now();
     let mut discoveries_seen = 0usize;
+    let mut sleep_announced = false;
 
     loop {
         let progress = service.get_scan_progress(handle).await?;
@@ -448,6 +449,14 @@ async fn wait_for_scan(
                 bar.println(format_discovery(d));
             }
             discoveries_seen = progress.discoveries.len();
+        }
+
+        if progress.sleep_detected && !sleep_announced {
+            bar.println(
+                "⏸  Detected that this machine slept during the sync. \
+                 ZECK reconnects automatically; progress is preserved.",
+            );
+            sleep_announced = true;
         }
 
         // Upgrade spinner → progress bar the first time we have block counts.
@@ -1067,6 +1076,7 @@ mod tests {
             server: None,
             message: None,
             error: None,
+            sleep_detected: false,
         }
     }
 

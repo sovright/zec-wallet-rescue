@@ -122,7 +122,29 @@ impl RecoveryService {
         let sessions = self.sessions.clone();
         let handle_id = handle.id.clone();
         let task = tokio::spawn(async move {
+            // Acquire a power-management guard so the OS doesn't put the
+            // machine to sleep mid-scan. Held for the entire scan task; the
+            // Drop impl releases on completion, error, panic, or task abort.
+            // Soft-fail: if the guard can't be acquired we still scan, the
+            // user just has to keep the machine awake themselves.
+            let _awake = match keepawake::Builder::default()
+                .idle(true)
+                .sleep(true)
+                .reason("ZECK recovery scan")
+                .app_name("ZECK")
+                .app_reverse_domain("org.zeck.app")
+                .create()
+            {
+                Ok(guard) => Some(guard),
+                Err(err) => {
+                    tracing::warn!(
+                        "keepawake guard unavailable; scan may pause if the machine sleeps: {err}"
+                    );
+                    None
+                }
+            };
             run_recovery_scan(state.clone(), runtime).await;
+            drop(_awake);
             // Keep completed sessions alive so the user can proceed to sweep
             // at their own pace. Only clean up cancelled/error sessions after
             // a short delay so they don't accumulate.
@@ -1044,6 +1066,7 @@ mod tests {
             server: None,
             message: None,
             error: None,
+            sleep_detected: false,
         }
     }
 

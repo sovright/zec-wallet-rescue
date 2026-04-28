@@ -10,6 +10,7 @@ rust-version.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 bip0039.workspace = true
+keepawake.workspace = true
 orchard.workspace = true
 prost.workspace = true
 rand_core.workspace = true

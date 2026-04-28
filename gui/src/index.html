@@ -304,6 +304,11 @@
             account count) to resume from the last persisted block. Changing any of those
             intentionally starts a fresh scan from the new birthday.
           </div>
+          <div class="banner warning" id="scan-sleep-banner" style="display:none">
+            <strong>This machine went to sleep during the scan.</strong>
+            ZECK reconnected automatically and your scan progress was preserved on disk.
+            To avoid pauses, set your system to stay awake while ZECK is syncing.
+          </div>
           <div class="metric-panel">
             <div>
               <span class="metric-label">Phase</span>

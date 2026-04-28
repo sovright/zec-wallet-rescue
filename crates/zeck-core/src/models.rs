@@ -225,6 +225,12 @@ pub struct ScanProgress {
     pub server: Option<LightwalletdProbe>,
     pub message: Option<String>,
     pub error: Option<String>,
+    /// Set to `true` when the progress poller observes a wall-clock jump
+    /// inconsistent with monotonic time — a strong signal the machine slept
+    /// during the sync. Sticky for the rest of the scan so the UI can show a
+    /// banner even if subsequent ticks look normal again.
+    #[serde(default)]
+    pub sleep_detected: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

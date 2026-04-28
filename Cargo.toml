@@ -34,6 +34,7 @@ tonic = "0.14.5"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter"] }
 url = "2.5.8"
+keepawake = "0.6"
 sha2 = "0.10"
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
 zcash_address = "0.10.1"

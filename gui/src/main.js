@@ -445,6 +445,8 @@ async function startProgressListeners() {
   setStatus("scan-message", "", "");
   $("review-sweep").disabled = true;
   $("back-to-config").style.display = "none";
+  // Reset the sleep banner so a previous scan's notice doesn't carry over.
+  $("scan-sleep-banner").style.display = "none";
   eta.reset();
 
   // Await all three subscriptions before returning. If we stored the unlisten
@@ -575,6 +577,13 @@ function updateScanUI(progress) {
   }
 
   renderAccountRows(progress.accounts);
+
+  // sleep_detected is sticky on the backend, so once the poller spots a
+  // suspend the banner stays up for the rest of the scan even if subsequent
+  // ticks look normal. Reset happens on the next start, in startProgressListeners.
+  if (progress.sleep_detected) {
+    $("scan-sleep-banner").style.display = "";
+  }
 
   const terminal = ["complete", "cancelled", "error"].includes(progress.phase);
   $("cancel-scan").style.display = terminal ? "none" : "";
