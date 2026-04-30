@@ -735,6 +735,7 @@ $("irreversible-check").addEventListener("change", () => {
 $("execute-sweep").addEventListener("click", async () => {
   $("execute-sweep").disabled = true;
   $("irreversible-check").disabled = true;
+  setStatus("sweep-execute-status", "Broadcasting transactions to the Zcash network… this may take 10–30 seconds.", "");
 
   try {
     const results = await invoke("execute_sweep", {
@@ -743,15 +744,13 @@ $("execute-sweep").addEventListener("click", async () => {
       memo: state.memo,
       maxFeeZec: state.maxFeeZec,
     });
+    setStatus("sweep-execute-status", "", "");
     renderCompleteScreen(results);
     goTo("complete");
   } catch (err) {
     $("execute-sweep").disabled = false;
     $("irreversible-check").disabled = false;
-    const failMsg = document.createElement("p");
-    failMsg.className = "status-line error";
-    failMsg.textContent = `✗ Sweep failed: ${err}`;
-    $("sweep-skipped").replaceChildren(failMsg);
+    setStatus("sweep-execute-status", `✗ Sweep failed: ${err}`, "error");
   }
 });
 
