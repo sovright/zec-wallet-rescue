@@ -153,6 +153,12 @@ impl RecoveryService {
 
         {
             let state = session.state.lock().await;
+            // Never cancel an already-complete scan: the phase would flip to
+            // Cancelled and any still-alive pump loop would emit scan-complete
+            // with Cancelled, corrupting the UI for the user's sweep workflow.
+            if state.progress.phase == ScanPhase::Complete {
+                return Ok(());
+            }
             state
                 .cancelled
                 .store(true, std::sync::atomic::Ordering::SeqCst);

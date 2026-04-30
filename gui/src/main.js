@@ -459,8 +459,12 @@ async function startProgressListeners() {
   $("scan-discoveries").style.display = "none";
 
   const [unlistenProgress, unlistenComplete, unlistenDiscovered] = await Promise.all([
-    listen("scan-progress", (event) => updateScanUI(event.payload)),
+    listen("scan-progress", (event) => {
+      if (event.payload.handle?.id !== state.scanHandle?.id) return;
+      updateScanUI(event.payload);
+    }),
     listen("scan-complete", (event) => {
+      if (event.payload.handle?.id !== state.scanHandle?.id) return;
       updateScanUI(event.payload);
       notifyScanComplete(event.payload);
       cleanupListeners();
