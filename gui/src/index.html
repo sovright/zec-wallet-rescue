@@ -307,6 +307,20 @@
             account count) to resume from the last persisted block. Changing any of those
             intentionally starts a fresh scan from the new birthday.
           </div>
+          <div class="banner warning" id="scan-sleep-banner" style="display:none">
+            <strong>This machine went to sleep during the scan.</strong>
+            <span id="scan-sleep-detail"></span>
+            ZECK reconnected automatically and your scan progress was preserved on disk.
+            For faster sync, adjust your system settings to keep the computer awake while ZECK is running.
+          </div>
+          <div class="banner info" id="scan-sandblasting-banner" style="display:none">
+            <strong>🐢 Slow zone — sandblasting era (mid-2022 → late&nbsp;2023, mainnet).</strong>
+            Block volume during this window was inflated by a sustained
+            <a href="https://www.theblock.co/post/175259/someone-is-clogging-up-the-zcash-blockchain-with-a-spam-attack"
+               target="_blank" rel="noopener noreferrer">spam attack on Zcash</a>.
+            Sync time inside this range can stretch to several days for old wallets.
+            As long as the block counter is moving, your scan is working as designed.
+          </div>
           <div class="metric-panel">
             <div>
               <span class="metric-label">Phase</span>

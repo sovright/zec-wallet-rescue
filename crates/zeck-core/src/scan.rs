@@ -46,8 +46,9 @@ use crate::{
         validate_lightwalletd_network,
     },
     models::{
-        AccountBalancePreview, AddressScope, DerivedAccount, DiscoveryPool, LightwalletdProbe,
-        RuntimeScanConfig, ScanDiscovery, ScanHandle, ScanPhase, ScanProgress, ScanSummary,
+        in_sandblasting_zone, AccountBalancePreview, AddressScope, DerivedAccount, DiscoveryPool,
+        LightwalletdProbe, RuntimeScanConfig, ScanDiscovery, ScanHandle, ScanPhase, ScanProgress,
+        ScanSummary, SleepEvent,
     },
     workspace::{consensus_network, RecoveryWorkspace},
 };
@@ -313,6 +314,8 @@ impl ScanTaskState {
                 server: None,
                 message: None,
                 error: None,
+                sleep_event: None,
+                in_sandblasting_zone: false,
             },
             cancelled: Arc::new(AtomicBool::new(false)),
             workspace: None,
@@ -339,29 +342,89 @@ impl ProgressPoller {
         let stop_clone = stop.clone();
         let task = tokio::spawn(async move {
             let scan_started = std::time::Instant::now();
+            // Sleep detection: each tick records (Instant, SystemTime). If
+            // wall-clock advances much more than the monotonic delta between
+            // two consecutive ticks, the OS almost certainly suspended us.
+            // Threshold of 30s avoids false positives from scheduler hiccups
+            // while still catching the shortest realistic suspend.
+            const SLEEP_DETECTION_THRESHOLD: std::time::Duration =
+                std::time::Duration::from_secs(30);
+            let mut last_tick: Option<(std::time::Instant, std::time::SystemTime)> = None;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 if stop_clone.load(Ordering::Relaxed) {
                     break;
                 }
-                if let Ok(db) = WalletDb::for_path(
+                let now_mono = std::time::Instant::now();
+                let now_wall = std::time::SystemTime::now();
+                // The sleep gap is what wall-clock advanced *beyond* the
+                // monotonic delta — i.e. the time the process was paused.
+                let sleep_gap = match last_tick {
+                    Some((prev_mono, prev_wall)) => {
+                        let mono_delta = now_mono.saturating_duration_since(prev_mono);
+                        let wall_delta = now_wall
+                            .duration_since(prev_wall)
+                            .unwrap_or(std::time::Duration::ZERO);
+                        let gap = wall_delta.saturating_sub(mono_delta);
+                        if gap >= SLEEP_DETECTION_THRESHOLD {
+                            Some((prev_wall, gap))
+                        } else {
+                            None
+                        }
+                    }
+                    None => None,
+                };
+                last_tick = Some((now_mono, now_wall));
+
+                let scanned_height = if let Ok(db) = WalletDb::for_path(
                     workspace.wallet_db_path(),
                     consensus_network(network),
                     SystemClock,
                     OsRng,
                 ) {
-                    if let Ok(Some(summary)) = db.get_wallet_summary(ConfirmationsPolicy::MIN) {
-                        let scanned_height = u32::from(summary.fully_scanned_height());
-                        let mut guard = state.lock().await;
-                        guard.progress.blocks_scanned =
-                            block_delta(scanned_height, effective_birthday);
-                        guard.progress.synced_to_height = Some(u64::from(scanned_height));
-                        // Store scan-phase elapsed so get_scan_progress can compute an
-                        // accurate rate that excludes pre-scan phases (seed validation,
-                        // key derivation, lightwalletd probing).
-                        guard.progress.elapsed_seconds =
-                            Some(scan_started.elapsed().as_secs());
-                    }
+                    db.get_wallet_summary(ConfirmationsPolicy::MIN)
+                        .ok()
+                        .flatten()
+                        .map(|s| u32::from(s.fully_scanned_height()))
+                } else {
+                    None
+                };
+
+                let mut guard = state.lock().await;
+                if let Some(scanned_height) = scanned_height {
+                    guard.progress.blocks_scanned =
+                        block_delta(scanned_height, effective_birthday);
+                    guard.progress.synced_to_height = Some(u64::from(scanned_height));
+                    // Store scan-phase elapsed so get_scan_progress can compute an
+                    // accurate rate that excludes pre-scan phases (seed validation,
+                    // key derivation, lightwalletd probing).
+                    guard.progress.elapsed_seconds = Some(scan_started.elapsed().as_secs());
+                    guard.progress.in_sandblasting_zone =
+                        in_sandblasting_zone(scanned_height, network);
+                }
+                if let Some((slept_at, gap)) = sleep_gap {
+                    let last_seconds = gap.as_secs();
+                    let slept_at_unix = slept_at
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let resumed_at_unix = now_wall
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let event = guard.progress.sleep_event.get_or_insert(SleepEvent {
+                        slept_at_unix,
+                        resumed_at_unix,
+                        last_sleep_seconds: 0,
+                        total_lost_seconds: 0,
+                        event_count: 0,
+                    });
+                    event.slept_at_unix = slept_at_unix;
+                    event.resumed_at_unix = resumed_at_unix;
+                    event.last_sleep_seconds = last_seconds;
+                    event.total_lost_seconds =
+                        event.total_lost_seconds.saturating_add(last_seconds);
+                    event.event_count = event.event_count.saturating_add(1);
                 }
             }
         });

@@ -225,6 +225,59 @@ pub struct ScanProgress {
     pub server: Option<LightwalletdProbe>,
     pub message: Option<String>,
     pub error: Option<String>,
+    /// Populated by the progress poller when it observes wall-clock jumps
+    /// inconsistent with monotonic time — a strong signal the machine
+    /// suspended. Sticky for the rest of the scan; updated in place when
+    /// additional sleeps are detected so the UI can render "machine slept
+    /// N times, total Xh lost".
+    #[serde(default)]
+    pub sleep_event: Option<SleepEvent>,
+    /// True while the wallet sync cursor is inside the sandblasting era
+    /// (mid-2022 → late 2023, mainnet only). Toggled per poll tick — the
+    /// banner appears while traversing the slow zone and disappears once
+    /// the cursor passes through.
+    #[serde(default)]
+    pub in_sandblasting_zone: bool,
+}
+
+/// Snapshot of all detected sleep gaps during the current scan. The poller
+/// rewrites this struct in place each time it observes a new gap; consumers
+/// render the latest values plus the running totals.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SleepEvent {
+    /// Wall-clock at the last awake tick before the most recent sleep, as
+    /// seconds since the Unix epoch. Frontends format to local time.
+    pub slept_at_unix: u64,
+    /// Wall-clock at the first post-sleep tick, seconds since the Unix epoch.
+    pub resumed_at_unix: u64,
+    /// Length of the most recent sleep gap, in seconds.
+    pub last_sleep_seconds: u64,
+    /// Sum of all detected sleep gaps so far this scan.
+    pub total_lost_seconds: u64,
+    /// Number of distinct sleeps observed.
+    pub event_count: u32,
+}
+
+/// Mainnet block heights bracketing the sandblasting attack window.
+///
+/// Sources: Protos (mid-June 2022 onset), CoinDesk (zcashd 5.5.0 / ZIP 317
+/// release on 2023-04-28 began mitigation), Electric Coin Company (declared
+/// exit from emergency mode on 2023-11-01). Heights mapped via Blockchair.
+///
+/// The bounds are intentionally rounded to ~100k blocks. The attack was a
+/// sustained traffic pattern, not a discrete event, and miner adoption of
+/// ZIP 317 fees took months — so single-block precision would be misleading.
+pub const SANDBLASTING_START_HEIGHT: u32 = 1_700_000;
+/// 2023-11-01 was height 2,282,264; padded by ~7 days so wallets within a
+/// week of the all-clear still see the banner — chain density doesn't drop
+/// on the exact block.
+pub const SANDBLASTING_END_HEIGHT: u32 = 2_290_000;
+
+/// Whether the given mainnet height is inside the sandblasting attack
+/// window. Returns `false` for testnet (the attack was mainnet-only).
+pub fn in_sandblasting_zone(height: u32, network: ZeckNetwork) -> bool {
+    matches!(network, ZeckNetwork::Mainnet)
+        && (SANDBLASTING_START_HEIGHT..=SANDBLASTING_END_HEIGHT).contains(&height)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,4 +343,25 @@ pub struct TxBroadcastResult {
     pub status: String,
     pub detail: String,
     pub confirmed_height: Option<u32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sandblasting_zone_brackets_attack_window_on_mainnet() {
+        assert!(!in_sandblasting_zone(SANDBLASTING_START_HEIGHT - 1, ZeckNetwork::Mainnet));
+        assert!(in_sandblasting_zone(SANDBLASTING_START_HEIGHT, ZeckNetwork::Mainnet));
+        assert!(in_sandblasting_zone(2_000_000, ZeckNetwork::Mainnet));
+        assert!(in_sandblasting_zone(SANDBLASTING_END_HEIGHT, ZeckNetwork::Mainnet));
+        assert!(!in_sandblasting_zone(SANDBLASTING_END_HEIGHT + 1, ZeckNetwork::Mainnet));
+    }
+
+    #[test]
+    fn sandblasting_zone_is_mainnet_only() {
+        // Testnet had no comparable spam attack — banner must not surface
+        // for testnet sweeps even though heights overlap.
+        assert!(!in_sandblasting_zone(2_000_000, ZeckNetwork::Testnet));
+    }
 }

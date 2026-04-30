@@ -427,6 +427,9 @@ async fn wait_for_scan(
     let mut eta = EtaTracker::new();
     let started_at = Instant::now();
     let mut discoveries_seen = 0usize;
+    let mut sleep_events_announced: u32 = 0;
+    let mut sandblasting_announced = false;
+    let mut sandblasting_active = false;
 
     loop {
         let progress = service.get_scan_progress(handle).await?;
@@ -448,6 +451,35 @@ async fn wait_for_scan(
                 bar.println(format_discovery(d));
             }
             discoveries_seen = progress.discoveries.len();
+        }
+
+        // Announce each new sleep event. event_count is monotonic so we
+        // print one line per resume, even if the user's machine sleeps
+        // multiple times during a long scan.
+        if let Some(event) = &progress.sleep_event {
+            if event.event_count > sleep_events_announced {
+                bar.println(format_sleep_event(event));
+                sleep_events_announced = event.event_count;
+            }
+        }
+
+        // Sandblasting era: warn on entry, reassure on exit. Heights are
+        // mainnet-only; testnet always reports false.
+        if progress.in_sandblasting_zone && !sandblasting_active {
+            if !sandblasting_announced {
+                bar.println(
+                    "🐢  Entering sandblasting era (mainnet, ~mid-2022 → late 2023).\n    \
+                     This window saw a sustained spam attack; sync through it can \
+                     stretch to several days for old wallets.\n    \
+                     As long as the block counter is moving, your scan is working as designed.\n    \
+                     Background: https://www.theblock.co/post/175259/someone-is-clogging-up-the-zcash-blockchain-with-a-spam-attack",
+                );
+                sandblasting_announced = true;
+            }
+            sandblasting_active = true;
+        } else if !progress.in_sandblasting_zone && sandblasting_active {
+            bar.println("✅  Past the sandblasting window — sync should speed up from here.");
+            sandblasting_active = false;
         }
 
         // Upgrade spinner → progress bar the first time we have block counts.
@@ -635,6 +667,47 @@ fn era_hint(height: u64) -> Option<String> {
     // activation read as 2019, not 2018.
     let year = SAPLING_YEAR + (elapsed_years + 0.18) as i32;
     Some(year.to_string())
+}
+
+fn format_sleep_event(event: &zeck_core::SleepEvent) -> String {
+    let slept = format_local_hhmm(event.slept_at_unix);
+    let resumed = format_local_hhmm(event.resumed_at_unix);
+    let count_note = if event.event_count > 1 {
+        format!(
+            " ({} sleeps so far, total {} not syncing)",
+            event.event_count,
+            format_duration_secs(event.total_lost_seconds)
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "⏸  Detected that this machine slept from {slept}, restarted at {resumed}. \
+         Time spent not syncing: {}{count_note}. \
+         For faster sync, adjust your system settings to keep the computer awake while ZECK runs.",
+        format_duration_secs(event.last_sleep_seconds),
+    )
+}
+
+/// Format a Unix timestamp as UTC HH:MM. The CLI deliberately stays in UTC
+/// to avoid pulling in chrono for tz handling — the GUI does proper local-
+/// time formatting via the browser's Intl API. CLI users running multi-hour
+/// scans care more about "how long ago" than literal local-time formatting.
+fn format_local_hhmm(unix_seconds: u64) -> String {
+    let secs_in_day = unix_seconds % 86_400;
+    let hours = secs_in_day / 3_600;
+    let mins = (secs_in_day % 3_600) / 60;
+    format!("{hours:02}:{mins:02} UTC")
+}
+
+fn format_duration_secs(secs: u64) -> String {
+    let hours = secs / 3_600;
+    let mins = (secs % 3_600) / 60;
+    if hours > 0 {
+        format!("{hours}h {mins:02}m")
+    } else {
+        format!("{mins}m {:02}s", secs % 60)
+    }
 }
 
 fn format_discovery(discovery: &ScanDiscovery) -> String {
@@ -1067,6 +1140,8 @@ mod tests {
             server: None,
             message: None,
             error: None,
+            sleep_event: None,
+            in_sandblasting_zone: false,
         }
     }
 

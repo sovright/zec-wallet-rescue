@@ -56,6 +56,34 @@ function fmtSeconds(s) {
   return r > 0 ? `${m}m ${r}s` : `${m}m`;
 }
 
+function fmtDurationCoarse(secs) {
+  // Like fmtSeconds but rounded for human-readable banner copy: "1h 33m"
+  // rather than "1h 33m 04s". Anything under a minute reads as "<1m".
+  if (secs == null || secs < 60) return "less than a minute";
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function formatSleepDetail(event) {
+  const slept = new Date(event.slept_at_unix * 1000).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const resumed = new Date(event.resumed_at_unix * 1000).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const last = fmtDurationCoarse(event.last_sleep_seconds);
+  if (event.event_count <= 1) {
+    return ` Last paused at ${slept}, resumed at ${resumed} — ${last} not syncing.`;
+  }
+  const total = fmtDurationCoarse(event.total_lost_seconds);
+  return ` Last paused at ${slept}, resumed at ${resumed} — ${last} not syncing. ` +
+    `Total across ${event.event_count} sleeps: ${total}.`;
+}
+
 // Friendly, deliberately imprecise ETA banding. Mirrors `format_eta_range` in
 // zeck-cli; if you change one, change both.
 function formatEtaRange(secs) {
@@ -449,6 +477,11 @@ async function startProgressListeners() {
   setStatus("scan-message", "", "");
   $("review-sweep").disabled = true;
   $("back-to-config").style.display = "none";
+  // Reset the sleep + sandblasting banners so a previous scan's state
+  // doesn't carry over into a fresh start.
+  $("scan-sleep-banner").style.display = "none";
+  $("scan-sleep-detail").textContent = "";
+  $("scan-sandblasting-banner").style.display = "none";
   eta.reset();
 
   // Await all three subscriptions before returning. If we stored the unlisten
@@ -583,6 +616,19 @@ function updateScanUI(progress) {
   }
 
   renderAccountRows(progress.accounts);
+
+  // sleep_event is sticky on the backend — once the poller spots a suspend
+  // the banner stays up for the rest of the scan, with timestamps and lost
+  // time refreshed if the machine sleeps again. Reset happens on the next
+  // start, in startProgressListeners.
+  if (progress.sleep_event) {
+    $("scan-sleep-banner").style.display = "";
+    $("scan-sleep-detail").textContent = formatSleepDetail(progress.sleep_event);
+  }
+
+  // Sandblasting era toggles based on the current cursor — the banner
+  // appears while traversing the slow zone and disappears once past it.
+  $("scan-sandblasting-banner").style.display = progress.in_sandblasting_zone ? "" : "none";
 
   const terminal = ["complete", "cancelled", "error"].includes(progress.phase);
   $("cancel-scan").style.display = terminal ? "none" : "";
