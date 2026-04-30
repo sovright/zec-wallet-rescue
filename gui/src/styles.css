@@ -144,6 +144,23 @@ h1 {
   line-height: 0.95;
 }
 
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.sidebar-brand img {
+  flex: 0 0 auto;
+  width: 54px;
+  height: 54px;
+}
+
+.sidebar-brand h1 {
+  margin-bottom: 0;
+}
+
 h2 {
   margin-bottom: 14px;
   font-size: clamp(2rem, 4vw, 3rem);

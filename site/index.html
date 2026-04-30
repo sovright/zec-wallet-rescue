@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="ZECK is a local-first desktop rescue wallet for recovering legacy ZecWallet Lite seeds and sweeping funds to a modern Unified Address."
+    />
+    <meta name="theme-color" content="#1f6b56" />
+    <link rel="canonical" href="https://rescue.sovright.com/" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Sovright" />
+    <meta property="og:title" content="ZECK Rescue Wallet | Sovright" />
+    <meta
+      property="og:description"
+      content="Recover legacy ZecWallet Lite seed phrases with a local-first desktop flow that scans historical wallet state and sweeps funds to a modern Unified Address."
+    />
+    <meta property="og:url" content="https://rescue.sovright.com/" />
+    <meta property="og:image" content="https://rescue.sovright.com/assets/zeck-og.png" />
+    <meta
+      property="og:image:secure_url"
+      content="https://rescue.sovright.com/assets/zeck-og.png"
+    />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="ZECK Rescue Wallet social card with Sovright branding and a desktop recovery preview."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ZECK Rescue Wallet | Sovright" />
+    <meta
+      name="twitter:description"
+      content="Recover legacy ZecWallet Lite seed phrases with a local-first desktop flow."
+    />
+    <meta name="twitter:image" content="https://rescue.sovright.com/assets/zeck-og.png" />
+    <meta
+      name="twitter:image:alt"
+      content="ZECK Rescue Wallet social card with Sovright branding and a desktop recovery preview."
+    />
+    <title>ZECK Rescue Wallet | Sovright</title>
+    <link rel="icon" href="./assets/zeck-icon.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="ZECK home">
+        <img src="./assets/zeck-icon.png" alt="" width="32" height="32" />
+        <span>ZECK</span>
+      </a>
+      <div class="header-right">
+        <nav class="site-nav" aria-label="Primary navigation">
+          <a href="#recovery-flow">Flow</a>
+          <a href="#safety">Safety</a>
+          <a href="#download">Download</a>
+          <a href="./guide.html">User Guide</a>
+        </nav>
+        <a class="sovright-mark" href="https://sovright.com" aria-label="Sovright">
+          <img src="./assets/sovright-logo-caption.svg" alt="Sovright" />
+        </a>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">ZecWallet Lite Recovery</p>
+          <h1>ZECK Rescue Wallet</h1>
+          <p class="hero-lede">
+            A careful desktop recovery workspace for legacy ZecWallet Lite seed phrases. Validate
+            the seed locally, scan the historical wallet state, then sweep recoverable funds to a
+            modern Zcash Unified Address.
+          </p>
+          <div class="hero-actions" aria-label="Primary actions">
+            <a class="button primary" href="#download">Get the desktop app</a>
+            <a class="button secondary" href="./guide.html">Read the guide</a>
+          </div>
+          <ul class="assurance-list" aria-label="Product assurances">
+            <li>Seed-only recovery path</li>
+            <li>Local Rust backend</li>
+            <li>Mainnet and testnet support</li>
+          </ul>
+        </div>
+
+        <div class="product-visual" aria-label="ZECK desktop recovery preview">
+          <div class="window-bar">
+            <span></span>
+            <span></span>
+            <span></span>
+            <strong>ZECK Recovery Session</strong>
+          </div>
+          <div class="recovery-panel">
+            <div class="sidebar-preview">
+              <p>Step 4</p>
+              <strong>Recovery scan</strong>
+              <span>Compact blocks syncing</span>
+            </div>
+            <div class="scan-preview">
+              <div class="metric-row">
+                <div>
+                  <span>Server</span>
+                  <strong>lightwalletd</strong>
+                </div>
+                <div>
+                  <span>Progress</span>
+                  <strong>63%</strong>
+                </div>
+                <div>
+                  <span>Accounts</span>
+                  <strong>20</strong>
+                </div>
+              </div>
+              <div class="progress-track"><span></span></div>
+              <table aria-label="Example account recovery totals">
+                <thead>
+                  <tr>
+                    <th>Acct</th>
+                    <th>Sapling</th>
+                    <th>Orchard</th>
+                    <th>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>0</td>
+                    <td>0.4821</td>
+                    <td>0.0000</td>
+                    <td>0.4821 ZEC</td>
+                  </tr>
+                  <tr>
+                    <td>1</td>
+                    <td>0.0000</td>
+                    <td>0.1260</td>
+                    <td>0.1260 ZEC</td>
+                  </tr>
+                  <tr>
+                    <td>2</td>
+                    <td>0.0000</td>
+                    <td>0.0000</td>
+                    <td>Scanning</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="notice-band" id="safety">
+        <div>
+          <p class="eyebrow">Important</p>
+          <h2>This website is not a wallet</h2>
+        </div>
+        <p>
+          Never enter a seed phrase into this splash page. ZECK is a downloadable desktop app; seed
+          validation, key derivation, wallet scanning, transaction building, and report generation
+          happen on your machine.
+        </p>
+      </section>
+
+      <section class="section" id="recovery-flow">
+        <div class="section-heading">
+          <p class="eyebrow">Recovery Flow</p>
+          <h2>Built around the legacy ZecWallet Lite layout</h2>
+          <p>
+            ZECK re-derives the address structure used by discontinued ZecWallet Lite wallets, then
+            uses a guided scan and sweep workflow to make the recovery process auditable.
+          </p>
+        </div>
+
+        <div class="flow-grid">
+          <article class="info-card">
+            <span class="step-number">01</span>
+            <h3>Validate the seed locally</h3>
+            <p>Paste a 24-word phrase into the desktop app and verify the BIP-39 checksum.</p>
+          </article>
+          <article class="info-card">
+            <span class="step-number">02</span>
+            <h3>Configure scan depth</h3>
+            <p>Choose the network, birthday height, lightwalletd endpoint, and account gap limit.</p>
+          </article>
+          <article class="info-card">
+            <span class="step-number">03</span>
+            <h3>Scan authoritative state</h3>
+            <p>Use the persisted wallet workspace to scan transparent, Sapling, and Orchard funds.</p>
+          </article>
+          <article class="info-card">
+            <span class="step-number">04</span>
+            <h3>Sweep with review</h3>
+            <p>Review fees, memo, destination address, skipped accounts, and broadcast results.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section split-section">
+        <div>
+          <p class="eyebrow">Who It Helps</p>
+          <h2>For owners of old ZecWallet Lite seeds</h2>
+          <p>
+            ZECK is designed for people who still have a ZecWallet Lite seed phrase but no longer
+            have a working legacy wallet environment. It does not require a wallet database file.
+          </p>
+        </div>
+        <div class="check-panel">
+          <h3>Best fit</h3>
+          <ul class="check-list">
+            <li>24-word ZecWallet Lite recovery seed</li>
+            <li>Funds that may live in transparent, Sapling, or Orchard pools</li>
+            <li>A modern Zcash wallet with a Unified Address destination</li>
+            <li>Enough time to let compact-block sync complete</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="section download-section" id="download">
+        <div class="section-heading">
+          <p class="eyebrow">Download</p>
+          <h2>Install ZECK on a trusted desktop</h2>
+          <p>
+            Use the official project release page for desktop builds. Verify checksums or
+            signatures when they are published with a release.
+          </p>
+        </div>
+        <div class="download-grid">
+          <a class="download-card" href="https://github.com/Bedrock-Strata/zec-wallet-rescue/releases">
+            <span>macOS</span>
+            <strong>Download release</strong>
+          </a>
+          <a class="download-card" href="https://github.com/Bedrock-Strata/zec-wallet-rescue/releases">
+            <span>Windows</span>
+            <strong>Download release</strong>
+          </a>
+          <a class="download-card" href="https://github.com/Bedrock-Strata/zec-wallet-rescue/releases">
+            <span>Linux</span>
+            <strong>Download release</strong>
+          </a>
+        </div>
+      </section>
+
+      <section class="section faq-section">
+        <div class="section-heading">
+          <p class="eyebrow">FAQ</p>
+          <h2>Sharp edges, named clearly</h2>
+        </div>
+        <div class="faq-list">
+          <details>
+            <summary>Does ZECK recover Sprout funds?</summary>
+            <p>
+              No. Sprout recovery is out of scope for seed-only flows because ZecWallet Lite did not
+              derive Sprout keys from the HD seed.
+            </p>
+          </details>
+          <details>
+            <summary>Can I resume a recovery scan?</summary>
+            <p>
+              Yes. ZECK stores a local recovery workspace so repeated scans can reuse synced state
+              and recovery metadata.
+            </p>
+          </details>
+          <details>
+            <summary>What destination address should I use?</summary>
+            <p>
+              Use a Unified Address from a modern wallet that you control. Validate the address in
+              ZECK before scanning or sweeping.
+            </p>
+          </details>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>ZECK Rescue Wallet</span>
+      <a href="./guide.html">User Guide</a>
+      <a href="https://github.com/Bedrock-Strata/zec-wallet-rescue">Source</a>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="User guide for recovering legacy ZecWallet Lite seeds with ZECK Rescue Wallet."
+    />
+    <meta name="theme-color" content="#1f6b56" />
+    <link rel="canonical" href="https://rescue.sovright.com/guide.html" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="Sovright" />
+    <meta property="og:title" content="ZECK User Guide | Sovright" />
+    <meta
+      property="og:description"
+      content="Follow the ZECK desktop recovery workflow from install through seed validation, scan, sweep, troubleshooting, and report export."
+    />
+    <meta property="og:url" content="https://rescue.sovright.com/guide.html" />
+    <meta property="og:image" content="https://rescue.sovright.com/assets/zeck-og.png" />
+    <meta
+      property="og:image:secure_url"
+      content="https://rescue.sovright.com/assets/zeck-og.png"
+    />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="ZECK Rescue Wallet social card with Sovright branding and a desktop recovery preview."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ZECK User Guide | Sovright" />
+    <meta
+      name="twitter:description"
+      content="Install and use ZECK to recover legacy ZecWallet Lite seed phrases safely."
+    />
+    <meta name="twitter:image" content="https://rescue.sovright.com/assets/zeck-og.png" />
+    <meta
+      name="twitter:image:alt"
+      content="ZECK Rescue Wallet social card with Sovright branding and a desktop recovery preview."
+    />
+    <title>ZECK User Guide | Sovright</title>
+    <link rel="icon" href="./assets/zeck-icon.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="ZECK home">
+        <img src="./assets/zeck-icon.png" alt="" width="32" height="32" />
+        <span>ZECK</span>
+      </a>
+      <div class="header-right">
+        <nav class="site-nav" aria-label="Primary navigation">
+          <a href="./index.html">Splash Page</a>
+          <a href="#before">Before You Start</a>
+          <a href="#walkthrough">Walkthrough</a>
+          <a href="#troubleshooting">Troubleshooting</a>
+        </nav>
+        <a class="sovright-mark" href="https://sovright.com" aria-label="Sovright">
+          <img src="./assets/sovright-logo-caption.svg" alt="Sovright" />
+        </a>
+      </div>
+    </header>
+
+    <main>
+      <section class="guide-hero">
+        <p class="eyebrow">User Guide</p>
+        <h1>Recover a legacy ZecWallet Lite seed with ZECK</h1>
+        <p>
+          This guide follows the desktop wizard from first launch through scan, sweep, and recovery
+          report export. Read the safety notes before opening a wallet with real funds.
+        </p>
+      </section>
+
+      <section class="guide-layout">
+        <aside class="toc" aria-label="Guide table of contents">
+          <a href="#before">Before you start</a>
+          <a href="#install">Install</a>
+          <a href="#walkthrough">Recovery walkthrough</a>
+          <a href="#report">Recovery report</a>
+          <a href="#troubleshooting">Troubleshooting</a>
+          <a href="#security">Security checklist</a>
+        </aside>
+
+        <article class="guide-content">
+          <section id="before">
+            <h2>Before You Start</h2>
+            <p>
+              ZECK is for legacy ZecWallet Lite seed phrases. You need the 24-word seed phrase, a
+              trusted computer, internet access for lightwalletd sync, and a modern Zcash wallet
+              destination address.
+            </p>
+            <div class="callout">
+              <strong>Do not type your seed into this website.</strong>
+              <span>
+                The splash page and user guide are documentation only. Seed entry belongs inside the
+                signed ZECK desktop application.
+              </span>
+            </div>
+            <h3>Have ready</h3>
+            <ul>
+              <li>Your complete 24-word ZecWallet Lite seed phrase.</li>
+              <li>A Zcash Unified Address from a wallet you control.</li>
+              <li>A recovery workspace folder with enough disk space for synced wallet state.</li>
+              <li>A rough wallet creation date or block height, if known.</li>
+            </ul>
+          </section>
+
+          <section id="install">
+            <h2>Install</h2>
+            <ol>
+              <li>Download the correct ZECK release for your operating system.</li>
+              <li>Verify the release signature or checksum when published with the build.</li>
+              <li>Install the app on a computer you trust and keep updated.</li>
+              <li>Open ZECK and confirm the app title says ZecWallet Lite Recovery.</li>
+            </ol>
+          </section>
+
+          <section id="walkthrough">
+            <h2>Recovery Walkthrough</h2>
+            <h3>1. Welcome</h3>
+            <p>
+              Confirm that you have a seed phrase recovery, not a legacy wallet database recovery.
+              ZECK's seed-only flow does not require a `.dat` file.
+            </p>
+
+            <h3>2. Seed Entry</h3>
+            <p>
+              Paste the full seed phrase and click <strong>Validate seed</strong>. ZECK checks the
+              word count and BIP-39 checksum locally. The app clears the seed field after a scan
+              session starts.
+            </p>
+
+            <h3>3. Configure</h3>
+            <p>
+              Choose mainnet or testnet, enter a birthday height, and provide a lightwalletd URL.
+              Comma-separated lightwalletd URLs are tried in order as fallbacks.
+            </p>
+            <p>
+              Leave auto gap-limit mode on for most recoveries. Use an explicit account count only
+              when you know how many accounts you need to inspect.
+            </p>
+
+            <h3>4. Scan</h3>
+            <p>
+              ZECK syncs compact blocks, checks the derived legacy account layout, and summarizes
+              transparent, Sapling, Orchard, and total balances. The local workspace lets you resume
+              or repeat a scan without starting from nothing.
+            </p>
+
+            <h3>5. Sweep</h3>
+            <p>
+              Validate the destination Unified Address, review gross value, fee estimates, net
+              value, memo, and skipped accounts. Broadcasting a sweep is irreversible.
+            </p>
+
+            <h3>6. Complete</h3>
+            <p>
+              Review broadcast and confirmation results. Transactions may remain pending if they
+              were accepted by lightwalletd but not mined before the bounded wait window ends.
+            </p>
+          </section>
+
+          <section id="report">
+            <h2>Recovery Report</h2>
+            <p>
+              The complete screen can save a plain-text recovery report. Store it with your own
+              recovery notes. The report is useful for remembering destination addresses, broadcast
+              transaction IDs, skipped accounts, and the workspace path used for the session.
+            </p>
+          </section>
+
+          <section id="troubleshooting">
+            <h2>Troubleshooting</h2>
+            <details open>
+              <summary>The seed validation fails</summary>
+              <p>
+                Count the words, check for typos, and verify that the phrase is the ZecWallet Lite
+                recovery phrase. A valid phrase has exactly 24 BIP-39 words.
+              </p>
+            </details>
+            <details>
+              <summary>The scan is slow</summary>
+              <p>
+                Older birthday heights require more compact-block sync. Use the closest safe wallet
+                creation date you know, keep the workspace folder, and let the app resume.
+              </p>
+            </details>
+            <details>
+              <summary>The server does not connect</summary>
+              <p>
+                Try the recommended preset, switch networks if needed, or enter multiple
+                comma-separated lightwalletd endpoints.
+              </p>
+            </details>
+            <details>
+              <summary>The sweep is skipped for an account</summary>
+              <p>
+                Review the skipped reason in the sweep proposal. Common causes include dust values,
+                fee guard limits, or insufficient spendable balance.
+              </p>
+            </details>
+          </section>
+
+          <section id="security">
+            <h2>Security Checklist</h2>
+            <ul>
+              <li>Use a computer you control and avoid screen sharing while the seed is visible.</li>
+              <li>Confirm you downloaded ZECK from the official release page.</li>
+              <li>Validate the destination Unified Address before sweep review.</li>
+              <li>Set a max fee guard if you want the app to stop above a chosen fee.</li>
+              <li>Keep the recovery report, but do not store seed words inside it.</li>
+            </ul>
+          </section>
+        </article>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>ZECK Rescue Wallet</span>
+      <a href="./index.html">Splash Page</a>
+      <a href="https://github.com/Bedrock-Strata/zec-wallet-rescue">Source</a>
+    </footer>
+  </body>
+</html>
