@@ -655,6 +655,64 @@ select {
   color: var(--muted);
 }
 
+/* ── Complete screen txid cards ── */
+.complete-txids {
+  display: grid;
+  gap: 12px;
+  margin: 20px 0;
+}
+
+.txid-card {
+  background: var(--panel-strong);
+  border: 1px solid rgba(31, 107, 86, 0.22);
+  border-left: 4px solid var(--accent);
+  border-radius: 14px;
+  padding: 14px 16px;
+  display: grid;
+  gap: 8px;
+}
+
+.txid-card--failed {
+  border-left-color: var(--danger);
+  border-color: rgba(167, 59, 42, 0.18);
+}
+
+.txid-label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.txid-card--failed .txid-label {
+  color: var(--danger);
+}
+
+.txid-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.txid-value {
+  font-size: 0.82rem;
+  color: var(--ink);
+  word-break: break-all;
+  flex: 1;
+}
+
+.txid-copy {
+  padding: 5px 12px;
+  font-size: 0.78rem;
+  flex-shrink: 0;
+}
+
+.txid-note {
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
 @media (max-width: 880px) {
   .app-shell {
     grid-template-columns: 1fr;

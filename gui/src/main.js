@@ -735,7 +735,7 @@ $("irreversible-check").addEventListener("change", () => {
 $("execute-sweep").addEventListener("click", async () => {
   $("execute-sweep").disabled = true;
   $("irreversible-check").disabled = true;
-  setStatus("sweep-execute-status", "Broadcasting transactions to the Zcash network… this may take 10–30 seconds.", "");
+  setStatus("sweep-execute-status", "Broadcasting transactions to the Zcash network… this may take up to 2 minutes.", "");
 
   try {
     const results = await invoke("execute_sweep", {
@@ -760,23 +760,66 @@ function renderCompleteScreen(results) {
   const confirmed = results.filter((r) => r.status === "confirmed").length;
   const pending = results.filter((r) => r.status === "pending").length;
   const failed = results.filter((r) => r.status === "failed").length;
+  const broadcast = confirmed + pending;
 
-  $("complete-summary").textContent =
-    `Sweep finished — ${confirmed} confirmed, ${pending} pending, ${failed} failed.`;
+  if (failed === results.length) {
+    $("complete-summary").textContent = "All transactions failed to broadcast. No funds were moved.";
+  } else if (confirmed > 0) {
+    $("complete-summary").textContent =
+      `${confirmed} transaction${confirmed > 1 ? "s" : ""} confirmed on-chain. Your funds are on their way.`;
+  } else {
+    $("complete-summary").textContent =
+      `${broadcast} transaction${broadcast > 1 ? "s" : ""} broadcast to the Zcash network. Confirmation usually takes 1–2 minutes.`;
+  }
 
-  const rows = results
-    .map((r) => {
-      let line = `Account ${r.source_account}: ${r.status.toUpperCase()}`;
-      if (r.txid) line += `\n  txid: ${r.txid}`;
-      if (r.confirmed_height) line += `\n  confirmed at block ${r.confirmed_height}`;
-      if (r.detail) line += `\n  ${r.detail}`;
-      return line;
-    })
-    .join("\n\n");
+  const container = $("complete-txids");
+  container.innerHTML = "";
+  results.forEach((r) => {
+    const card = document.createElement("div");
+    card.className = "txid-card" + (r.status === "failed" ? " txid-card--failed" : "");
 
-  const reportBlock = document.createElement("pre");
-  reportBlock.textContent = rows;
-  $("complete-report").replaceChildren(reportBlock);
+    const label = document.createElement("div");
+    label.className = "txid-label";
+    const statusTag = r.status === "confirmed" ? "Confirmed" :
+                      r.status === "pending"   ? "Broadcast — awaiting confirmation" :
+                                                 "Failed";
+    label.textContent = `Account ${r.source_account} · ${statusTag}`;
+    card.appendChild(label);
+
+    if (r.txid) {
+      const row = document.createElement("div");
+      row.className = "txid-row";
+      const code = document.createElement("code");
+      code.className = "txid-value";
+      code.textContent = r.txid;
+      const copyBtn = document.createElement("button");
+      copyBtn.className = "ghost txid-copy";
+      copyBtn.textContent = "Copy";
+      copyBtn.addEventListener("click", () => {
+        navigator.clipboard.writeText(r.txid).then(() => {
+          copyBtn.textContent = "Copied!";
+          setTimeout(() => { copyBtn.textContent = "Copy"; }, 1400);
+        });
+      });
+      row.appendChild(code);
+      row.appendChild(copyBtn);
+      card.appendChild(row);
+    }
+
+    if (r.confirmed_height) {
+      const note = document.createElement("div");
+      note.className = "txid-note";
+      note.textContent = `Mined at block ${r.confirmed_height.toLocaleString()}`;
+      card.appendChild(note);
+    } else if (r.detail && r.status !== "confirmed") {
+      const note = document.createElement("div");
+      note.className = "txid-note";
+      note.textContent = r.detail;
+      card.appendChild(note);
+    }
+
+    container.appendChild(card);
+  });
 
   const report = buildReport(results);
   $("save-report").dataset.report = report;
