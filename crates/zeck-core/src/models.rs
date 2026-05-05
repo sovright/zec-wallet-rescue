@@ -106,6 +106,26 @@ impl Default for ScanHandle {
     }
 }
 
+/// Opaque handle for a multi-seed scan run tracked by [`RecoveryService`].
+///
+/// Mirrors [`ScanHandle`] but for the multi-seed orchestrator (`MultiSeedRun`).
+/// Wraps a fresh `Uuid` so it is `Copy` + `Hash` and usable as a `HashMap` key
+/// without cloning.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
+pub struct MultiScanHandle(pub Uuid);
+
+impl MultiScanHandle {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for MultiScanHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScanPhase {

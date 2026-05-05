@@ -33,9 +33,11 @@ use crate::{
     error::{ZeckError, ZeckResult},
     lightwalletd::{connect_lightwalletd_endpoints, parse_lightwalletd_endpoints},
     models::{
-        ProposedTx, ProposedTxKind, RuntimeScanConfig, ScanConfig, ScanHandle, ScanPhase,
-        ScanProgress, SkippedSweepAccount, SweepProposal, SweepRequest, TxBroadcastResult,
+        MultiScanHandle, ProposedTx, ProposedTxKind, RuntimeScanConfig, ScanConfig, ScanHandle,
+        ScanPhase, ScanProgress, SkippedSweepAccount, SweepProposal, SweepRequest,
+        TxBroadcastResult,
     },
+    multi_seed::{start_multi_seed_run, MultiSeedConfig, MultiSeedProgress, MultiSeedRun, SeedEntry},
     scan::{
         refresh_scan_progress, run_recovery_scan, run_wallet_sync, ScanTaskState,
         SharedScanTaskState, TrackedAccount,
@@ -61,6 +63,12 @@ type SharedScanSession = Arc<ScanSession>;
 #[derive(Clone, Default)]
 pub struct RecoveryService {
     sessions: Arc<RwLock<HashMap<String, SharedScanSession>>>,
+    /// Active multi-seed runs, keyed by [`MultiScanHandle`]. Each entry owns a
+    /// `MultiSeedRun` whose driver task ticks independently of the service.
+    /// We use a `tokio::sync::Mutex` so the lock can be held across `.await`
+    /// points if a future caller needs it; today the methods only need brief
+    /// critical sections.
+    multi_runs: Arc<Mutex<HashMap<MultiScanHandle, MultiSeedRun>>>,
 }
 
 impl RecoveryService {
@@ -163,6 +171,41 @@ impl RecoveryService {
         if self.sessions.read().await.contains_key(&handle.id) {
             spawn_session_cleanup(self.sessions.clone(), handle.id.clone());
         }
+        Ok(())
+    }
+
+    /// Start a multi-seed scan run. Returns a fresh [`MultiScanHandle`] that
+    /// the caller passes to [`Self::get_multi_scan_progress`] /
+    /// [`Self::cancel_multi_scan`].
+    ///
+    /// Resolve-time failures (invalid mnemonic, duplicate fingerprint) are
+    /// reported via `phase = Failed(...)` on the run snapshot, mirroring the
+    /// `start_multi_seed_run` contract — only infrastructure errors (e.g. the
+    /// shared block cache being held by another process) bubble up as `Err`.
+    pub async fn start_multi_scan(
+        &self,
+        entries: Vec<SeedEntry>,
+        config: MultiSeedConfig,
+    ) -> ZeckResult<MultiScanHandle> {
+        let handle = MultiScanHandle::new();
+        let run = start_multi_seed_run(entries, config).await?;
+        self.multi_runs.lock().await.insert(handle, run);
+        Ok(handle)
+    }
+
+    pub async fn get_multi_scan_progress(
+        &self,
+        handle: &MultiScanHandle,
+    ) -> ZeckResult<MultiSeedProgress> {
+        let runs = self.multi_runs.lock().await;
+        let run = runs.get(handle).ok_or(ZeckError::UnknownScanHandle)?;
+        Ok(run.snapshot())
+    }
+
+    pub async fn cancel_multi_scan(&self, handle: &MultiScanHandle) -> ZeckResult<()> {
+        let runs = self.multi_runs.lock().await;
+        let run = runs.get(handle).ok_or(ZeckError::UnknownScanHandle)?;
+        run.cancel();
         Ok(())
     }
 
@@ -1145,6 +1188,82 @@ mod tests {
         let long_memo = "🎉".repeat(129);
         let result = normalized_memo_text(Some(&long_memo));
         assert!(result.is_err(), "expected InvalidMemo for oversized memo");
+    }
+
+    #[tokio::test]
+    async fn unknown_multi_scan_handle_returns_error() {
+        use crate::{models::MultiScanHandle, service::RecoveryService};
+
+        let service = RecoveryService::new();
+        let handle = MultiScanHandle::new();
+        let err = service
+            .get_multi_scan_progress(&handle)
+            .await
+            .expect_err("unknown handle must return an error");
+        assert!(matches!(err, ZeckError::UnknownScanHandle));
+
+        let cancel_err = service
+            .cancel_multi_scan(&handle)
+            .await
+            .expect_err("cancelling an unknown handle must error");
+        assert!(matches!(cancel_err, ZeckError::UnknownScanHandle));
+    }
+
+    #[tokio::test]
+    async fn multi_scan_handle_returns_progress_on_get() {
+        use crate::{
+            models::ZeckNetwork,
+            multi_seed::{MultiSeedConfig, MultiSeedPhase, SeedEntry},
+            service::RecoveryService,
+        };
+
+        // Two identical seeds → resolve-time DuplicateFingerprint, terminal-Failed
+        // run. Exercises the handle-plumbing without needing real lightwalletd.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon \
+            abandon abandon abandon abandon abandon abandon abandon abandon \
+            abandon abandon abandon abandon abandon abandon abandon art";
+        let entries = vec![
+            SeedEntry {
+                phrase: SecretString::new(phrase.to_owned()),
+                birthday: Some(500_000),
+                label: Some("a".to_owned()),
+            },
+            SeedEntry {
+                phrase: SecretString::new(phrase.to_owned()),
+                birthday: Some(600_000),
+                label: Some("dup".to_owned()),
+            },
+        ];
+        let config = MultiSeedConfig {
+            network: ZeckNetwork::Mainnet,
+            lightwalletd_url: "https://invalid.example:443".to_owned(),
+            data_dir: tmp.path().to_path_buf(),
+            gap_limit: 1,
+            num_accounts: Some(1),
+        };
+
+        let service = RecoveryService::new();
+        let handle = service
+            .start_multi_scan(entries, config)
+            .await
+            .expect("start_multi_scan returns a handle even on resolve failure");
+
+        let progress = service
+            .get_multi_scan_progress(&handle)
+            .await
+            .expect("registered handle must resolve");
+        assert!(
+            matches!(progress.phase, MultiSeedPhase::Failed(_)),
+            "expected Failed phase, got {:?}",
+            progress.phase
+        );
+
+        // cancel on a terminal run is a no-op but must not error.
+        service
+            .cancel_multi_scan(&handle)
+            .await
+            .expect("cancel of registered handle succeeds");
     }
 
     #[test]
