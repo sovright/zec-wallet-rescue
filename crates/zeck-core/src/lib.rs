@@ -3,6 +3,7 @@ pub mod birthday;
 pub mod cache;
 pub mod derivation;
 pub mod error;
+pub mod fetcher;
 pub mod lightwalletd;
 pub mod models;
 pub mod scan;
