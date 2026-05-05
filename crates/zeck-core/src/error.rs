@@ -31,6 +31,9 @@ pub enum ZeckError {
     #[error("scan was cancelled")]
     Cancelled,
 
+    #[error("another scan is already in progress (block cache is locked)")]
+    ScanLocked,
+
     #[error("scan is not ready for sweeping: {0}")]
     ScanNotReady(String),
 

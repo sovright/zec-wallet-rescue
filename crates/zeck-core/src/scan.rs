@@ -30,7 +30,7 @@ use zcash_transparent::address::TransparentAddress;
 use zip32::{fingerprint::SeedFingerprint, AccountId};
 
 use crate::{
-    cache::SqliteBlockCache,
+    cache::{CacheOpenError, SharedCacheWriter},
     derivation::{
         derive_accounts, legacy_transparent_account_key, legacy_transparent_pubkey, mnemonic_seed,
     },
@@ -597,12 +597,25 @@ where
     ChT::ResponseBody: Body<Data = Bytes> + Send + 'static,
     <ChT::ResponseBody as Body>::Error: Into<StdError> + Send,
 {
-    let cache_db = SqliteBlockCache::for_path(workspace.cache_db_path()).map_err(|err| {
+    let zeck_network = workspace.network();
+    let db_path =
+        crate::workspace::network_cache_db_path(workspace.data_dir(), zeck_network);
+    let lock_path =
+        crate::workspace::network_cache_lock_path(workspace.data_dir(), zeck_network);
+    let writer = SharedCacheWriter::open(&db_path, &lock_path).map_err(|err| match err {
+        CacheOpenError::Locked => ZeckError::ScanLocked,
+        other => ZeckError::Storage(format!("opening shared block cache: {other}")),
+    })?;
+    // Migrate the legacy per-workspace cache into the shared cache.
+    // This is a no-op if the old file does not exist (i.e., after the first run).
+    writer.migrate_from(workspace.cache_db_path()).map_err(|err| {
         ZeckError::Storage(format!(
-            "opening cache database {}: {err}",
+            "migrating legacy cache {}: {err}",
             workspace.cache_db_path().display()
         ))
     })?;
+    let cache_db = writer.cache();
+
     let mut wallet_db =
         WalletDb::for_path(workspace.wallet_db_path(), *network, SystemClock, OsRng).map_err(
             |err| {
@@ -613,7 +626,7 @@ where
             },
         )?;
 
-    sync::run(client, network, &cache_db, &mut wallet_db, SYNC_BATCH_SIZE)
+    sync::run(client, network, cache_db, &mut wallet_db, SYNC_BATCH_SIZE)
         .await
         .map_err(|err| ZeckError::Wallet(format!("synchronizing wallet workspace: {err}")))?;
 

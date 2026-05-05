@@ -39,6 +39,8 @@ pub struct RecoveryWorkspace {
     root: PathBuf,
     wallet_db_path: PathBuf,
     cache_db_path: PathBuf,
+    data_dir: PathBuf,
+    network: ZeckNetwork,
 }
 
 impl RecoveryWorkspace {
@@ -64,6 +66,8 @@ impl RecoveryWorkspace {
             wallet_db_path: root.join("wallet.sqlite"),
             cache_db_path: root.join("cache.sqlite"),
             root,
+            data_dir: config.data_dir.clone(),
+            network: config.network,
         })
     }
 
@@ -117,6 +121,14 @@ impl RecoveryWorkspace {
 
     pub fn cache_db_path(&self) -> &Path {
         &self.cache_db_path
+    }
+
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    pub fn network(&self) -> ZeckNetwork {
+        self.network
     }
 }
 
