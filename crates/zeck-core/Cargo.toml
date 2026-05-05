@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+fs2 = "0.4"
 async-trait.workspace = true
 bip0039.workspace = true
 orchard.workspace = true
