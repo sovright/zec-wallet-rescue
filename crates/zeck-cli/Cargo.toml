@@ -10,7 +10,6 @@ rust-version.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 dialoguer.workspace = true
-indicatif.workspace = true
 secrecy.workspace = true
 tokio.workspace = true
 tracing.workspace = true

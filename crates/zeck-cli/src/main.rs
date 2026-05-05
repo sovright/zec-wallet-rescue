@@ -1,16 +1,22 @@
-use std::{collections::VecDeque, fs, io::Write, path::PathBuf, time::{Duration, Instant}};
+use std::{
+    collections::VecDeque,
+    fs,
+    io::{IsTerminal, Write},
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use dialoguer::Password;
-use indicatif::{ProgressBar, ProgressStyle};
 use secrecy::SecretString;
 use tracing_subscriber::EnvFilter;
 use zeck_core::{
-    detect_birthday, derive_accounts, estimate_birthday_from_date, validate_destination_address,
-    RecoveryService, ScanConfig, ScanDiscovery, ScanHandle, ScanPhase, SweepProposal, SweepRequest,
+    derive_accounts, estimate_birthday_from_date, scanner::SeedStatus,
+    validate_destination_address, MultiScanHandle, MultiSeedConfig, MultiSeedPhase,
+    MultiSeedProgress, RecoveryService, ScanDiscovery, SeedEntry, SweepProposal, SweepRequest,
     ZeckNetwork,
 };
 
@@ -20,17 +26,28 @@ use zeck_core::{
     about = "Legacy ZecWallet Lite recovery tool",
     long_about = "ZECK recovers funds from ZecWallet Lite wallets using a BIP-39 seed phrase.\n\
                   It derives keys, scans the Zcash blockchain via lightwalletd, and can sweep\n\
-                  recovered funds to a new Unified Address.",
+                  recovered funds to a new Unified Address.\n\n\
+                  Multiple seeds can be scanned in one run by repeating --seed/--birthday or by \
+                  passing --seeds-file with one entry per line.",
     version
 )]
 struct Cli {
-    /// BIP-39 seed phrase (24 words). Omit to be prompted securely.
-    #[arg(long, conflicts_with = "seed_file")]
-    seed: Option<String>,
+    /// BIP-39 seed phrase (24 words). Repeat for multi-seed runs. Omit (and
+    /// omit --seeds-file/--seed-file) to be prompted securely for one phrase.
+    #[arg(long, action = ArgAction::Append, conflicts_with_all = ["seed_file", "seeds_file"])]
+    seed: Vec<String>,
 
-    /// Path to a plain-text file containing the 24-word seed phrase.
-    #[arg(long)]
+    /// Path to a plain-text file containing a single 24-word seed phrase.
+    /// For multi-seed runs use --seeds-file instead.
+    #[arg(long, conflicts_with_all = ["seed", "seeds_file", "birthday"])]
     seed_file: Option<PathBuf>,
+
+    /// Path to a file with one seed entry per line. Each line is either
+    /// `phrase` (auto-detect birthday) or `phrase | birthday` where birthday
+    /// is `auto` or a u32 block height. Lines starting with `#` and blank
+    /// lines are skipped.
+    #[arg(long, conflicts_with_all = ["seed", "seed_file", "birthday", "birthday_date", "birthday_auto_detect"])]
+    seeds_file: Option<PathBuf>,
 
     /// Directory for wallet database and block cache.
     #[arg(long, default_value = "./zeck_data")]
@@ -52,17 +69,20 @@ struct Cli {
     #[arg(long, default_value_t = 20)]
     gap_limit: u32,
 
-    /// Wallet birthday as a block height. Use 0 for a full scan from genesis.
-    #[arg(long, default_value_t = 419_200)]
-    birthday: u32,
+    /// Wallet birthday as a block height, or `auto` to detect on-chain.
+    /// Repeat once per --seed for multi-seed runs (or omit so all seeds
+    /// auto-detect).
+    #[arg(long, action = ArgAction::Append)]
+    birthday: Vec<String>,
 
-    /// Wallet creation date (YYYY-MM-DD). Estimates birthday height automatically.
-    #[arg(long, conflicts_with = "birthday_auto_detect")]
+    /// Wallet creation date (YYYY-MM-DD). Single-seed only — used as the
+    /// birthday when one --seed is supplied without --birthday.
+    #[arg(long, conflicts_with_all = ["birthday_auto_detect", "seeds_file"])]
     birthday_date: Option<String>,
 
-    /// Probe lightwalletd to auto-detect the wallet birthday from on-chain history.
-    /// Supersedes --birthday and --birthday-date. Requires --lightwalletd-url.
-    #[arg(long, conflicts_with = "birthday_date")]
+    /// Probe lightwalletd to auto-detect the wallet birthday from on-chain
+    /// history. Single-seed convenience flag — equivalent to `--birthday auto`.
+    #[arg(long, conflicts_with_all = ["birthday_date", "seeds_file"])]
     birthday_auto_detect: bool,
 
     /// Zcash network to use.
@@ -95,12 +115,14 @@ impl From<NetworkArg> for ZeckNetwork {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Derive and display all account keys and addresses (no network needed).
+    /// Single-seed only — uses the first --seed when multiple are passed.
     ShowKeys,
 
     /// Scan the blockchain and report balances for all derived accounts.
     Scan,
 
-    /// Scan and then sweep recovered funds to a Unified Address.
+    /// Re-run the scan and then sweep recovered funds from every funded seed
+    /// to a single Unified Address.
     Sweep {
         /// Destination Unified Address (must include Orchard or Sapling receiver).
         #[arg(long)]
@@ -110,18 +132,29 @@ enum Commands {
         #[arg(long)]
         memo: Option<String>,
 
-        /// Maximum fee in ZEC (e.g. 0.001). Sweep is skipped if estimated fee exceeds this.
+        /// Maximum fee in ZEC (e.g. 0.001). Per-seed sweep is skipped if its
+        /// estimated fee exceeds this.
         #[arg(long, value_parser = parse_zec_to_zatoshis)]
         max_fee: Option<u64>,
 
-        /// Preview the sweep proposal without broadcasting any transactions.
+        /// Preview sweep proposals for every funded seed without broadcasting.
         #[arg(long, conflicts_with = "confirm_sweep")]
         dry_run: bool,
 
-        /// Confirm you understand this is irreversible and broadcast the sweep.
+        /// Confirm you understand this is irreversible and broadcast every
+        /// per-seed sweep. Failures on one seed do not block the rest.
         #[arg(long)]
         confirm_sweep: bool,
     },
+}
+
+/// Parsed input for one seed in a multi-seed run.
+#[derive(Debug, Clone)]
+struct SeedInput {
+    phrase: String,
+    /// `None` → auto-detect.
+    birthday: Option<u32>,
+    label: Option<String>,
 }
 
 #[tokio::main]
@@ -131,43 +164,36 @@ async fn main() -> Result<()> {
 
     let network: ZeckNetwork = cli.network.into();
 
-    let seed_phrase = load_seed_phrase(cli.seed, cli.seed_file)?;
+    // Build the SeedInput list from whichever flag combination the user passed.
+    let seed_inputs = collect_seed_inputs(&cli)?;
 
-    let birthday = if cli.birthday_auto_detect {
-        eprintln!("Auto-detecting wallet birthday from on-chain history…");
-        let result = detect_birthday(
-            &seed_phrase,
-            network,
-            &cli.lightwalletd_url,
-            |msg| eprintln!("  {msg}"),
-        )
-        .await
-        .context("birthday auto-detection failed")?;
-        eprintln!("✓ {}", result.message);
-        result.birthday
-    } else if let Some(date) = &cli.birthday_date {
-        estimate_birthday_from_date(date)?
-    } else {
-        cli.birthday
-    };
-    let account_count = cli.num_accounts.unwrap_or(20);
+    if seed_inputs.is_empty() {
+        bail!("no seed phrase provided");
+    }
 
     if matches!(cli.command, Commands::Scan | Commands::Sweep { .. }) {
         eprintln!(
-            "Note: this scan can take hours for old wallets. Progress is saved \
+            "Note: scans can take hours for old wallets. Progress is saved \
              under {data_dir} after each batch — interrupt with Ctrl-C any time \
              and re-run with the same --data-dir, --network, --birthday, and \
              account-scan mode (the same --gap-limit, or the same --num-accounts) \
-             to resume from the last persisted block. Changing any of those \
-             intentionally starts a fresh workspace and re-scans from the new \
-             birthday.",
+             to resume from the last persisted block per seed.",
             data_dir = cli.data_dir.display(),
         );
     }
 
     match cli.command {
         Commands::ShowKeys => {
-            let accounts = derive_accounts(&seed_phrase, network, account_count)?;
+            let account_count = cli.num_accounts.unwrap_or(20);
+            // ShowKeys is single-seed: use the first entry. Warn if multiple.
+            if seed_inputs.len() > 1 {
+                eprintln!(
+                    "Note: show-keys uses only the first --seed; the remaining {} were ignored.",
+                    seed_inputs.len() - 1
+                );
+            }
+            let phrase = SecretString::new(seed_inputs[0].phrase.clone());
+            let accounts = derive_accounts(&phrase, network, account_count)?;
             for account in accounts {
                 println!("━━━ Account {} ━━━", account.index);
                 println!("  Unified address     {}", account.unified_address);
@@ -188,28 +214,27 @@ async fn main() -> Result<()> {
 
         Commands::Scan => {
             let service = RecoveryService::new();
+            let entries = build_seed_entries(&seed_inputs);
             let handle = service
-                .start_scan(
-                    ScanConfig {
-                        birthday,
-                        num_accounts: cli.num_accounts,
-                        gap_limit: cli.gap_limit,
-                        lightwalletd_url: cli.lightwalletd_url,
-                        data_dir: cli.data_dir.clone(),
+                .start_multi_scan(
+                    entries,
+                    MultiSeedConfig {
                         network,
+                        lightwalletd_url: cli.lightwalletd_url.clone(),
+                        data_dir: cli.data_dir.clone(),
+                        gap_limit: cli.gap_limit,
+                        num_accounts: cli.num_accounts,
                     },
-                    seed_phrase,
                 )
                 .await?;
 
-            let progress = wait_for_scan(&service, &handle).await?;
-            print_scan_result(&progress);
+            let progress = wait_for_multi_scan(&service, &handle).await?;
+            print_multi_scan_result(&progress);
             notify_scan_complete(&progress);
-            if progress.phase == ScanPhase::Cancelled {
-                std::process::exit(130);
-            }
-            if progress.phase == ScanPhase::Error {
-                bail!("recovery scan failed");
+            match progress.phase {
+                MultiSeedPhase::Cancelled => std::process::exit(130),
+                MultiSeedPhase::Failed(_) => bail!("recovery scan failed"),
+                _ => {}
             }
         }
 
@@ -235,28 +260,53 @@ async fn main() -> Result<()> {
             }
 
             let service = RecoveryService::new();
+            let entries = build_seed_entries(&seed_inputs);
             let handle = service
-                .start_scan(
-                    ScanConfig {
-                        birthday,
-                        num_accounts: cli.num_accounts,
-                        gap_limit: cli.gap_limit,
-                        lightwalletd_url: cli.lightwalletd_url,
-                        data_dir: cli.data_dir.clone(),
+                .start_multi_scan(
+                    entries,
+                    MultiSeedConfig {
                         network,
+                        lightwalletd_url: cli.lightwalletd_url.clone(),
+                        data_dir: cli.data_dir.clone(),
+                        gap_limit: cli.gap_limit,
+                        num_accounts: cli.num_accounts,
                     },
-                    seed_phrase,
                 )
                 .await?;
 
-            let progress = wait_for_scan(&service, &handle).await?;
-            print_scan_result(&progress);
+            let progress = wait_for_multi_scan(&service, &handle).await?;
+            print_multi_scan_result(&progress);
             notify_scan_complete(&progress);
-            if progress.phase == ScanPhase::Cancelled {
-                std::process::exit(130);
+            match progress.phase {
+                MultiSeedPhase::Cancelled => std::process::exit(130),
+                MultiSeedPhase::Failed(_) => bail!("recovery scan failed"),
+                _ => {}
             }
-            if progress.phase == ScanPhase::Error {
-                bail!("recovery scan failed");
+
+            // Identify funded seeds. Per-seed balance comes from per_seed
+            // (populated by the orchestrator) — non-None and > 0.
+            let funded: Vec<&zeck_core::scanner::SeedProgress> = progress
+                .per_seed
+                .iter()
+                .filter(|s| s.balance_zatoshis.unwrap_or(0) > 0)
+                .collect();
+
+            let total_zats: u64 = funded
+                .iter()
+                .map(|s| s.balance_zatoshis.unwrap_or(0))
+                .sum();
+            println!();
+            println!(
+                "{} of {} seeds funded — {}. Destination: {}",
+                funded.len(),
+                progress.per_seed.len(),
+                format_zec(total_zats),
+                destination,
+            );
+
+            if funded.is_empty() {
+                println!("Nothing to sweep.");
+                return Ok(());
             }
 
             let request = SweepRequest {
@@ -264,8 +314,24 @@ async fn main() -> Result<()> {
                 memo: memo.clone(),
                 max_fee_zatoshis: max_fee,
             };
-            let proposal = service.propose_sweep(&handle, request.clone()).await?;
-            print_sweep_preview(&proposal);
+
+            // Propose per-seed.
+            for seed in &funded {
+                println!();
+                println!(
+                    "── seed [{:>2}] {} (fp {}) ──",
+                    seed.seed_index,
+                    seed.label.as_deref().unwrap_or("(unlabelled)"),
+                    short_fp(&seed.seed_fingerprint),
+                );
+                match service
+                    .propose_sweep_for_seed(&handle, seed.seed_index, request.clone())
+                    .await
+                {
+                    Ok(proposal) => print_sweep_preview(&proposal),
+                    Err(err) => eprintln!("  proposal failed: {err}"),
+                }
+            }
 
             if dry_run {
                 println!();
@@ -273,31 +339,50 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
-            if confirm_sweep {
+            if !confirm_sweep {
                 println!();
-                println!("Broadcasting sweep transactions…");
-                let execution = service.execute_sweep(&handle, request).await;
-                match execution {
+                println!(
+                    "Re-run with --dry-run to preview, or --confirm-sweep to broadcast."
+                );
+                return Ok(());
+            }
+
+            // Execute per-seed. Failures on one seed don't block others.
+            println!();
+            println!("Broadcasting sweep transactions…");
+            let mut any_failure = false;
+            for seed in &funded {
+                println!();
+                println!(
+                    "── executing sweep for seed [{:>2}] {} ──",
+                    seed.seed_index,
+                    seed.label.as_deref().unwrap_or("(unlabelled)"),
+                );
+                match service
+                    .execute_sweep_for_seed(&handle, seed.seed_index, request.clone())
+                    .await
+                {
                     Ok(results) => {
-                        println!();
                         for result in &results {
                             println!(
                                 "  account {}  {}  {}",
                                 result.source_account, result.status, result.detail
                             );
                         }
-                        println!();
-                        println!("Sweep complete.");
                     }
                     Err(err) => {
-                        eprintln!();
-                        eprintln!("Sweep failed: {err}");
-                        std::process::exit(1);
+                        any_failure = true;
+                        eprintln!("  sweep failed for seed {}: {}", seed.seed_index, err);
                     }
                 }
+            }
+
+            println!();
+            if any_failure {
+                println!("Sweep complete with errors — see messages above.");
+                std::process::exit(1);
             } else {
-                println!();
-                println!("Re-run with --dry-run to preview, or --confirm-sweep to broadcast.");
+                println!("Sweep complete.");
             }
         }
     }
@@ -319,24 +404,191 @@ fn init_tracing(verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn load_seed_phrase(seed: Option<String>, seed_file: Option<PathBuf>) -> Result<SecretString> {
-    if let Some(seed) = seed {
-        return Ok(SecretString::new(seed.trim().to_owned()));
+/// Resolve all seed/birthday CLI flags into a normalized list of seed inputs.
+/// Validates mutual exclusion and count matching. Prompts interactively only
+/// when no seed source flag is given (legacy single-seed UX).
+fn collect_seed_inputs(cli: &Cli) -> Result<Vec<SeedInput>> {
+    if let Some(path) = &cli.seeds_file {
+        let entries = parse_seeds_file(path)
+            .with_context(|| format!("failed to parse seeds file {}", path.display()))?;
+        if entries.is_empty() {
+            bail!("seeds file {} contained no entries", path.display());
+        }
+        return Ok(entries);
     }
 
-    if let Some(path) = seed_file {
-        let contents = fs::read_to_string(&path)
+    if let Some(path) = &cli.seed_file {
+        let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read seed file {}", path.display()))?;
-        return Ok(SecretString::new(contents.trim().to_owned()));
+        let phrase = contents.trim().to_owned();
+        if phrase.is_empty() {
+            bail!("seed file {} was empty", path.display());
+        }
+        let birthday = resolve_single_birthday_flag(cli)?;
+        return Ok(vec![SeedInput {
+            phrase,
+            birthday,
+            label: None,
+        }]);
     }
 
+    if !cli.seed.is_empty() {
+        // Multi-seed via repeated --seed. Validate --birthday count.
+        let birthdays = if cli.birthday.is_empty() {
+            vec![None; cli.seed.len()]
+        } else if cli.birthday.len() == cli.seed.len() {
+            cli.birthday
+                .iter()
+                .map(|s| parse_birthday_token(s))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            bail!(
+                "--birthday count ({}) must match --seed count ({}) (or omit --birthday so all seeds auto-detect)",
+                cli.birthday.len(),
+                cli.seed.len(),
+            );
+        };
+
+        // --birthday-date / --birthday-auto-detect are single-seed conveniences.
+        if cli.seed.len() == 1 && cli.birthday.is_empty() {
+            // Apply legacy single-seed birthday flags.
+            let birthday = resolve_single_birthday_flag(cli)?;
+            return Ok(vec![SeedInput {
+                phrase: cli.seed[0].trim().to_owned(),
+                birthday,
+                label: None,
+            }]);
+        }
+
+        if cli.seed.len() > 1
+            && (cli.birthday_date.is_some() || cli.birthday_auto_detect)
+        {
+            bail!(
+                "--birthday-date and --birthday-auto-detect are single-seed only; \
+                 use repeated --birthday auto / --birthday <height> for multi-seed runs"
+            );
+        }
+
+        return Ok(cli
+            .seed
+            .iter()
+            .zip(birthdays)
+            .map(|(phrase, birthday)| SeedInput {
+                phrase: phrase.trim().to_owned(),
+                birthday,
+                label: None,
+            })
+            .collect());
+    }
+
+    // Interactive prompt — single seed only.
     let phrase = Password::new()
         .with_prompt("Enter your 24-word seed phrase")
         .allow_empty_password(false)
         .interact()
-        .context("failed to read seed phrase from terminal")?;
+        .context("failed to read seed phrase from terminal")?
+        .trim()
+        .to_owned();
+    let birthday = resolve_single_birthday_flag(cli)?;
+    Ok(vec![SeedInput {
+        phrase,
+        birthday,
+        label: None,
+    }])
+}
 
-    Ok(SecretString::new(phrase.trim().to_owned()))
+/// For single-seed legacy paths: turn the `--birthday <height|auto>`,
+/// `--birthday-date`, and `--birthday-auto-detect` flags into an
+/// `Option<u32>` (None = auto-detect at scan time).
+fn resolve_single_birthday_flag(cli: &Cli) -> Result<Option<u32>> {
+    if cli.birthday_auto_detect {
+        return Ok(None);
+    }
+    if let Some(date) = &cli.birthday_date {
+        return Ok(Some(estimate_birthday_from_date(date)?));
+    }
+    if cli.birthday.is_empty() {
+        // Legacy default: pre-Sapling-ish; treat as None so the resolver
+        // falls back to Sapling activation rather than a hardcoded constant.
+        // To preserve backward-compat with the old default of 419_200, we
+        // keep that as the explicit value.
+        return Ok(Some(419_200));
+    }
+    if cli.birthday.len() > 1 {
+        bail!(
+            "--birthday repeated {} times but only one --seed provided",
+            cli.birthday.len()
+        );
+    }
+    parse_birthday_token(&cli.birthday[0])
+}
+
+/// Parse a single `--birthday` value. `auto` → `None`; otherwise a u32 height.
+fn parse_birthday_token(token: &str) -> Result<Option<u32>> {
+    let trimmed = token.trim();
+    if trimmed.eq_ignore_ascii_case("auto") {
+        return Ok(None);
+    }
+    let height: u32 = trimmed
+        .parse()
+        .with_context(|| format!("invalid --birthday value `{trimmed}` (expected u32 or `auto`)"))?;
+    Ok(Some(height))
+}
+
+/// Parse a `--seeds-file` file: one entry per line. `phrase` or
+/// `phrase | birthday` (auto / u32). `#` and blank lines skipped.
+fn parse_seeds_file(path: &Path) -> Result<Vec<SeedInput>> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    parse_seeds_file_contents(&contents)
+}
+
+fn parse_seeds_file_contents(contents: &str) -> Result<Vec<SeedInput>> {
+    let mut out = Vec::new();
+    for (lineno, raw) in contents.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split('|').collect();
+        match parts.as_slice() {
+            [phrase] => {
+                out.push(SeedInput {
+                    phrase: phrase.trim().to_owned(),
+                    birthday: None,
+                    label: None,
+                });
+            }
+            [phrase, birthday] => {
+                let birthday = parse_birthday_token(birthday).with_context(|| {
+                    format!("invalid birthday on line {}", lineno + 1)
+                })?;
+                out.push(SeedInput {
+                    phrase: phrase.trim().to_owned(),
+                    birthday,
+                    label: None,
+                });
+            }
+            _ => {
+                bail!(
+                    "line {} has too many `|` separators (expected `phrase` or `phrase | birthday`)",
+                    lineno + 1
+                );
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn build_seed_entries(inputs: &[SeedInput]) -> Vec<SeedEntry> {
+    inputs
+        .iter()
+        .map(|i| SeedEntry {
+            phrase: SecretString::new(i.phrase.clone()),
+            birthday: i.birthday,
+            label: i.label.clone(),
+        })
+        .collect()
 }
 
 /// Parse a ZEC string (e.g. "0.001") into zatoshis.
@@ -389,109 +641,227 @@ fn format_zec(zatoshis: u64) -> String {
     }
 }
 
-async fn wait_for_scan(
+/// Render a multi-seed scan progress in place (TTY) or line-by-line
+/// (piped/redirected). Polls `service.get_multi_scan_progress` every 250 ms.
+async fn wait_for_multi_scan(
     service: &RecoveryService,
-    handle: &ScanHandle,
-) -> Result<zeck_core::ScanProgress> {
-    // Start with a spinner; upgrade to a real progress bar once we know total blocks.
-    let bar = ProgressBar::new_spinner();
-    bar.set_style(
-        ProgressStyle::with_template("{spinner:.green} {msg}")?
-            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
-    );
-    bar.enable_steady_tick(Duration::from_millis(120));
-
-    let mut bar_has_total = false;
+    handle: &MultiScanHandle,
+) -> Result<MultiSeedProgress> {
+    let tty = std::io::stderr().is_terminal();
+    let mut last_lines_drawn: usize = 0;
     let mut eta = EtaTracker::new();
     let started_at = Instant::now();
-    let mut discoveries_seen = 0usize;
+    let mut discoveries_seen: usize = 0;
 
     loop {
-        let progress = service.get_scan_progress(handle).await?;
+        let progress = service.get_multi_scan_progress(handle).await?;
 
-        // Surface any new discoveries above the progress bar so users see
-        // "Found X ZEC on account N" the moment a refresh tick observes it,
-        // instead of waiting for the scan to finish. The bar.println call
-        // routes through indicatif so the progress bar is preserved on the
-        // line below.
-        //
-        // Self-heal the cursor: the discovery log is contractually
-        // append-only, but if a future bug ever shrinks it, clamp so we
-        // don't index past the end and don't silently skip later events.
+        // Self-heal cursor (append-only contract — clamp defensively).
         if discoveries_seen > progress.discoveries.len() {
             discoveries_seen = progress.discoveries.len();
         }
         if progress.discoveries.len() > discoveries_seen {
+            // Print discoveries above the table. In TTY mode we first
+            // clear the previous table, emit the discoveries, then redraw.
+            if tty && last_lines_drawn > 0 {
+                clear_lines(last_lines_drawn);
+                last_lines_drawn = 0;
+            }
             for d in &progress.discoveries[discoveries_seen..] {
-                bar.println(format_discovery(d));
+                eprintln!("{}", format_discovery(d));
             }
             discoveries_seen = progress.discoveries.len();
         }
 
-        // Upgrade spinner → progress bar the first time we have block counts.
-        if !bar_has_total && progress.blocks_total > 0 {
-            bar.set_length(progress.blocks_total);
-            bar.set_style(
-                ProgressStyle::with_template(
-                    "{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} blocks  {msg}",
-                )?
-                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-                .progress_chars("█▉▊▋▌▍▎▏  "),
-            );
-            bar_has_total = true;
-        }
+        eta.observe(progress.blocks_scanned, total_blocks_target(&progress));
 
-        eta.observe(progress.blocks_scanned, progress.blocks_total);
-
-        let phase_label = phase_label(&progress);
-        let server_label = progress
-            .server
-            .as_ref()
-            .map(|s| format!(" [{}]", s.endpoint))
-            .unwrap_or_default();
         let eta_label = match eta.estimate(started_at.elapsed()) {
-            EtaEstimate::Warmup => " · Estimating remaining time…".to_string(),
-            EtaEstimate::Range(text) => format!(" · {text}"),
+            EtaEstimate::Warmup => "estimating…".to_string(),
+            EtaEstimate::Range(text) => text,
             EtaEstimate::Done => String::new(),
         };
-        // era_hint expects an absolute Zcash chain height. blocks_scanned is
-        // a delta from the effective birthday, so feeding it directly would
-        // misreport the era for any wallet whose birthday is past Sapling
-        // activation. Use synced_to_height (set by refresh_scan_progress and
-        // the background incremental tick) when available.
         let era_label = progress
             .synced_to_height
-            .and_then(era_hint)
-            .map(|era| format!(" · scanning ~{era}"))
+            .map(u32::from)
+            .and_then(|h| era_hint(h as u64))
             .unwrap_or_default();
 
-        let msg = format!("{phase_label}{server_label}{era_label}{eta_label}");
+        let lines = render_multi_seed_lines(&progress, &eta_label, &era_label);
 
-        if bar_has_total {
-            bar.set_position(progress.blocks_scanned);
+        if tty {
+            if last_lines_drawn > 0 {
+                clear_lines(last_lines_drawn);
+            }
+            for line in &lines {
+                eprintln!("{line}");
+            }
+            last_lines_drawn = lines.len();
+        } else {
+            // Piped/redirected: append a compact one-liner per tick.
+            eprintln!(
+                "[{:?}] {}/{} seeds done · scanned {} blocks · {}",
+                progress.phase,
+                progress
+                    .per_seed
+                    .iter()
+                    .filter(|s| matches!(s.status, SeedStatus::Done))
+                    .count(),
+                progress.per_seed.len(),
+                progress.blocks_scanned,
+                eta_label,
+            );
         }
-        bar.set_message(msg);
 
-        if progress.phase.is_terminal() {
-            bar.finish_and_clear();
+        if matches!(
+            progress.phase,
+            MultiSeedPhase::Completed | MultiSeedPhase::Cancelled | MultiSeedPhase::Failed(_)
+        ) {
             return Ok(progress);
         }
 
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
 
-fn phase_label(progress: &zeck_core::ScanProgress) -> String {
-    match progress.phase {
-        ScanPhase::Idle => "Starting".to_string(),
-        ScanPhase::ValidatingSeed => "Validating seed".to_string(),
-        ScanPhase::DerivingKeys => "Deriving keys".to_string(),
-        ScanPhase::ProbingLightwalletd => "Connecting to lightwalletd".to_string(),
-        ScanPhase::ScanningTransparent => "Scanning transparent addresses".to_string(),
-        ScanPhase::ScanningShielded => "Decrypting shielded transactions".to_string(),
-        ScanPhase::Complete => "Complete".to_string(),
-        ScanPhase::Cancelled => "Cancelled".to_string(),
-        ScanPhase::Error => "Error".to_string(),
+/// Estimate the run's overall block-scan target by summing per-seed deltas
+/// (target_tip - birthday) where known. Falls back to the largest single-seed
+/// estimate if `target_tip` is unset.
+fn total_blocks_target(progress: &MultiSeedProgress) -> u64 {
+    let Some(tip) = progress.fetcher.target_tip.map(u32::from) else {
+        return 0;
+    };
+    progress
+        .per_seed
+        .iter()
+        .map(|s| {
+            let bday = u32::from(s.birthday);
+            tip.saturating_sub(bday) as u64
+        })
+        .sum()
+}
+
+/// Build the lines for the per-seed table (header + one row per seed +
+/// fetcher footer). Returned as plain strings so the renderer can emit them
+/// in either TTY or piped mode.
+fn render_multi_seed_lines(
+    progress: &MultiSeedProgress,
+    eta_label: &str,
+    era_label: &str,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    out.push(format!(
+        "{:<6}{:<14}{:>12}{:>14}{:>10}  status",
+        "seed", "label", "birthday", "scanned", "balance"
+    ));
+    for seed in &progress.per_seed {
+        let label = seed
+            .label
+            .clone()
+            .unwrap_or_else(|| format!("(seed-{})", seed.seed_index));
+        let label = truncate(&label, 14);
+        let birthday = format_thousands(u32::from(seed.birthday) as u64);
+        let scanned = match seed.fully_scanned_height {
+            Some(h) => format_thousands(u32::from(h) as u64),
+            None => "—".to_string(),
+        };
+        let balance = match seed.balance_zatoshis {
+            Some(b) if b > 0 => format_zec(b),
+            Some(_) => "0".to_string(),
+            None => "—".to_string(),
+        };
+        let status = match &seed.status {
+            SeedStatus::Pending => "pending".to_string(),
+            SeedStatus::Scanning => "scanning".to_string(),
+            SeedStatus::Done => "done".to_string(),
+            SeedStatus::Cancelled => "cancelled".to_string(),
+            SeedStatus::Failed(msg) => format!("failed: {}", truncate(msg, 40)),
+        };
+        out.push(format!(
+            "[{:>2}]  {:<14}{:>12}{:>14}{:>10}  {}",
+            seed.seed_index, label, birthday, scanned, balance, status
+        ));
+    }
+
+    let fetcher = &progress.fetcher;
+    let dl = fetcher
+        .downloaded_to_height
+        .map(|h| format_thousands(u32::from(h) as u64))
+        .unwrap_or_else(|| "—".to_string());
+    let tip = fetcher
+        .target_tip
+        .map(|h| format_thousands(u32::from(h) as u64))
+        .unwrap_or_else(|| "—".to_string());
+    out.push(format!(
+        "fetcher  downloaded {} / target {}  retries {}",
+        dl, tip, fetcher.retry_count
+    ));
+
+    let phase = match &progress.phase {
+        MultiSeedPhase::Resolving => "resolving".to_string(),
+        MultiSeedPhase::Scanning => "scanning".to_string(),
+        MultiSeedPhase::Completed => "completed".to_string(),
+        MultiSeedPhase::Cancelled => "cancelled".to_string(),
+        MultiSeedPhase::Failed(msg) => format!("failed: {}", truncate(msg, 60)),
+    };
+    let mut footer = format!("phase {phase}");
+    if !era_label.is_empty() {
+        footer.push_str(&format!(" · scanning ~{era_label}"));
+    }
+    if !eta_label.is_empty() {
+        footer.push_str(&format!(" · {eta_label}"));
+    }
+    out.push(footer);
+
+    out
+}
+
+/// Move cursor up `n` lines and clear each. Uses raw ANSI so we don't need
+/// crossterm. No-op when `n == 0`.
+fn clear_lines(n: usize) {
+    if n == 0 {
+        return;
+    }
+    let mut stderr = std::io::stderr();
+    // Move up N lines, then for each line: clear the line + move down.
+    // Final positioning leaves the cursor at the top of the previous block.
+    let _ = write!(stderr, "\x1b[{n}A");
+    for _ in 0..n {
+        let _ = write!(stderr, "\x1b[2K\x1b[1B");
+    }
+    // Move back up to the top of the cleared block so the caller's
+    // subsequent prints overwrite.
+    let _ = write!(stderr, "\x1b[{n}A");
+    let _ = stderr.flush();
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
+fn format_thousands(n: u64) -> String {
+    let s = n.to_string();
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(*c as char);
+    }
+    out
+}
+
+fn short_fp(fp: &str) -> String {
+    if fp.len() <= 12 {
+        fp.to_string()
+    } else {
+        format!("{}…{}", &fp[..6], &fp[fp.len() - 4..])
     }
 }
 
@@ -503,11 +873,8 @@ struct EtaTracker {
 }
 
 enum EtaEstimate {
-    /// Not enough data yet — show a "Estimating…" message.
     Warmup,
-    /// Stable estimate, formatted human-readably.
     Range(String),
-    /// Either no work to do or already done.
     Done,
 }
 
@@ -516,7 +883,10 @@ impl EtaTracker {
     const WINDOW: Duration = Duration::from_secs(45);
 
     fn new() -> Self {
-        Self { samples: VecDeque::new(), last_total: 0 }
+        Self {
+            samples: VecDeque::new(),
+            last_total: 0,
+        }
     }
 
     fn observe(&mut self, scanned: u64, total: u64) {
@@ -568,9 +938,6 @@ impl EtaTracker {
     }
 }
 
-/// Returns a human-readable time range with rounding tuned to how uncertain we
-/// expect each band to be. Falsifies precision deliberately — at 6h out, the
-/// difference between 5h47m and 6h13m is meaningless to a waiting user.
 fn format_eta_range(secs: u64) -> String {
     if secs < 60 {
         return "less than a minute remaining".to_string();
@@ -594,9 +961,6 @@ fn format_eta_range(secs: u64) -> String {
     format!("about {lo}-{hi} hours remaining")
 }
 
-/// Map a block height to its approximate calendar year on mainnet so users can
-/// feel the scan moving through time. Uses ~82 s/block long-run average from
-/// Sapling activation (height 419,200, 2018-10-28).
 fn era_hint(height: u64) -> Option<String> {
     if height == 0 {
         return None;
@@ -609,16 +973,11 @@ fn era_hint(height: u64) -> Option<String> {
     }
     let elapsed_secs = (height - SAPLING_HEIGHT) as f64 * SECONDS_PER_BLOCK;
     let elapsed_years = elapsed_secs / (365.25 * 86_400.0);
-    // Sapling activated late October — round forward so blocks shortly after
-    // activation read as 2019, not 2018.
     let year = SAPLING_YEAR + (elapsed_years + 0.18) as i32;
     Some(year.to_string())
 }
 
 fn format_discovery(discovery: &ScanDiscovery) -> String {
-    // `at_block_height` is the scan frontier when the discovery was first
-    // observed — not the transaction's mined height. Label accordingly so
-    // users don't read it as transaction provenance.
     format!(
         "[scanned through block {}] account {}  +{} {}",
         discovery.at_block_height,
@@ -628,73 +987,73 @@ fn format_discovery(discovery: &ScanDiscovery) -> String {
     )
 }
 
-fn print_scan_result(progress: &zeck_core::ScanProgress) {
+fn print_multi_scan_result(progress: &MultiSeedProgress) {
+    println!();
     println!("Phase: {:?}", progress.phase);
 
-    if let Some(error) = &progress.error {
-        eprintln!("Error: {error}");
-    }
-
-    if let Some(server) = &progress.server {
-        println!(
-            "lightwalletd: {}  tip={}  vendor={}",
-            server.endpoint,
-            server.latest_block_height.unwrap_or_default(),
-            server.vendor.as_deref().unwrap_or("unknown")
-        );
-    }
-
-    if let Some(summary) = &progress.summary {
-        println!("Authoritative balances: {}", summary.authoritative_balances);
-        println!("Workspace: {}", summary.workspace_dir);
-        if !summary.note.is_empty() {
-            println!("Note: {}", summary.note);
+    if !progress.warnings.is_empty() {
+        for w in &progress.warnings {
+            println!("Warning: {w:?}");
         }
     }
 
-    if progress.accounts.is_empty() {
-        println!("No accounts derived.");
+    if progress.per_seed.is_empty() {
+        println!("No seeds scanned.");
         return;
     }
 
     println!();
-    println!("{:<8}  {:>16}  {:>16}  {:>16}  Status", "Account", "Sapling", "Orchard", "Transparent");
+    println!(
+        "{:<6}{:<14}{:>12}{:>14}{:>16}  status",
+        "seed", "label", "birthday", "scanned", "balance"
+    );
     println!("{}", "─".repeat(80));
-    for account in &progress.accounts {
+    for seed in &progress.per_seed {
+        let label = seed
+            .label
+            .clone()
+            .unwrap_or_else(|| format!("(seed-{})", seed.seed_index));
+        let scanned = seed
+            .fully_scanned_height
+            .map(|h| format_thousands(u32::from(h) as u64))
+            .unwrap_or_else(|| "—".to_string());
+        let balance = match seed.balance_zatoshis {
+            Some(b) => format_zec(b),
+            None => "—".to_string(),
+        };
+        let status = match &seed.status {
+            SeedStatus::Pending => "pending".to_string(),
+            SeedStatus::Scanning => "scanning".to_string(),
+            SeedStatus::Done => "done".to_string(),
+            SeedStatus::Cancelled => "cancelled".to_string(),
+            SeedStatus::Failed(msg) => format!("failed: {msg}"),
+        };
         println!(
-            "{:<8}  {:>16}  {:>16}  {:>16}  {}",
-            account.account_index,
-            format_zec(account.sapling_zatoshis),
-            format_zec(account.orchard_zatoshis),
-            format_zec(account.transparent_zatoshis),
-            account.status,
+            "[{:>2}]  {:<14}{:>12}{:>14}{:>16}  {}",
+            seed.seed_index,
+            truncate(&label, 14),
+            format_thousands(u32::from(seed.birthday) as u64),
+            scanned,
+            balance,
+            status,
         );
     }
     println!("{}", "─".repeat(80));
-    let total: u64 = progress.accounts.iter().map(|a| a.total_zatoshis).sum();
-    println!("{:<8}  {:>52}  Total: {}", "", "", format_zec(total));
     println!();
-    for account in &progress.accounts {
-        if account.total_zatoshis > 0 {
-            println!("Account {}  addresses:", account.account_index);
-            println!("  Unified:              {}", account.unified_address);
-            println!("  Sapling:              {}", account.sapling_address);
-            println!("  Transparent receive:  {}", account.transparent_receive_address);
-            println!("  Transparent change:   {}", account.transparent_change_address);
-            println!();
-        }
-    }
+    println!("{}", multi_scan_completion_summary(progress));
+    println!();
 }
 
 fn print_sweep_preview(proposal: &SweepProposal) {
-    println!();
     println!("Sweep preview:");
     println!("  Send:        {}", format_zec(proposal.total_send_zatoshis));
     println!("  Fee:         {}", format_zec(proposal.total_fee_zatoshis));
-    println!("  Net receive: {}", format_zec(proposal.net_received_zatoshis));
+    println!(
+        "  Net receive: {}",
+        format_zec(proposal.net_received_zatoshis)
+    );
 
     if !proposal.transactions.is_empty() {
-        println!();
         println!("  Transactions:");
         for tx in &proposal.transactions {
             let memo = tx.memo.as_deref().unwrap_or("—");
@@ -711,7 +1070,6 @@ fn print_sweep_preview(proposal: &SweepProposal) {
     }
 
     if !proposal.skipped_accounts.is_empty() {
-        println!();
         println!("  Skipped accounts:");
         for skipped in &proposal.skipped_accounts {
             println!(
@@ -724,26 +1082,22 @@ fn print_sweep_preview(proposal: &SweepProposal) {
     }
 
     if let Some(warning) = &proposal.warning {
-        println!();
         println!("  Warning: {warning}");
     }
 }
 
 /// Try to grab the user's attention when a long-running scan finishes. Best
-/// effort: terminal bell always; OS-level notification on macOS/Linux when the
-/// usual platform tools are present. Errors are silently swallowed because the
-/// scan succeeded — failing to notify is not a scan failure.
-fn notify_scan_complete(progress: &zeck_core::ScanProgress) {
-    let title = match progress.phase {
-        ScanPhase::Complete => "ZECK scan complete",
-        ScanPhase::Cancelled => "ZECK scan cancelled",
-        ScanPhase::Error => "ZECK scan failed",
+/// effort: terminal bell always; OS-level notification on macOS/Linux/Windows.
+fn notify_scan_complete(progress: &MultiSeedProgress) {
+    let title = match &progress.phase {
+        MultiSeedPhase::Completed => "ZECK scan complete",
+        MultiSeedPhase::Cancelled => "ZECK scan cancelled",
+        MultiSeedPhase::Failed(_) => "ZECK scan failed",
         _ => return,
     };
 
-    let body = scan_completion_summary(progress);
+    let body = multi_scan_completion_summary(progress);
 
-    // Terminal bell. ANSI BEL is ignored by quiet terminals but harmless.
     let _ = std::io::stderr().write_all(b"\x07");
 
     #[cfg(target_os = "macos")]
@@ -785,37 +1139,30 @@ fn notify_scan_complete(progress: &zeck_core::ScanProgress) {
     }
 }
 
-fn scan_completion_summary(progress: &zeck_core::ScanProgress) -> String {
-    if let Some(error) = &progress.error {
-        return error.clone();
+fn multi_scan_completion_summary(progress: &MultiSeedProgress) -> String {
+    if let MultiSeedPhase::Failed(msg) = &progress.phase {
+        return msg.clone();
     }
-    // Reserve "no funds were found" for actually-completed scans. A
-    // cancelled scan that hadn't yet observed any funds shouldn't claim
-    // the seed is empty — it just stopped early.
-    if progress.phase == ScanPhase::Cancelled {
+    if matches!(progress.phase, MultiSeedPhase::Cancelled) {
         return "Scan stopped before completion. Re-run with the same flags to resume."
             .to_string();
     }
     let funded: Vec<_> = progress
-        .accounts
+        .per_seed
         .iter()
-        .filter(|a| a.total_zatoshis > 0)
+        .filter(|s| s.balance_zatoshis.unwrap_or(0) > 0)
         .collect();
-    let total: u64 = funded.iter().map(|a| a.total_zatoshis).sum();
+    let total: u64 = funded.iter().map(|s| s.balance_zatoshis.unwrap_or(0)).sum();
+    let total_seeds = progress.per_seed.len();
     if funded.is_empty() {
-        return "No funds were found across all scanned accounts.".to_string();
+        return format!("0 of {total_seeds} seeds funded — no funds were found.");
     }
     let zec = format_zec(total);
-    match funded.len() {
-        1 => format!("Found {zec} on 1 account."),
-        n => format!("Found {zec} across {n} accounts."),
-    }
+    format!("{} of {} seeds funded — {}.", funded.len(), total_seeds, zec)
 }
 
 #[cfg(target_os = "macos")]
 fn applescript_quote(input: &str) -> String {
-    // AppleScript string literal: wrap in double quotes, escape backslashes
-    // and double quotes. Strip control chars to keep `osascript` happy.
     let escaped: String = input
         .chars()
         .filter(|c| !c.is_control())
@@ -830,8 +1177,6 @@ fn applescript_quote(input: &str) -> String {
 
 #[cfg(target_os = "windows")]
 fn powershell_quote(input: &str) -> String {
-    // PowerShell single-quoted string: only single-quotes need escaping (doubled).
-    // Strip control chars to avoid shell injection.
     let escaped: String = input
         .chars()
         .filter(|c| !c.is_control())
@@ -843,6 +1188,7 @@ fn powershell_quote(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     #[test]
     fn one_zatoshi() {
@@ -901,9 +1247,7 @@ mod tests {
 
     #[test]
     fn eta_minute_band_rounds_to_five() {
-        // 7 minutes → "about 5 minutes remaining" (rounded down to nearest 5)
         assert_eq!(format_eta_range(7 * 60), "about 5 minutes remaining");
-        // 13 minutes → "about 15 minutes remaining"
         assert_eq!(format_eta_range(13 * 60), "about 15 minutes remaining");
     }
 
@@ -935,7 +1279,6 @@ mod tests {
 
     #[test]
     fn era_hint_for_recent_height_is_recent_year() {
-        // Block ~3.3M corresponds to ~2026.
         let era = era_hint(3_300_000).unwrap();
         assert!(
             era == "2025" || era == "2026",
@@ -946,106 +1289,6 @@ mod tests {
     #[test]
     fn era_hint_zero_is_none() {
         assert!(era_hint(0).is_none());
-    }
-
-    #[test]
-    fn completion_summary_no_funds() {
-        let progress = make_progress(ScanPhase::Complete, &[]);
-        assert_eq!(
-            scan_completion_summary(&progress),
-            "No funds were found across all scanned accounts."
-        );
-    }
-
-    #[test]
-    fn cancelled_scan_does_not_claim_no_funds() {
-        // Regression: an early Ctrl-C used to send a notification body of
-        // "No funds were found..." even though the scan never finished.
-        let progress = make_progress(ScanPhase::Cancelled, &[]);
-        assert_eq!(
-            scan_completion_summary(&progress),
-            "Scan stopped before completion. Re-run with the same flags to resume."
-        );
-    }
-
-    #[test]
-    fn cancelled_scan_with_partial_funds_still_signals_incomplete() {
-        // Even if some funds were observed before cancellation, the body
-        // should make clear the scan didn't finish.
-        let progress = make_progress(ScanPhase::Cancelled, &[(0, 50_000_000)]);
-        assert_eq!(
-            scan_completion_summary(&progress),
-            "Scan stopped before completion. Re-run with the same flags to resume."
-        );
-    }
-
-    #[test]
-    fn completion_summary_one_account() {
-        let progress = make_progress(ScanPhase::Complete, &[(0, 50_000_000)]);
-        assert_eq!(
-            scan_completion_summary(&progress),
-            "Found 0.50000000 ZEC on 1 account."
-        );
-    }
-
-    #[test]
-    fn completion_summary_multiple_accounts() {
-        let progress = make_progress(
-            ScanPhase::Complete,
-            &[(0, 100_000_000), (3, 50_000_000)],
-        );
-        assert_eq!(
-            scan_completion_summary(&progress),
-            "Found 1.50000000 ZEC across 2 accounts."
-        );
-    }
-
-    #[test]
-    fn completion_summary_uses_error_when_present() {
-        let mut progress = make_progress(ScanPhase::Error, &[]);
-        progress.error = Some("lightwalletd unreachable".to_string());
-        assert_eq!(
-            scan_completion_summary(&progress),
-            "lightwalletd unreachable"
-        );
-    }
-
-    fn make_progress(
-        phase: ScanPhase,
-        funded: &[(u32, u64)],
-    ) -> zeck_core::ScanProgress {
-        let accounts = funded
-            .iter()
-            .map(|(idx, amount)| zeck_core::AccountBalancePreview {
-                account_index: *idx,
-                sapling_address: String::new(),
-                unified_address: String::new(),
-                transparent_receive_address: String::new(),
-                transparent_change_address: String::new(),
-                transparent_utxo_count: 0,
-                sapling_zatoshis: 0,
-                orchard_zatoshis: *amount,
-                transparent_zatoshis: 0,
-                total_zatoshis: *amount,
-                has_activity: true,
-                status: String::new(),
-            })
-            .collect();
-        zeck_core::ScanProgress {
-            handle: zeck_core::ScanHandle::new(),
-            phase,
-            blocks_scanned: 0,
-            blocks_total: 0,
-            synced_to_height: None,
-            elapsed_seconds: None,
-            estimated_remaining_seconds: None,
-            accounts,
-            discoveries: vec![],
-            summary: None,
-            server: None,
-            message: None,
-            error: None,
-        }
     }
 
     #[test]
@@ -1089,5 +1332,137 @@ mod tests {
     #[test]
     fn powershell_quote_strips_control_chars() {
         assert_eq!(powershell_quote("abc\x00def"), "'abcdef'");
+    }
+
+    // ── seeds-file parsing ──────────────────────────────────────────────────
+
+    #[test]
+    fn parse_seeds_file_phrase_only() {
+        let input = "abandon abandon abandon\nzoo zoo zoo zoo\n";
+        let entries = parse_seeds_file_contents(input).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].phrase, "abandon abandon abandon");
+        assert_eq!(entries[0].birthday, None);
+        assert_eq!(entries[1].phrase, "zoo zoo zoo zoo");
+        assert_eq!(entries[1].birthday, None);
+    }
+
+    #[test]
+    fn parse_seeds_file_phrase_and_birthday() {
+        let input = "abandon abandon | 2400000\nzoo zoo zoo | auto\n";
+        let entries = parse_seeds_file_contents(input).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].birthday, Some(2_400_000));
+        assert_eq!(entries[1].birthday, None);
+    }
+
+    #[test]
+    fn parse_seeds_file_skips_comments_and_blanks() {
+        let input = "# header comment\n\nabandon abandon\n   \n# trailing\nzoo zoo | 100\n";
+        let entries = parse_seeds_file_contents(input).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].phrase, "abandon abandon");
+        assert_eq!(entries[1].birthday, Some(100));
+    }
+
+    #[test]
+    fn parse_seeds_file_rejects_too_many_pipes() {
+        let input = "abandon | 100 | extra\n";
+        let err = parse_seeds_file_contents(input).unwrap_err();
+        assert!(format!("{err}").contains("too many"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_seeds_file_rejects_invalid_birthday() {
+        let input = "abandon abandon | not-a-number\n";
+        let err = parse_seeds_file_contents(input).unwrap_err();
+        assert!(format!("{err:#}").contains("invalid"), "got: {err:#}");
+    }
+
+    // ── clap validation ─────────────────────────────────────────────────────
+
+    #[test]
+    fn cli_rejects_seeds_file_combined_with_seed_args() {
+        let cmd = Cli::command();
+        let res = cmd.clone().try_get_matches_from([
+            "zeck",
+            "--seeds-file",
+            "x.txt",
+            "--seed",
+            "abandon",
+            "scan",
+        ]);
+        assert!(res.is_err());
+
+        let res = cmd.clone().try_get_matches_from([
+            "zeck",
+            "--seeds-file",
+            "x.txt",
+            "--seed-file",
+            "x.txt",
+            "scan",
+        ]);
+        assert!(res.is_err());
+
+        let res = cmd.clone().try_get_matches_from([
+            "zeck",
+            "--seeds-file",
+            "x.txt",
+            "--birthday",
+            "100",
+            "scan",
+        ]);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn cli_validates_birthday_count_matches_seed_count() {
+        // Two seeds + one birthday → collect_seed_inputs rejects.
+        let cli = Cli::try_parse_from([
+            "zeck",
+            "--seed",
+            "abandon abandon",
+            "--seed",
+            "zoo zoo",
+            "--birthday",
+            "100",
+            "scan",
+        ])
+        .unwrap();
+        let err = collect_seed_inputs(&cli).unwrap_err();
+        assert!(format!("{err:#}").contains("must match"), "got: {err:#}");
+
+        // Two seeds + two birthdays → ok.
+        let cli = Cli::try_parse_from([
+            "zeck",
+            "--seed",
+            "abandon abandon",
+            "--seed",
+            "zoo zoo",
+            "--birthday",
+            "100",
+            "--birthday",
+            "auto",
+            "scan",
+        ])
+        .unwrap();
+        let inputs = collect_seed_inputs(&cli).unwrap();
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].birthday, Some(100));
+        assert_eq!(inputs[1].birthday, None);
+
+        // Two seeds + zero birthdays → ok (all auto).
+        let cli = Cli::try_parse_from([
+            "zeck",
+            "--seed",
+            "abandon abandon",
+            "--seed",
+            "zoo zoo",
+            "scan",
+        ])
+        .unwrap();
+        let inputs = collect_seed_inputs(&cli).unwrap();
+        assert_eq!(inputs.len(), 2);
+        assert!(inputs.iter().all(|i| i.birthday.is_none()));
     }
 }
