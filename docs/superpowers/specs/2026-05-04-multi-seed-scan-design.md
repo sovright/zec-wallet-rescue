@@ -11,9 +11,9 @@ ZECK today scans one ZecWallet Lite seed at a time. Users recovering several old
 ## Goals
 
 - Scan N user-supplied seeds within a single ZECK run, sharing one block-download stream across all of them.
-- Earliest-birthday seed begins producing discoveries first; later-birthday seeds catch up cheaply because their blocks are already cached.
+- Earliest-birthday seed begins producing discoveries first. Once the fetcher passes a later seed's birthday, both scanners run concurrently and their discoveries may interleave in real time. The discoveries feed is per-seed within each card and globally append-only at the run level (i.e., the timeline is not strictly birthday-ordered after the catch-up point).
 - Single-seed UX is unchanged for users who only have one seed.
-- A seed scanned previously as a single-seed run can be added to a multi-seed run and resume from its existing `fully_scanned_height`.
+- A seed scanned previously as a single-seed run can be added to a multi-seed run and resume from its existing `fully_scanned_height`. Resume requires the *same workspace key*, which today includes `birthday`. To make resume robust against the user re-entering a different birthday on the second run, the resolver looks up any existing workspace by `(data_dir, network, fingerprint)` first; if one exists, its stored birthday is reused and the user-supplied birthday is treated as a no-op (with a UI note "resuming from existing scan at height H").
 - CLI parity with the GUI feature.
 
 ## Non-goals (v1)
@@ -39,7 +39,11 @@ Split download from scan, and relocate the cache to a network-scoped pool shared
 
 **Per-seed scanner** (N tasks, one per seed). Each owns a `WalletDb` in its own per-seed workspace under the existing keying scheme. Each subscribes to the fetcher's watch channel. On each tick, the scanner computes `[max(seed.birthday, fully_scanned_height + 1) .. available_tip]` and invokes the lower-level `scan_cached_blocks` API against the shared cache. A scanner whose birthday is above the current available tip simply waits.
 
-**Cache concurrency.** SQLite WAL mode permits one writer (the fetcher) and many readers (the scanners) safely. The cache file is opened by the fetcher with `BEGIN IMMEDIATE`-style write transactions and by scanners as read-only connections.
+Note: scanners do not talk to lightwalletd, so they do not need GoAway/transport-error handling. The reconnect logic from `run_wallet_sync_with_retry` is reused only by the fetcher. Scanner-side errors are restricted to wallet-DB and cache-read failures.
+
+**Cache concurrency.** SQLite WAL mode permits one writer (the fetcher) and many readers (the scanners) safely within a process. The cache file is opened by the fetcher with `BEGIN IMMEDIATE`-style write transactions and by scanners as read-only connections.
+
+**Cross-process exclusion.** A second ZECK process (e.g. CLI run while GUI is open) must not also try to write the cache. Enforced with an OS-level advisory lock on `data_dir/cache/<network>.lock` acquired by the fetcher at run start; if the lock is held, the run fails fast with "another ZECK scan is in progress." Scanners do not need the lock (read-only).
 
 **Cache pruning.** No-op in v1. `BlockCache::truncate` is wired to only run when *all* active scanners have advanced past the truncation height, but the default policy never calls it. The cache grows indefinitely; we accept this for v1 because compact blocks are small and can be wiped manually if needed. Follow-up work can add an explicit "compact cache" maintenance command.
 
@@ -92,7 +96,7 @@ pub struct FetcherProgress {
 3. **Dedup.** Reject duplicate fingerprints with a row-level error naming the duplicate indexes.
 4. **Sort.** Sort the seed list by birthday ascending. This becomes the canonical seed-index order for the run.
 5. **Open workspaces.** For each seed, open-or-create its single-seed workspace under the existing keying scheme. If `fully_scanned_height >= seed.birthday` already, the scanner resumes from there.
-6. **Open shared cache.** Open `data_dir/cache/<network>.sqlite` in WAL mode (creating if absent). Migrate any per-workspace caches found in step 5.
+6. **Open shared cache.** Acquire the network-scoped advisory lock, then open `data_dir/cache/<network>.sqlite` in WAL mode (creating if absent). Migrate any per-workspace caches found in step 5: each old cache is merged into the shared cache sequentially (one seed at a time) and deleted on success. If a single seed's migration fails, log a warning, leave the old cache file in place, and proceed without those blocks — the fetcher will simply re-download them. The run does not abort on migration failure.
 7. **Compute fetch start.** `start = min over seeds of max(seed.birthday, seed.fully_scanned_height + 1)`.
 8. **Spawn fetcher.** Begins downloading from `start` to chain tip; broadcasts available height on each batch.
 9. **Spawn scanners.** Each subscribes to the fetcher and runs its scan loop.
@@ -169,7 +173,7 @@ CLI progress prints a per-seed table updated in place, plus the aggregate fetche
 - Cache migration: an existing per-workspace cache is merged into the network-scoped cache on open and the old file removed.
 
 **Integration (testnet)**
-- Two distinct test seeds with different birthdays: shared cache contains each block exactly once, both wallet DBs reach tip, discoveries arrive in birthday order.
+- Two distinct test seeds with different birthdays: shared cache contains each block exactly once, both wallet DBs reach tip, the earliest-birthday seed's first discovery arrives before the later seed's scanner has produced anything (interleaving thereafter is acceptable).
 - Mid-run kill: relaunch resumes both seeds from their respective `fully_scanned_height`.
 - Single-seed scan after multi-seed scan: re-scanning seed #1 alone hits the populated shared cache and completes without re-downloading.
 
