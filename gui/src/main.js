@@ -165,7 +165,7 @@ document.querySelectorAll(".step-list li").forEach((li) => {
     const targetIdx = steps.indexOf(target);
     if (targetIdx <= furthestStep) {
       if (target === "config") {
-        $("start-scan").disabled = false;
+        updateUI();
         setStatus("config-status", "", "");
       }
       goTo(target);
@@ -187,40 +187,208 @@ document.querySelectorAll("[data-next]").forEach((btn) => {
 document.querySelectorAll("[data-prev]").forEach((btn) => {
   btn.addEventListener("click", () => {
     if (btn.dataset.prev === "config") {
-      $("start-scan").disabled = false;
+      updateUI();
       setStatus("config-status", "", "");
     }
     goTo(btn.dataset.prev);
   });
 });
 
-// ─── Step 2: Seed Entry ───────────────────────────────────────────────────────
+// ─── Step 2: Seed Entry (multi-row) ───────────────────────────────────────────
 
-const seedInput = $("seed-input");
 const seedVisibility = $("seed-visibility");
 const seedNextBtn = $("seed-next");
+const seedRowsContainer = $("seed-rows");
 
-seedVisibility.addEventListener("change", () => {
-  seedInput.classList.toggle("masked", !seedVisibility.checked);
-});
+// Per-row validation state keyed by row id. A row is "ready" when its phrase
+// has been validated successfully. The seedNext / start-scan buttons enable
+// only when at least one row is ready and no row holds invalid input.
+const rowState = new Map(); // id -> { valid: bool, validating: bool }
+let rowSeq = 0;
 
-async function validateSeed() {
-  const words = seedInput.value.trim().toLowerCase().split(/\s+/);
-  setStatus("seed-status", "Validating…", "");
-  seedNextBtn.disabled = true;
+function rowsAll() {
+  return Array.from(seedRowsContainer.querySelectorAll(".seed-row"));
+}
+
+function rowById(id) {
+  return seedRowsContainer.querySelector(`.seed-row[data-row-id="${id}"]`);
+}
+
+function setRowStatus(row, msg, kind) {
+  const el = row.querySelector(".seed-row-status");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = "seed-row-status status-line" + (kind ? ` ${kind}` : "");
+}
+
+function applyMaskingToRow(row) {
+  row.querySelector(".seed-row-phrase").classList.toggle("masked", !seedVisibility.checked);
+}
+
+function updateUI() {
+  const rows = rowsAll();
+  rows.forEach((row, idx) => {
+    row.querySelector(".seed-row-index").textContent = `Seed #${idx + 1}`;
+    const removeBtn = row.querySelector(".seed-row-remove");
+    removeBtn.style.visibility = rows.length > 1 ? "visible" : "hidden";
+  });
+  seedRowsContainer.dataset.rowCount = String(rows.length);
+
+  // Enable Continue / Start scan only when at least one row is valid and
+  // none are mid-validation. Empty rows are ignored.
+  let anyValid = false;
+  let anyInvalidNonEmpty = false;
+  for (const row of rows) {
+    const id = row.dataset.rowId;
+    const st = rowState.get(id);
+    const phrase = row.querySelector(".seed-row-phrase").value.trim();
+    if (!phrase) continue;
+    if (st?.valid) anyValid = true;
+    else anyInvalidNonEmpty = true;
+  }
+  const canProceed = anyValid && !anyInvalidNonEmpty;
+  seedNextBtn.disabled = !canProceed;
+  const startBtn = $("start-scan");
+  if (startBtn) startBtn.disabled = !canProceed;
+}
+
+async function validateRow(id) {
+  const row = rowById(id);
+  if (!row) return;
+  const phrase = row.querySelector(".seed-row-phrase").value.trim();
+  if (!phrase) {
+    rowState.set(id, { valid: false, validating: false });
+    setRowStatus(row, "", "");
+    updateUI();
+    return;
+  }
+  const words = phrase.toLowerCase().split(/\s+/);
+  rowState.set(id, { valid: false, validating: true });
+  setRowStatus(row, "Validating…", "");
+  updateUI();
   try {
     await invoke("validate_seed", { words });
-    setStatus("seed-status", "✓ Seed phrase is valid.", "success");
-    seedNextBtn.disabled = false;
+    rowState.set(id, { valid: true, validating: false });
+    setRowStatus(row, "✓ Seed phrase is valid.", "success");
   } catch (err) {
-    setStatus("seed-status", `✗ ${err}`, "error");
+    rowState.set(id, { valid: false, validating: false });
+    setRowStatus(row, `✗ ${err}`, "error");
+  }
+  updateUI();
+}
+
+async function detectBirthdayForRow(id) {
+  const row = rowById(id);
+  if (!row) return;
+  const phrase = row.querySelector(".seed-row-phrase").value.trim();
+  if (!phrase) {
+    setRowStatus(row, "Enter a seed phrase first.", "error");
+    return;
+  }
+  const detectBtn = row.querySelector(".seed-row-birthday-detect");
+  detectBtn.disabled = true;
+  setRowStatus(row, "Probing for birthday…", "");
+
+  const unlistenProbe = await listen("birthday-probe-progress", (event) => {
+    setRowStatus(row, String(event.payload), "");
+  });
+
+  try {
+    const result = await invoke("detect_birthday", {
+      seed: phrase.toLowerCase(),
+      lightwalletdUrl: $("lightwalletd-url").value.trim(),
+      network: $("network-select").value,
+    });
+    row.querySelector(".seed-row-birthday-input").value = result.birthday;
+    setRowStatus(row, `✓ ${result.message}`, "success");
+  } catch (err) {
+    setRowStatus(row, `✗ Birthday detection failed: ${err}`, "error");
+  } finally {
+    detectBtn.disabled = false;
+    unlistenProbe();
   }
 }
 
-$("seed-validate").addEventListener("click", validateSeed);
-seedInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); validateSeed(); }
+function addSeedRow(initial = {}) {
+  const tmpl = $("seed-row-template");
+  const row = tmpl.content.firstElementChild.cloneNode(true);
+  const id = `seed-${++rowSeq}`;
+  row.dataset.rowId = id;
+  rowState.set(id, { valid: false, validating: false });
+
+  const phraseEl = row.querySelector(".seed-row-phrase");
+  phraseEl.value = initial.phrase || "";
+  row.querySelector(".seed-row-label").value = initial.label || "";
+  if (initial.birthday) {
+    row.querySelector(".seed-row-birthday-input").value = initial.birthday;
+  }
+
+  row.querySelector(".seed-row-remove").addEventListener("click", () => removeSeedRow(id));
+  row.querySelector(".seed-row-validate").addEventListener("click", () => validateRow(id));
+  row.querySelector(".seed-row-birthday-detect").addEventListener("click", () => detectBirthdayForRow(id));
+  phraseEl.addEventListener("blur", () => {
+    // Only auto-validate when the user has typed something.
+    if (phraseEl.value.trim()) validateRow(id);
+    else {
+      rowState.set(id, { valid: false, validating: false });
+      setRowStatus(row, "", "");
+      updateUI();
+    }
+  });
+  phraseEl.addEventListener("input", () => {
+    // Mark stale on edit so user re-validates.
+    const st = rowState.get(id);
+    if (st?.valid) {
+      rowState.set(id, { valid: false, validating: false });
+      setRowStatus(row, "", "");
+      updateUI();
+    }
+  });
+
+  seedRowsContainer.appendChild(row);
+  applyMaskingToRow(row);
+  updateUI();
+  return id;
+}
+
+function removeSeedRow(id) {
+  const row = rowById(id);
+  if (row) row.remove();
+  rowState.delete(id);
+  // Always keep at least one row visible.
+  if (rowsAll().length === 0) addSeedRow();
+  updateUI();
+}
+
+function gatherSeedEntries() {
+  return rowsAll()
+    .map((row) => {
+      const phrase = row.querySelector(".seed-row-phrase").value.trim();
+      if (!phrase) return null;
+      const birthdayRaw = row.querySelector(".seed-row-birthday-input").value.trim();
+      const birthday = birthdayRaw ? parseInt(birthdayRaw, 10) : null;
+      const label = row.querySelector(".seed-row-label").value.trim() || null;
+      return {
+        phrase: phrase.toLowerCase(),
+        birthday: Number.isFinite(birthday) && birthday > 0 ? birthday : null,
+        label,
+      };
+    })
+    .filter(Boolean);
+}
+
+seedVisibility.addEventListener("change", () => {
+  rowsAll().forEach(applyMaskingToRow);
 });
+
+$("add-seed-row").addEventListener("click", () => {
+  const id = addSeedRow();
+  const row = rowById(id);
+  row?.querySelector(".seed-row-phrase").focus();
+});
+
+// Seed at least one row up front.
+addSeedRow();
 
 // ─── Step 3: Configuration ────────────────────────────────────────────────────
 
@@ -260,78 +428,6 @@ $("auto-gap-limit").addEventListener("change", () => {
   $("accounts-range-value").style.opacity = auto ? "0.4" : "1";
 });
 
-// Approximate mainnet chain tip and scan rate for time estimates
-const APPROX_CHAIN_TIP = 2_730_000;
-const BLOCKS_PER_MINUTE = 38_000;
-
-function updateScanEstimate() {
-  const birthday = parseInt($("birthday-height").value, 10) || 419200;
-  const blocks = Math.max(0, APPROX_CHAIN_TIP - birthday);
-  const minutes = Math.round(blocks / BLOCKS_PER_MINUTE);
-  const el = $("birthday-scan-estimate");
-  if (minutes <= 1) {
-    el.textContent = "Estimated scan time: under 1 minute.";
-  } else if (minutes < 60) {
-    el.textContent = `Estimated scan time: ~${minutes} minutes.`;
-  } else {
-    const hours = Math.floor(minutes / 60);
-    const mins = minutes % 60;
-    el.textContent = `Estimated scan time: ~${hours}h ${mins}m.`;
-  }
-}
-
-$("birthday-height").addEventListener("input", updateScanEstimate);
-updateScanEstimate();
-
-$("birthday-autodetect").addEventListener("click", async () => {
-  const seedVal = seedInput.value.trim();
-  if (!seedVal) {
-    setStatus("config-status", "Enter your seed phrase on step 2 first.", "error");
-    return;
-  }
-  $("birthday-autodetect").disabled = true;
-  $("birthday-probe-status").textContent = "Starting detection…";
-  setStatus("config-status", "", "");
-
-  const unlistenProbe = await listen("birthday-probe-progress", (event) => {
-    $("birthday-probe-status").textContent = event.payload;
-  });
-
-  try {
-    const result = await invoke("detect_birthday", {
-      seed: seedVal.toLowerCase(),
-      lightwalletdUrl: $("lightwalletd-url").value.trim(),
-      network: $("network-select").value,
-    });
-    $("birthday-height").value = result.birthday;
-    updateScanEstimate();
-    $("birthday-probe-status").textContent = "";
-    setStatus("config-status", `✓ ${result.message}`, "success");
-  } catch (err) {
-    $("birthday-probe-status").textContent = "";
-    setStatus("config-status", `✗ Birthday detection failed: ${err}`, "error");
-  } finally {
-    $("birthday-autodetect").disabled = false;
-    unlistenProbe();
-  }
-});
-
-$("birthday-estimate").addEventListener("click", async () => {
-  const dateVal = $("birthday-date").value;
-  if (!dateVal) {
-    setStatus("config-status", "Pick a date first.", "error");
-    return;
-  }
-  try {
-    const height = await invoke("estimate_birthday_from_date", { date: dateVal });
-    $("birthday-height").value = height;
-    updateScanEstimate();
-    setStatus("config-status", `Birthday estimated: block ${Number(height).toLocaleString()}`, "success");
-  } catch (err) {
-    setStatus("config-status", String(err), "error");
-  }
-});
-
 async function validateDestination() {
   const address = $("destination-input").value.trim();
   if (!address) {
@@ -359,8 +455,9 @@ $("destination-input").addEventListener("keydown", (e) => {
 });
 
 $("start-scan").addEventListener("click", async () => {
-  if (!seedInput.value.trim()) {
-    setStatus("config-status", "Seed phrase is required — go back and enter it.", "error");
+  const seeds = gatherSeedEntries();
+  if (seeds.length === 0) {
+    setStatus("config-status", "Enter at least one seed phrase on step 2.", "error");
     return;
   }
 
@@ -405,23 +502,24 @@ $("start-scan").addEventListener("click", async () => {
 
   const autoGap = $("auto-gap-limit").checked;
   const config = {
-    seed: seedInput.value.trim().toLowerCase(),
-    birthday: parseInt($("birthday-height").value, 10) || 419200,
-    num_accounts: autoGap ? null : parseInt($("accounts-range").value, 10),
-    gap_limit: autoGap ? parseInt($("gap-limit").value, 10) : 20,
+    network: $("network-select").value,
     lightwalletd_url: $("lightwalletd-url").value.trim(),
     data_dir: dataDirVal,
-    network: $("network-select").value,
+    gap_limit: autoGap ? parseInt($("gap-limit").value, 10) : 20,
+    num_accounts: autoGap ? null : parseInt($("accounts-range").value, 10),
   };
 
   setStatus("config-status", "Starting scan…", "");
   $("start-scan").disabled = true;
 
   try {
-    const handle = await invoke("start_scan", { config });
+    const handle = await invoke("start_multi_scan", { seeds, config });
     state.scanHandle = handle;
+    setStatus("config-status", `Scan started — handle ${JSON.stringify(handle)}`, "success");
     goTo("scan");
-    await startProgressListeners();
+    // Task 16 fills in per-seed progress UI; for now, show a placeholder.
+    $("scan-phase").textContent = "Scan started";
+    setStatus("scan-message", "Multi-seed scan running. Per-seed progress UI lands in the next task.", "");
   } catch (err) {
     setStatus("config-status", `✗ ${err}`, "error");
     $("start-scan").disabled = false;
@@ -797,9 +895,12 @@ $("restart-flow").addEventListener("click", () => {
     maxFeeZec: null,
   });
 
-  seedInput.value = "";
+  // Reset seed rows: drop all and seed a fresh empty row.
+  seedRowsContainer.innerHTML = "";
+  rowState.clear();
+  rowSeq = 0;
   seedVisibility.checked = false;
-  seedInput.classList.add("masked");
+  addSeedRow();
   seedNextBtn.disabled = true;
   setStatus("seed-status", "", "");
   setStatus("config-status", "", "");

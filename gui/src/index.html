@@ -68,27 +68,51 @@
 
         <section class="screen" data-step="seed">
           <p class="eyebrow">Step 2</p>
-          <h2>Enter the seed phrase</h2>
+          <h2>Enter your seed phrases</h2>
           <p class="lead">
-            Paste the full 24 words. The phrase stays on this machine and is cleared from the UI
-            after you start a session.
+            Paste the full 24 words. Phrases stay on this machine and are cleared from the UI
+            after you start a session. Add multiple seeds to recover from several wallets in one run.
           </p>
-          <label class="field">
-            <span>Seed phrase</span>
-            <textarea id="seed-input" rows="5" class="masked"></textarea>
-          </label>
-          <div class="inline-actions">
+          <div class="inline-actions" style="margin-top:0;margin-bottom:12px">
             <label class="checkline">
               <input type="checkbox" id="seed-visibility" />
               <span>Show words on screen</span>
             </label>
-            <button class="ghost" id="seed-validate">Validate seed</button>
+          </div>
+          <div id="seed-rows" data-row-count="0"></div>
+          <div class="inline-actions">
+            <button class="ghost" id="add-seed-row" type="button">+ Add another seed</button>
           </div>
           <p id="seed-status" class="status-line"></p>
           <div class="actions split">
             <button class="secondary" data-prev="welcome">Back</button>
             <button class="primary" data-next="config" id="seed-next" disabled>Continue</button>
           </div>
+
+          <template id="seed-row-template">
+            <div class="seed-row" data-row-id="">
+              <div class="seed-row-header">
+                <span class="seed-row-index"></span>
+                <input class="seed-row-label" type="text" placeholder="Label (optional)" />
+                <button class="seed-row-remove" type="button" aria-label="Remove seed">✕</button>
+              </div>
+              <label class="field">
+                <span>Seed phrase</span>
+                <textarea class="seed-row-phrase masked" rows="3" placeholder="24-word seed phrase"></textarea>
+              </label>
+              <div class="seed-row-meta">
+                <label class="field">
+                  <span>Wallet birthday</span>
+                  <input class="seed-row-birthday-input" type="number" min="0" placeholder="auto" />
+                </label>
+                <div class="seed-row-meta-actions">
+                  <button class="ghost seed-row-validate" type="button">Validate</button>
+                  <button class="ghost seed-row-birthday-detect" type="button">Auto-detect birthday</button>
+                </div>
+              </div>
+              <p class="seed-row-status status-line"></p>
+            </div>
+          </template>
         </section>
 
         <section class="screen" data-step="config">
@@ -102,22 +126,6 @@
                 <option value="testnet">Testnet</option>
               </select>
               <small>Use Mainnet unless you were testing with play money (testnet).</small>
-            </label>
-            <label class="field">
-              <span>Wallet birthday</span>
-              <input id="birthday-height" type="number" min="0" value="419200" />
-              <small>The block number when your wallet was created. Not sure? Use the date picker below to estimate it automatically.</small>
-              <small id="birthday-scan-estimate" style="font-weight:600"></small>
-            </label>
-            <label class="field">
-              <span>Approximate wallet creation date</span>
-              <input id="birthday-date" type="date" />
-              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
-                <button class="ghost" id="birthday-estimate">Estimate from this date</button>
-                <button class="ghost" id="birthday-autodetect">Auto-detect (probes node)</button>
-              </div>
-              <small id="birthday-probe-status" style="color:var(--color-muted,#888)"></small>
-              <small>Pick roughly when you first created your ZecWallet Lite — ZECK will fill in the block number for you. Or use <strong>Auto-detect</strong> to probe the blockchain (requires your seed phrase from step 2).</small>
             </label>
             <label class="field">
               <span>Number of accounts to scan</span>

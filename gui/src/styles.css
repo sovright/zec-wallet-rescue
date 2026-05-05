@@ -488,6 +488,84 @@ pre {
   }
 }
 
+/* ─── Seed rows (multi-seed entry) ──────────────────────────────────────── */
+
+#seed-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 8px;
+}
+
+.seed-row {
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  padding: 18px;
+  display: grid;
+  gap: 12px;
+}
+
+.seed-row-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.seed-row-index {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.seed-row-label {
+  flex: 1;
+  padding: 8px 12px;
+  font-size: 0.92rem;
+}
+
+.seed-row-remove {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  padding: 0;
+  font-size: 0.9rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.seed-row-remove:hover {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.seed-row-phrase {
+  min-height: 90px;
+}
+
+.seed-row-meta {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.seed-row-meta-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.seed-row-status:empty {
+  display: none;
+}
+
 @media (max-width: 980px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -495,6 +573,10 @@ pre {
 
   .card-grid,
   .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .seed-row-meta {
     grid-template-columns: 1fr;
   }
 }
