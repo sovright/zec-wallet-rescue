@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
         eprintln!("✓ {}", result.message);
         result.birthday
     } else if let Some(date) = &cli.birthday_date {
-        estimate_birthday_from_date(date)?
+        estimate_birthday_from_date(date, &cli.lightwalletd_url).await?
     } else {
         cli.birthday
     };

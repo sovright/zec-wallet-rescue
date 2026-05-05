@@ -209,8 +209,13 @@ pub fn default_data_dir(app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn estimate_birthday_from_date(date: String) -> Result<u32, String> {
-    estimate_birthday(&date).map_err(|err| err.to_string())
+pub async fn estimate_birthday_from_date(
+    date: String,
+    lightwalletd_url: String,
+) -> Result<u32, String> {
+    estimate_birthday(&date, &lightwalletd_url)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
