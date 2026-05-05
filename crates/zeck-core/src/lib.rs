@@ -1,5 +1,6 @@
 pub mod address;
 pub mod birthday;
+pub mod cache;
 pub mod derivation;
 pub mod error;
 pub mod lightwalletd;
