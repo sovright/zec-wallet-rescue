@@ -857,108 +857,310 @@ $("cancel-scan").addEventListener("click", async () => {
 });
 
 $("review-sweep").addEventListener("click", async () => {
-  setStatus("scan-message", "Fetching sweep proposal…", "");
-  $("review-sweep").disabled = true;
+  // Move to the sweep step. The proposal is built lazily via "Review sweep".
+  enterSweepStep();
+  goTo("sweep");
+});
+
+// ─── Step 5: Multi-seed Sweep ─────────────────────────────────────────────────
+
+function enterSweepStep() {
+  // Pre-populate destination/memo/max-fee from earlier config-step inputs so
+  // users don't retype them, but allow editing here.
+  if (state.destination) $("sweep-dest-address").value = state.destination;
+  if (state.memo) $("sweep-memo-multi").value = state.memo;
+  if (state.maxFeeZec) $("sweep-max-fee-zec").value = state.maxFeeZec;
+
+  // Render summary cards from last known progress.
+  renderSweepSummary(state.lastProgress);
+  $("sweep-execute-all").disabled = true;
+  $("irreversible-check").checked = false;
+  setStatus("sweep-message", "", "");
+  state.sweepProposals = null;
+}
+
+function renderSweepSummary(progress) {
+  const container = $("sweep-per-seed");
+  container.innerHTML = "";
+  const perSeed = (progress && progress.per_seed) || [];
+
+  let funded = 0;
+  let totalZats = 0n;
+  for (const seed of perSeed) {
+    const balance = BigInt(seed.balance_zatoshis ?? 0);
+    if (balance > 0n) funded += 1;
+    totalZats += balance;
+
+    const tpl = $("sweep-seed-card-template").content.cloneNode(true);
+    const card = tpl.querySelector(".sweep-seed-card");
+    card.dataset.seedIndex = String(seed.seed_index);
+    card.querySelector(".seed-card-label").textContent =
+      seed.label || `Seed #${seed.seed_index + 1}`;
+    card.querySelector(".seed-card-fingerprint").textContent =
+      seed.seed_fingerprint ? seed.seed_fingerprint.slice(0, 10) + "…" : "";
+    card.querySelector(".sweep-card-balance").textContent = fmt(Number(balance));
+    card.querySelector(".sweep-card-net").textContent = "—";
+    card.querySelector(".sweep-card-fee").textContent = "—";
+    if (balance === 0n) {
+      const status = card.querySelector(".seed-card-status");
+      status.textContent = "No funds";
+      status.style.color = "var(--muted)";
+    }
+    container.appendChild(tpl);
+  }
+
+  $("sweep-funded-count").textContent = String(funded);
+  $("sweep-total-count").textContent = String(perSeed.length);
+  $("sweep-total-zec").textContent = fmt(Number(totalZats));
+}
+
+function findSweepCard(seedIndex) {
+  return $("sweep-per-seed").querySelector(
+    `.sweep-seed-card[data-seed-index="${seedIndex}"]`
+  );
+}
+
+function renderSweepProposalCard(dto) {
+  const card = findSweepCard(dto.seed_index);
+  if (!card) return;
+  const status = card.querySelector(".seed-card-status");
+  const detail = card.querySelector(".sweep-card-detail");
+  if (dto.error) {
+    status.textContent = "Skipped";
+    status.style.color = "var(--muted)";
+    detail.innerHTML = `<p class="status-line muted">${escapeHtml(dto.error)}</p>`;
+    return;
+  }
+  const p = dto.proposal;
+  if (!p || p.transactions.length === 0) {
+    status.textContent = "No spendable funds";
+    status.style.color = "var(--muted)";
+    detail.innerHTML = "";
+    return;
+  }
+  status.textContent = "Reviewed";
+  status.style.color = "";
+  card.querySelector(".sweep-card-net").textContent = fmt(p.net_received_zatoshis);
+  card.querySelector(".sweep-card-fee").textContent = fmt(p.total_fee_zatoshis);
+
+  const rows = p.transactions
+    .map((tx) => {
+      const kind = tx.kind === "shield_transparent" ? "Shield" : "Sweep";
+      return `<li>${escapeHtml(kind)} account ${tx.source_account}: ${fmt(tx.gross_zatoshis)} → ${fmt(tx.net_zatoshis)} (fee ${fmt(tx.fee_zatoshis)})</li>`;
+    })
+    .join("");
+  let html = `<ul class="discovery-list">${rows}</ul>`;
+  if (p.warning) {
+    html += `<p class="status-line muted">${escapeHtml(p.warning)}</p>`;
+  }
+  detail.innerHTML = html;
+}
+
+function renderSweepResultCard(dto) {
+  const card = findSweepCard(dto.seed_index);
+  if (!card) return;
+  const status = card.querySelector(".seed-card-status");
+  const detail = card.querySelector(".sweep-card-detail");
+  if (dto.error) {
+    status.textContent = "Failed";
+    status.style.color = "var(--danger, #c0392b)";
+    const existing = detail.innerHTML;
+    detail.innerHTML =
+      existing +
+      `<p class="status-line error">✗ ${escapeHtml(dto.error)}</p>`;
+    return;
+  }
+  const confirmed = dto.txs.filter((t) => t.status === "confirmed").length;
+  const pending = dto.txs.filter((t) => t.status === "pending").length;
+  const failed = dto.txs.filter((t) => t.status === "failed").length;
+  status.textContent = failed > 0 ? "Partial" : pending > 0 ? "Pending" : "Sent";
+  status.style.color = failed > 0 ? "var(--danger, #c0392b)" : "";
+  const txList = dto.txs
+    .map((t) => {
+      const txid = t.txid ? escapeHtml(t.txid) : "—";
+      return `<li>${escapeHtml(t.status.toUpperCase())}: <code>${txid}</code> (account ${t.source_account})</li>`;
+    })
+    .join("");
+  detail.innerHTML += `<p class="status-line">${confirmed} confirmed, ${pending} pending, ${failed} failed.</p><ul class="discovery-list">${txList}</ul>`;
+}
+
+$("sweep-propose-all").addEventListener("click", async () => {
+  const destination = $("sweep-dest-address").value.trim();
+  if (!destination) {
+    setStatus("sweep-message", "Enter a destination address.", "error");
+    return;
+  }
+  // Validate destination (Unified Address required for the sweep step).
+  try {
+    await invoke("validate_address", { address: destination });
+  } catch (err) {
+    setStatus("sweep-message", `✗ ${err}`, "error");
+    return;
+  }
+
+  state.destination = destination;
+  state.memo = $("sweep-memo-multi").value.trim() || null;
+  state.maxFeeZec = $("sweep-max-fee-zec").value.trim() || null;
+
+  setStatus("sweep-message", "Building sweep proposals…", "");
+  $("sweep-propose-all").disabled = true;
+  $("sweep-execute-all").disabled = true;
 
   try {
-    const proposal = await invoke("propose_sweep", {
+    const dtos = await invoke("propose_sweep_all", {
       handle: state.scanHandle,
       destination: state.destination,
       memo: state.memo,
       maxFeeZec: state.maxFeeZec,
     });
-    state.sweepProposal = proposal;
-    renderSweepProposal(proposal);
-    goTo("sweep");
+    state.sweepProposals = dtos;
+    dtos.forEach(renderSweepProposalCard);
+    const ready = dtos.filter(
+      (d) => d.proposal && d.proposal.transactions.length > 0
+    );
+    if (ready.length === 0) {
+      setStatus(
+        "sweep-message",
+        "No seeds have spendable funds to sweep.",
+        "error"
+      );
+      $("sweep-propose-all").disabled = false;
+      return;
+    }
+    setStatus(
+      "sweep-message",
+      `Ready to sweep ${ready.length} seed(s). Confirm below to proceed.`,
+      "success"
+    );
+    $("sweep-propose-all").disabled = false;
+    if ($("irreversible-check").checked) {
+      $("sweep-execute-all").disabled = false;
+    }
   } catch (err) {
-    setStatus("scan-message", `✗ ${err}`, "error");
-    $("review-sweep").disabled = false;
+    setStatus("sweep-message", `✗ ${err}`, "error");
+    $("sweep-propose-all").disabled = false;
   }
-});
-
-// ─── Step 5: Sweep Review ─────────────────────────────────────────────────────
-
-function renderSweepProposal(proposal) {
-  const tbody = $("sweep-rows");
-  tbody.innerHTML = "";
-
-  proposal.transactions.forEach((tx) => {
-    const kindLabel = tx.kind === "shield_transparent" ? "Shield" : "Sweep";
-    const dest = tx.destination;
-    const shortDest =
-      dest.length > 26 ? dest.slice(0, 12) + "…" + dest.slice(-10) : dest;
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${tx.source_account}</td>
-      <td>${kindLabel}</td>
-      <td title="${escapeHtml(dest)}" style="cursor:pointer" data-copy="${escapeHtml(dest)}">${escapeHtml(shortDest)} <small>📋</small></td>
-      <td>${fmt(tx.gross_zatoshis)}</td>
-      <td>${fmt(tx.fee_zatoshis)}</td>
-      <td>${fmt(tx.net_zatoshis)}</td>
-      <td>${escapeHtml(tx.memo ?? "—")}</td>
-    `;
-    tbody.appendChild(tr);
-  });
-
-  $("sweep-summary").textContent =
-    `Net received: ${fmt(proposal.net_received_zatoshis)} after ${fmt(proposal.total_fee_zatoshis)} in fees.` +
-    (proposal.warning ? `  ⚠ ${proposal.warning}` : "");
-
-  const skippedEl = $("sweep-skipped");
-  if (proposal.skipped_accounts.length > 0) {
-    const items = proposal.skipped_accounts
-      .map(
-        (s) =>
-          `<li>Account ${s.account_index}: ${escapeHtml(s.reason)} (${fmt(s.gross_zatoshis)})</li>`
-      )
-      .join("");
-    skippedEl.innerHTML = `<p style="margin:6px 0 4px;font-weight:700;color:var(--muted)">Skipped accounts</p><ul class="discovery-list">${items}</ul>`;
-  } else {
-    skippedEl.innerHTML = "";
-  }
-
-  $("irreversible-check").checked = false;
-  $("execute-sweep").disabled = true;
-}
-
-// Copy-address click handler for sweep table — wired once here so it doesn't
-// accumulate duplicates if renderSweepProposal is called more than once.
-$("sweep-rows").addEventListener("click", (e) => {
-  const cell = e.target.closest("[data-copy]");
-  if (!cell) return;
-  navigator.clipboard.writeText(cell.dataset.copy).then(() => {
-    const orig = cell.innerHTML;
-    cell.innerHTML = "Copied!";
-    setTimeout(() => { cell.innerHTML = orig; }, 1200);
-  });
 });
 
 $("irreversible-check").addEventListener("change", () => {
-  $("execute-sweep").disabled = !$("irreversible-check").checked;
+  const ready =
+    state.sweepProposals &&
+    state.sweepProposals.some(
+      (d) => d.proposal && d.proposal.transactions.length > 0
+    );
+  $("sweep-execute-all").disabled =
+    !$("irreversible-check").checked || !ready;
 });
 
-$("execute-sweep").addEventListener("click", async () => {
-  $("execute-sweep").disabled = true;
+$("sweep-execute-all").addEventListener("click", async () => {
+  if (!state.sweepProposals) return;
+  $("sweep-execute-all").disabled = true;
+  $("sweep-propose-all").disabled = true;
   $("irreversible-check").disabled = true;
 
+  const eligible = state.sweepProposals
+    .filter((d) => d.proposal && d.proposal.transactions.length > 0)
+    .map((d) => d.seed_index);
+
+  setStatus("sweep-message", "Broadcasting sweep transactions…", "");
+
   try {
-    const results = await invoke("execute_sweep", {
-      handle: state.scanHandle,
-      destination: state.destination,
-      memo: state.memo,
-      maxFeeZec: state.maxFeeZec,
+    // Listen for per-seed execution events to update cards live.
+    const unlisten = await listen("multi-sweep-execution-progress", (event) => {
+      renderSweepResultCard(event.payload);
     });
-    renderCompleteScreen(results);
+    let results;
+    try {
+      results = await invoke("execute_sweep_all", {
+        handle: state.scanHandle,
+        destination: state.destination,
+        memo: state.memo,
+        maxFeeZec: state.maxFeeZec,
+        seedIndexes: eligible,
+      });
+    } finally {
+      unlisten();
+    }
+    // Final pass: ensure all cards reflect their result.
+    results.forEach(renderSweepResultCard);
+    renderMultiCompleteScreen(results);
     goTo("complete");
   } catch (err) {
-    $("execute-sweep").disabled = false;
+    setStatus("sweep-message", `✗ Sweep failed: ${err}`, "error");
     $("irreversible-check").disabled = false;
-    $("sweep-skipped").innerHTML =
-      `<p class="status-line error">✗ Sweep failed: ${escapeHtml(String(err))}</p>`;
+    $("sweep-propose-all").disabled = false;
+    if ($("irreversible-check").checked) {
+      $("sweep-execute-all").disabled = false;
+    }
   }
 });
 
 // ─── Step 6: Complete ─────────────────────────────────────────────────────────
+
+/// Render the completion screen for a multi-seed sweep.
+/// `results` is `Vec<PerSeedSweepResultDto>` from `execute_sweep_all`.
+function renderMultiCompleteScreen(results) {
+  let confirmed = 0, pending = 0, failed = 0, errored = 0;
+  for (const seed of results) {
+    if (seed.error) {
+      errored += 1;
+      continue;
+    }
+    confirmed += seed.txs.filter((t) => t.status === "confirmed").length;
+    pending += seed.txs.filter((t) => t.status === "pending").length;
+    failed += seed.txs.filter((t) => t.status === "failed").length;
+  }
+
+  $("complete-summary").textContent =
+    `Multi-seed sweep finished — ${confirmed} confirmed, ${pending} pending, ${failed} failed, ${errored} seed(s) errored.`;
+
+  const sections = results.map((seed) => {
+    const label = seed.label || `Seed #${seed.seed_index + 1}`;
+    if (seed.error) {
+      return `${label} (${seed.fingerprint.slice(0, 10)}…)\n  ✗ ${seed.error}`;
+    }
+    if (seed.txs.length === 0) {
+      return `${label} (${seed.fingerprint.slice(0, 10)}…)\n  No transactions broadcast.`;
+    }
+    const lines = seed.txs.map((r) => {
+      let line = `  Account ${r.source_account}: ${r.status.toUpperCase()}`;
+      if (r.txid) line += `\n    txid: ${r.txid}`;
+      if (r.confirmed_height) line += `\n    confirmed at block ${r.confirmed_height}`;
+      if (r.detail) line += `\n    ${r.detail}`;
+      return line;
+    });
+    return `${label} (${seed.fingerprint.slice(0, 10)}…)\n${lines.join("\n")}`;
+  });
+
+  $("complete-report").innerHTML = `<pre>${escapeHtml(sections.join("\n\n"))}</pre>`;
+
+  const report = buildMultiReport(results);
+  $("save-report").dataset.report = report;
+  $("report-path").value = buildDefaultReportPath();
+}
+
+function buildMultiReport(results) {
+  const lines = ["ZECK Multi-seed Recovery Report", `Date: ${new Date().toISOString()}`, ""];
+  for (const seed of results) {
+    const label = seed.label || `Seed #${seed.seed_index + 1}`;
+    lines.push(`── ${label} (${seed.fingerprint}) ──`);
+    if (seed.error) {
+      lines.push(`  ERROR: ${seed.error}`);
+    } else if (seed.txs.length === 0) {
+      lines.push("  No transactions broadcast.");
+    } else {
+      for (const r of seed.txs) {
+        let line = `  Account ${r.source_account}: ${r.status}`;
+        if (r.txid) line += `\n    txid: ${r.txid}`;
+        if (r.confirmed_height) line += `\n    confirmed at block ${r.confirmed_height}`;
+        if (r.detail) line += `\n    detail: ${r.detail}`;
+        lines.push(line);
+      }
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
 
 function renderCompleteScreen(results) {
   const confirmed = results.filter((r) => r.status === "confirmed").length;
@@ -1031,10 +1233,18 @@ $("restart-flow").addEventListener("click", () => {
     scanHandle: null,
     lastProgress: null,
     sweepProposal: null,
+    sweepProposals: null,
     destination: null,
     memo: null,
     maxFeeZec: null,
   });
+  $("sweep-dest-address").value = "";
+  $("sweep-memo-multi").value = "";
+  $("sweep-max-fee-zec").value = "";
+  $("sweep-per-seed").innerHTML = "";
+  $("sweep-execute-all").disabled = true;
+  $("irreversible-check").disabled = false;
+  $("sweep-propose-all").disabled = false;
 
   // Reset seed rows: drop all and seed a fresh empty row.
   seedRowsContainer.innerHTML = "";

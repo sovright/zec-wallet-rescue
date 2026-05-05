@@ -311,6 +311,158 @@ pub async fn execute_sweep(
     Ok(results)
 }
 
+/// Per-seed proposal returned by [`propose_sweep_all`]. `error` is set when
+/// the per-seed proposal failed (e.g. unfunded seed → no spendable accounts);
+/// `proposal` is set on success.
+#[derive(Debug, Clone, Serialize)]
+pub struct PerSeedSweepProposalDto {
+    pub seed_index: usize,
+    pub fingerprint: String,
+    pub label: Option<String>,
+    pub proposal: Option<SweepProposal>,
+    pub error: Option<String>,
+}
+
+/// Per-seed execution result returned by [`execute_sweep_all`].
+#[derive(Debug, Clone, Serialize)]
+pub struct PerSeedSweepResultDto {
+    pub seed_index: usize,
+    pub fingerprint: String,
+    pub label: Option<String>,
+    pub txs: Vec<TxBroadcastResult>,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+pub async fn propose_sweep_all(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    handle: MultiScanHandle,
+    destination: String,
+    memo: Option<String>,
+    max_fee_zec: Option<String>,
+) -> Result<Vec<PerSeedSweepProposalDto>, String> {
+    let max_fee_zatoshis = max_fee_zec
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(parse_zec_to_zatoshis)
+        .transpose()?;
+
+    // Snapshot the run's progress so we know which seeds are present (and which
+    // have a balance worth sweeping). Sweep contexts are stored on the
+    // MultiSeedRun itself.
+    let progress = state
+        .service
+        .get_multi_scan_progress(&handle)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let mut results = Vec::with_capacity(progress.per_seed.len());
+    for seed in &progress.per_seed {
+        let dto = match state
+            .service
+            .propose_sweep_for_seed(
+                &handle,
+                seed.seed_index,
+                SweepRequest {
+                    destination: destination.clone(),
+                    memo: memo.clone(),
+                    max_fee_zatoshis,
+                },
+            )
+            .await
+        {
+            Ok(proposal) => PerSeedSweepProposalDto {
+                seed_index: seed.seed_index,
+                fingerprint: seed.seed_fingerprint.clone(),
+                label: seed.label.clone(),
+                proposal: Some(proposal),
+                error: None,
+            },
+            Err(err) => PerSeedSweepProposalDto {
+                seed_index: seed.seed_index,
+                fingerprint: seed.seed_fingerprint.clone(),
+                label: seed.label.clone(),
+                proposal: None,
+                error: Some(err.to_string()),
+            },
+        };
+        let _ = app.emit("multi-sweep-proposal-progress", &dto);
+        results.push(dto);
+    }
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn execute_sweep_all(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    handle: MultiScanHandle,
+    destination: String,
+    memo: Option<String>,
+    max_fee_zec: Option<String>,
+    seed_indexes: Option<Vec<usize>>,
+) -> Result<Vec<PerSeedSweepResultDto>, String> {
+    let max_fee_zatoshis = max_fee_zec
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(parse_zec_to_zatoshis)
+        .transpose()?;
+
+    let progress = state
+        .service
+        .get_multi_scan_progress(&handle)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let targets: Vec<_> = match seed_indexes {
+        Some(idxs) => progress
+            .per_seed
+            .iter()
+            .filter(|s| idxs.contains(&s.seed_index))
+            .cloned()
+            .collect(),
+        None => progress.per_seed.clone(),
+    };
+
+    let mut results = Vec::with_capacity(targets.len());
+    for seed in &targets {
+        let dto = match state
+            .service
+            .execute_sweep_for_seed(
+                &handle,
+                seed.seed_index,
+                SweepRequest {
+                    destination: destination.clone(),
+                    memo: memo.clone(),
+                    max_fee_zatoshis,
+                },
+            )
+            .await
+        {
+            Ok(txs) => PerSeedSweepResultDto {
+                seed_index: seed.seed_index,
+                fingerprint: seed.seed_fingerprint.clone(),
+                label: seed.label.clone(),
+                txs,
+                error: None,
+            },
+            Err(err) => PerSeedSweepResultDto {
+                seed_index: seed.seed_index,
+                fingerprint: seed.seed_fingerprint.clone(),
+                label: seed.label.clone(),
+                txs: Vec::new(),
+                error: Some(err.to_string()),
+            },
+        };
+        let _ = app.emit("multi-sweep-execution-progress", &dto);
+        results.push(dto);
+    }
+    Ok(results)
+}
+
 #[tauri::command]
 pub fn default_data_dir(app: AppHandle) -> Result<String, String> {
     let base = app

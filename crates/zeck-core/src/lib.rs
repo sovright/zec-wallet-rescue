@@ -21,6 +21,6 @@ pub use multi_seed::{
     resolve_seeds, resolve_seeds_with_detector, start_multi_seed_run, BirthdayDetector,
     DefaultLightwalletdDetector, MultiSeedConfig, MultiSeedPhase, MultiSeedProgress,
     MultiSeedRun, ResolveConfig, ResolveError, ResolveWarning, ResolvedSeed, SeedEntry,
-    MAINNET_SAPLING_ACTIVATION_HEIGHT, TESTNET_SAPLING_ACTIVATION_HEIGHT,
+    SeedSweepContext, MAINNET_SAPLING_ACTIVATION_HEIGHT, TESTNET_SAPLING_ACTIVATION_HEIGHT,
 };
 pub use service::RecoveryService;

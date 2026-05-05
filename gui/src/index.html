@@ -277,38 +277,73 @@
 
         <section class="screen" data-step="sweep">
           <p class="eyebrow">Step 5</p>
-          <h2>Review the sweep proposal</h2>
+          <h2>Sweep recovered funds</h2>
           <div class="banner warning">
-            ZECK will broadcast real transactions from the persisted recovery workspace. Any
-            transparent funds are shielded first, then the account's spendable shielded value is
-            swept to your destination Unified Address.
+            ZECK will broadcast real transactions from each seed's persisted recovery workspace.
+            Any transparent funds are shielded first, then the spendable shielded value is swept
+            to the destination Unified Address you provide below.
           </div>
-          <div class="table-card">
-            <table>
-              <thead>
-                <tr>
-                  <th>Account</th>
-                  <th>Step</th>
-                  <th>Destination</th>
-                  <th>Gross</th>
-                  <th>Fee</th>
-                  <th>Net</th>
-                  <th>Memo</th>
-                </tr>
-              </thead>
-              <tbody id="sweep-rows"></tbody>
-            </table>
+
+          <div class="metric-panel" id="sweep-summary-panel">
+            <div>
+              <span class="metric-label">Funded seeds</span>
+              <strong><span id="sweep-funded-count">—</span> / <span id="sweep-total-count">—</span></strong>
+            </div>
+            <div>
+              <span class="metric-label">Total recoverable</span>
+              <strong id="sweep-total-zec">—</strong>
+            </div>
           </div>
-          <p id="sweep-summary" class="status-line"></p>
-          <div class="report-card" id="sweep-skipped"></div>
+
+          <div class="form-grid">
+            <label class="field span-two">
+              <span>Destination address</span>
+              <input id="sweep-dest-address" type="text" placeholder="u1..." />
+              <small>Must be a Unified Address starting with "u1" from your new wallet.</small>
+            </label>
+            <label class="field span-two">
+              <span>Recovery memo (optional)</span>
+              <input id="sweep-memo-multi" type="text" placeholder="ZECK recovery" />
+            </label>
+            <label class="field">
+              <span>Max transaction fee in ZEC (optional)</span>
+              <input id="sweep-max-fee-zec" type="text" inputmode="decimal" placeholder="0.0002" />
+            </label>
+          </div>
+
+          <h3 class="section-heading">Per-seed sweep status</h3>
+          <div id="sweep-per-seed"></div>
+
+          <p id="sweep-message" class="status-line"></p>
+
           <label class="checkline">
             <input type="checkbox" id="irreversible-check" />
             <span>I understand that broadcasting this recovery sweep is irreversible.</span>
           </label>
+
           <div class="actions split">
             <button class="secondary" data-prev="scan">Back</button>
-            <button class="primary" id="execute-sweep" disabled>Sweep Funds</button>
+            <button class="ghost" id="sweep-propose-all">Review sweep</button>
+            <button class="primary" id="sweep-execute-all" disabled>Sweep all</button>
           </div>
+
+          <template id="sweep-seed-card-template">
+            <div class="seed-card sweep-seed-card" data-seed-index="">
+              <div class="seed-card-header">
+                <div class="seed-card-title">
+                  <span class="seed-card-label"></span>
+                  <span class="seed-card-fingerprint"></span>
+                </div>
+                <span class="seed-card-status">Pending review</span>
+              </div>
+              <div class="seed-card-meta">
+                <span>Balance: <strong class="sweep-card-balance">—</strong></span>
+                <span>Net: <strong class="sweep-card-net">—</strong></span>
+                <span>Fee: <strong class="sweep-card-fee">—</strong></span>
+              </div>
+              <div class="sweep-card-detail"></div>
+            </div>
+          </template>
         </section>
 
         <section class="screen" data-step="complete">

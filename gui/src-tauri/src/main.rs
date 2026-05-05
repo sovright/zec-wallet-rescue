@@ -22,6 +22,8 @@ fn main() {
             commands::cancel_multi_scan,
             commands::propose_sweep,
             commands::execute_sweep,
+            commands::propose_sweep_all,
+            commands::execute_sweep_all,
             commands::estimate_birthday_from_date,
             commands::detect_birthday,
             commands::save_recovery_report,

@@ -456,12 +456,31 @@ impl Default for MultiSeedProgress {
     }
 }
 
+/// Per-seed context retained by [`MultiSeedRun`] for post-scan operations
+/// (sweep, report). Cloned cheaply because [`RecoveryWorkspace`] is `Clone`,
+/// `tracked` is a small vec, and `seed_bytes` is wrapped in `SecretVec`.
+#[derive(Clone)]
+pub struct SeedSweepContext {
+    pub seed_index: usize,
+    pub fingerprint: String,
+    pub label: Option<String>,
+    pub birthday: u32,
+    pub workspace: RecoveryWorkspace,
+    pub tracked: Vec<TrackedAccount>,
+    pub seed_bytes: Arc<SecretVec<u8>>,
+    pub network: ZeckNetwork,
+    pub lightwalletd_url: String,
+}
+
 /// Run handle returned by [`start_multi_seed_run`]. Holds shared progress,
-/// a cancel token, and the driver task.
+/// a cancel token, the driver task, and per-seed sweep contexts.
 pub struct MultiSeedRun {
     pub progress: Arc<Mutex<MultiSeedProgress>>,
     pub cancel: CancellationToken,
     pub task: tokio::task::JoinHandle<()>,
+    /// Per-seed contexts needed for sweep/report after scan completion.
+    /// Empty for terminal-failed runs (resolve errors).
+    pub sweep_contexts: Vec<SeedSweepContext>,
 }
 
 impl MultiSeedRun {
@@ -478,6 +497,11 @@ impl MultiSeedRun {
     /// once they've drained.
     pub fn cancel(&self) {
         self.cancel.cancel();
+    }
+
+    /// Return per-seed sweep contexts. Empty for terminal-failed runs.
+    pub fn seed_sweep_contexts(&self) -> &[SeedSweepContext] {
+        &self.sweep_contexts
     }
 }
 
@@ -514,6 +538,7 @@ fn make_terminal_run(progress: MultiSeedProgress) -> MultiSeedRun {
         progress,
         cancel,
         task,
+        sweep_contexts: Vec::new(),
     }
 }
 
@@ -658,6 +683,7 @@ pub async fn start_multi_seed_run(
 
     // ── Spawn N scanners (each gets its own cache reader + cancel token) ────
     let mut seed_runtimes: Vec<SeedRuntime> = Vec::with_capacity(per_seed_setup.len());
+    let mut sweep_contexts: Vec<SeedSweepContext> = Vec::with_capacity(per_seed_setup.len());
     for (resolved, workspace, tracked, scanner_birthday) in per_seed_setup {
         let reader = SharedCacheReader::open(&cache_db).map_err(|err| {
             ZeckError::Storage(format!("opening shared cache reader: {err}"))
@@ -681,6 +707,19 @@ pub async fn start_multi_seed_run(
             chain_state_provider.clone(),
             scanner_cancel.clone(),
         );
+
+        let seed_bytes_arc = Arc::new(SecretVec::new(resolved.seed_bytes.expose_secret().to_vec()));
+        sweep_contexts.push(SeedSweepContext {
+            seed_index: resolved.index,
+            fingerprint: resolved.fingerprint.clone(),
+            label: resolved.label.clone(),
+            birthday: resolved.birthday,
+            workspace: workspace.clone(),
+            tracked: tracked.clone(),
+            seed_bytes: seed_bytes_arc,
+            network: config.network,
+            lightwalletd_url: config.lightwalletd_url.clone(),
+        });
 
         seed_runtimes.push(SeedRuntime {
             seed_index: resolved.index,
@@ -719,6 +758,7 @@ pub async fn start_multi_seed_run(
         progress,
         cancel: run_cancel,
         task: driver,
+        sweep_contexts,
     })
 }
 
@@ -786,6 +826,7 @@ fn spawn_driver(
                         birthday: BlockHeight::from_u32(0),
                         fully_scanned_height: None,
                         status: SeedStatus::Pending,
+                        balance_zatoshis: None,
                     });
                 if let Some(h) = snap.fully_scanned_height {
                     max_synced = Some(match max_synced {
@@ -919,6 +960,25 @@ fn poll_seed_discoveries(
         .ok()
         .flatten()?;
     let scanned_height = u64::from(u32::from(summary.fully_scanned_height()));
+
+    // Compute the per-seed total balance every tick (cheap — already have the
+    // summary in hand) and write it to the shared progress so the sweep view
+    // can render funded counts without a separate DB read.
+    let total_balance: u64 = runtime
+        .tracked
+        .iter()
+        .map(|tracked| {
+            summary
+                .account_balances()
+                .get(&tracked.wallet_account_id)
+                .map(|v| u64::from(v.total()))
+                .unwrap_or(0)
+        })
+        .sum();
+    if let Ok(mut guard) = runtime.progress.lock() {
+        guard.balance_zatoshis = Some(total_balance);
+    }
+
     if scanned_height == runtime.last_discovery_height {
         return None;
     }

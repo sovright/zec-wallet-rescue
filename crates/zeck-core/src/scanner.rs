@@ -100,6 +100,12 @@ pub struct SeedProgress {
     #[serde(with = "crate::models::serde_block_height::option")]
     pub fully_scanned_height: Option<BlockHeight>,
     pub status: SeedStatus,
+    /// Total wallet balance (sapling + orchard + transparent) in zatoshis,
+    /// populated by the multi-seed orchestrator's driver loop. `None` until
+    /// the first driver tick after scanning starts; remains the most recent
+    /// observed value once set.
+    #[serde(default)]
+    pub balance_zatoshis: Option<u64>,
 }
 
 pub struct ScannerHandle {
@@ -157,6 +163,7 @@ pub fn spawn_scanner(
         birthday: spec.birthday,
         fully_scanned_height: None,
         status: SeedStatus::Pending,
+        balance_zatoshis: None,
     }));
     let progress_for_task = progress.clone();
     let cancel_for_task = cancel.clone();

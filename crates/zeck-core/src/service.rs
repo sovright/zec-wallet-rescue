@@ -1,6 +1,6 @@
 use std::{collections::HashMap, convert::Infallible, sync::Arc, time::Instant};
 
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use tokio::{
     sync::{Mutex, RwLock},
     task::JoinHandle,
@@ -9,6 +9,7 @@ use tokio::{
 use zcash_address::ZcashAddress;
 use zcash_client_backend::{
     data_api::{
+        InputSource,
         wallet::{
             create_proposed_transactions, input_selection::GreedyInputSelector,
             propose_send_max_transfer, propose_shielding, ConfirmationsPolicy, SpendingKeys,
@@ -222,6 +223,111 @@ impl RecoveryService {
             )));
         }
         build_sweep_proposal(&progress, request)
+    }
+
+    /// Build a sweep proposal for a single seed in a multi-seed run. The seed
+    /// is identified by its `seed_index` (the post-sort index assigned by the
+    /// resolver, matching `SeedProgress.seed_index`). The multi-seed run does
+    /// NOT need to be in a fully Completed phase — sweeps are decoupled from
+    /// the run's overall phase, and each per-seed scanner reports its own
+    /// `SeedStatus::Done` independently.
+    pub async fn propose_sweep_for_seed(
+        &self,
+        handle: &MultiScanHandle,
+        seed_index: usize,
+        request: SweepRequest,
+    ) -> ZeckResult<SweepProposal> {
+        let ctx = self.find_seed_context(handle, seed_index).await?;
+        let accounts =
+            build_account_previews_from_workspace(&ctx.workspace, ctx.network, &ctx.tracked)?;
+        let progress = ScanProgress {
+            handle: ScanHandle::new(),
+            phase: ScanPhase::Complete,
+            blocks_scanned: 0,
+            blocks_total: 0,
+            synced_to_height: None,
+            elapsed_seconds: None,
+            estimated_remaining_seconds: None,
+            accounts,
+            discoveries: Vec::new(),
+            summary: None,
+            server: None,
+            message: None,
+            error: None,
+        };
+        build_sweep_proposal(&progress, request)
+    }
+
+    /// Execute a sweep for a single seed in a multi-seed run. Mirrors
+    /// [`Self::execute_sweep`] but resolves the workspace + tracked accounts
+    /// from the multi-seed run's per-seed sweep contexts rather than from a
+    /// `ScanHandle`.
+    pub async fn execute_sweep_for_seed(
+        &self,
+        handle: &MultiScanHandle,
+        seed_index: usize,
+        request: SweepRequest,
+    ) -> ZeckResult<Vec<TxBroadcastResult>> {
+        let ctx = self.find_seed_context(handle, seed_index).await?;
+        // Validate against the current wallet-db balance before executing.
+        let accounts =
+            build_account_previews_from_workspace(&ctx.workspace, ctx.network, &ctx.tracked)?;
+        let validation_progress = ScanProgress {
+            handle: ScanHandle::new(),
+            phase: ScanPhase::Complete,
+            blocks_scanned: 0,
+            blocks_total: 0,
+            synced_to_height: None,
+            elapsed_seconds: None,
+            estimated_remaining_seconds: None,
+            accounts,
+            discoveries: Vec::new(),
+            summary: None,
+            server: None,
+            message: None,
+            error: None,
+        };
+        let _ = build_sweep_proposal(&validation_progress, request.clone())?;
+
+        let seed_bytes = ctx.seed_bytes.expose_secret().to_vec();
+        let transparent_account = crate::derivation::legacy_transparent_account_key_from_seed(
+            ctx.network,
+            seed_bytes.as_slice().try_into().map_err(|_| {
+                ZeckError::Internal("seed bytes must be 64 bytes".to_owned())
+            })?,
+        )?;
+
+        execute_sweep_against_workspace(
+            ExecuteSweepCtx {
+                workspace: ctx.workspace.clone(),
+                tracked_accounts: ctx.tracked.clone(),
+                network: ctx.network,
+                lightwalletd_url: &ctx.lightwalletd_url,
+                preferred_endpoint: None,
+                birthday: ctx.birthday,
+                seed: &seed_bytes,
+                transparent_account: &transparent_account,
+            },
+            request,
+            None,
+        )
+        .await
+    }
+
+    async fn find_seed_context(
+        &self,
+        handle: &MultiScanHandle,
+        seed_index: usize,
+    ) -> ZeckResult<crate::multi_seed::SeedSweepContext> {
+        let runs = self.multi_runs.lock().await;
+        let run = runs.get(handle).ok_or(ZeckError::UnknownScanHandle)?;
+        run.sweep_contexts
+            .iter()
+            .find(|c| c.seed_index == seed_index)
+            .cloned()
+            .ok_or_else(|| {
+                ZeckError::InvalidConfig(format!("no seed with index {seed_index} in this run"))
+            })
     }
 
     pub async fn execute_sweep(
@@ -452,13 +558,6 @@ async fn execute_sweep_for_session(
     session: SharedScanSession,
     request: SweepRequest,
 ) -> ZeckResult<Vec<TxBroadcastResult>> {
-    let destination = validate_destination_address(&request.destination)?;
-    let memo_text = normalized_memo_text(request.memo.as_deref())?;
-    let memo_bytes = Some(
-        MemoBytes::from_bytes(memo_text.as_bytes())
-            .map_err(|err| ZeckError::InvalidMemo(err.to_string()))?,
-    );
-
     let (runtime, workspace, tracked_accounts, progress) = {
         let guard = session.state.lock().await;
         let workspace = guard
@@ -476,7 +575,74 @@ async fn execute_sweep_for_session(
     let seed = mnemonic_seed(&runtime.seed_phrase)?;
     let transparent_account =
         legacy_transparent_account_key(&runtime.seed_phrase, runtime.network)?;
-    let network = consensus_network(runtime.network);
+    let preferred_endpoint = progress
+        .server
+        .as_ref()
+        .map(|server| server.endpoint.clone());
+
+    let session_state = session.state.clone();
+    execute_sweep_against_workspace(
+        ExecuteSweepCtx {
+            workspace,
+            tracked_accounts,
+            network: runtime.network,
+            lightwalletd_url: &runtime.lightwalletd_url,
+            preferred_endpoint: preferred_endpoint.as_deref(),
+            birthday: runtime.birthday,
+            seed: &seed,
+            transparent_account: &transparent_account,
+        },
+        request,
+        Some(&move |w: &RecoveryWorkspace, n: crate::models::ZeckNetwork, eff_birthday: u32| {
+            let state = session_state.clone();
+            let workspace = w.clone();
+            Box::pin(async move {
+                refresh_scan_progress(&state, &workspace, n, eff_birthday).await
+            })
+                as std::pin::Pin<Box<dyn std::future::Future<Output = ZeckResult<()>> + Send>>
+        }),
+    )
+    .await
+}
+
+/// Inputs for [`execute_sweep_against_workspace`]. Borrows the workspace etc. so
+/// callers retain ownership of long-lived structs.
+pub(crate) struct ExecuteSweepCtx<'a> {
+    pub workspace: RecoveryWorkspace,
+    pub tracked_accounts: Vec<TrackedAccount>,
+    pub network: crate::models::ZeckNetwork,
+    pub lightwalletd_url: &'a str,
+    pub preferred_endpoint: Option<&'a str>,
+    pub birthday: u32,
+    pub seed: &'a [u8],
+    pub transparent_account: &'a zcash_transparent::keys::AccountPrivKey,
+}
+
+/// Refresh callback used by single-seed sweep to keep `ScanProgress` in sync
+/// after each shielding step. Multi-seed callers pass `None` because the
+/// orchestrator's driver task already polls the wallet DB.
+type RefreshCallback<'a> = &'a (dyn Fn(
+    &RecoveryWorkspace,
+    crate::models::ZeckNetwork,
+    u32,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = ZeckResult<()>> + Send>,
+> + Send
+              + Sync);
+
+pub(crate) async fn execute_sweep_against_workspace(
+    ctx: ExecuteSweepCtx<'_>,
+    request: SweepRequest,
+    refresh: Option<RefreshCallback<'_>>,
+) -> ZeckResult<Vec<TxBroadcastResult>> {
+    let destination = validate_destination_address(&request.destination)?;
+    let memo_text = normalized_memo_text(request.memo.as_deref())?;
+    let memo_bytes = Some(
+        MemoBytes::from_bytes(memo_text.as_bytes())
+            .map_err(|err| ZeckError::InvalidMemo(err.to_string()))?,
+    );
+
+    let network = consensus_network(ctx.network);
     let destination_address =
         ZcashAddress::try_from_encoded(&destination.encoded).map_err(|err| {
             ZeckError::InvalidAddress(format!(
@@ -487,33 +653,28 @@ async fn execute_sweep_for_session(
     let mut total_fee_zatoshis = 0u64;
     let mut results = Vec::new();
 
-    let preferred_endpoint = progress
-        .server
-        .as_ref()
-        .map(|server| server.endpoint.as_str());
     let (mut client, _) =
-        connect_lightwalletd_endpoints(&runtime.lightwalletd_url, preferred_endpoint).await?;
+        connect_lightwalletd_endpoints(ctx.lightwalletd_url, ctx.preferred_endpoint).await?;
 
     run_wallet_sync(
-        &workspace,
+        &ctx.workspace,
         &network,
         &mut client,
-        &runtime.lightwalletd_url,
+        ctx.lightwalletd_url,
         None,
     )
     .await?;
-    refresh_scan_progress(
-        &session.state,
-        &workspace,
-        runtime.network,
-        runtime.birthday.min(chain_tip_height(&mut client).await?),
-    )
-    .await?;
+    if let Some(cb) = refresh {
+        let eff = ctx
+            .birthday
+            .min(chain_tip_height(&mut client).await?);
+        cb(&ctx.workspace, ctx.network, eff).await?;
+    }
 
-    for tracked_account in tracked_accounts {
+    for tracked_account in &ctx.tracked_accounts {
         if account_total_zatoshis(
-            &workspace,
-            runtime.network,
+            &ctx.workspace,
+            ctx.network,
             tracked_account.wallet_account_id,
         )? == 0
         {
@@ -527,28 +688,29 @@ async fn execute_sweep_for_session(
                     tracked_account.derived.index
                 ))
             })?;
-        let usk = UnifiedSpendingKey::from_seed(&network, &seed, zip32_index).map_err(|err| {
-            ZeckError::Wallet(format!(
-                "deriving account {}: {err}",
-                tracked_account.derived.index
-            ))
-        })?;
+        let usk =
+            UnifiedSpendingKey::from_seed(&network, ctx.seed, zip32_index).map_err(|err| {
+                ZeckError::Wallet(format!(
+                    "deriving account {}: {err}",
+                    tracked_account.derived.index
+                ))
+            })?;
 
         let transparent_balance =
-            account_transparent_zatoshis(&workspace, runtime.network, &tracked_account)?;
+            account_transparent_zatoshis(&ctx.workspace, ctx.network, tracked_account)?;
         if transparent_balance > 0 {
             let fee = {
-                let mut ctx = SweepStepCtx {
-                    workspace: &workspace,
-                    network: runtime.network,
+                let mut step_ctx = SweepStepCtx {
+                    workspace: &ctx.workspace,
+                    network: ctx.network,
                     client: &mut client,
                     prover: &prover,
                     results: &mut results,
                 };
                 execute_shielding_step(
-                    &mut ctx,
-                    &tracked_account,
-                    &transparent_account,
+                    &mut step_ctx,
+                    tracked_account,
+                    ctx.transparent_account,
                     &usk,
                 )
                 .await?
@@ -563,33 +725,32 @@ async fn execute_sweep_for_session(
             }
 
             run_wallet_sync(
-                &workspace,
+                &ctx.workspace,
                 &network,
                 &mut client,
-                &runtime.lightwalletd_url,
+                ctx.lightwalletd_url,
                 None,
             )
             .await?;
-            refresh_scan_progress(
-                &session.state,
-                &workspace,
-                runtime.network,
-                runtime.birthday.min(chain_tip_height(&mut client).await?),
-            )
-            .await?;
+            if let Some(cb) = refresh {
+                let eff = ctx
+                    .birthday
+                    .min(chain_tip_height(&mut client).await?);
+                cb(&ctx.workspace, ctx.network, eff).await?;
+            }
         }
 
         let fee = {
-            let mut ctx = SweepStepCtx {
-                workspace: &workspace,
-                network: runtime.network,
+            let mut step_ctx = SweepStepCtx {
+                workspace: &ctx.workspace,
+                network: ctx.network,
                 client: &mut client,
                 prover: &prover,
                 results: &mut results,
             };
             execute_send_max_step(
-                &mut ctx,
-                &tracked_account,
+                &mut step_ctx,
+                tracked_account,
                 &usk,
                 &destination_address,
                 memo_bytes.clone(),
@@ -908,6 +1069,89 @@ async fn chain_tip_height(
         .map_err(|_| ZeckError::Lightwalletd("chain tip height overflowed u32".to_owned()))
 }
 
+/// Build a list of [`AccountBalancePreview`] rows from a wallet DB summary.
+/// Used by multi-seed sweep to construct a synthetic [`ScanProgress`] for
+/// [`build_sweep_proposal`] without reaching for the per-seed scanner state.
+///
+/// `transparent_utxo_count` is filled by counting spendable transparent
+/// outputs (matching `refresh_scan_progress`); `has_activity` is left `false`
+/// because the sweep code path does not depend on it.
+fn build_account_previews_from_workspace(
+    workspace: &RecoveryWorkspace,
+    network: crate::models::ZeckNetwork,
+    tracked_accounts: &[TrackedAccount],
+) -> ZeckResult<Vec<crate::models::AccountBalancePreview>> {
+    let wallet_db = WalletDb::for_path(
+        workspace.wallet_db_path(),
+        consensus_network(network),
+        SystemClock,
+        rand_core::OsRng,
+    )
+    .map_err(|err| {
+        ZeckError::Storage(format!(
+            "opening wallet database {}: {err}",
+            workspace.wallet_db_path().display()
+        ))
+    })?;
+    let summary = wallet_db
+        .get_wallet_summary(zcash_client_backend::data_api::wallet::ConfirmationsPolicy::MIN)
+        .map_err(|err| ZeckError::Wallet(format!("loading wallet summary: {err}")))?
+        .ok_or_else(|| ZeckError::Wallet("wallet summary is unavailable".to_owned()))?;
+    let target_height = (summary.chain_tip_height() + 1).into();
+
+    let mut rows = Vec::with_capacity(tracked_accounts.len());
+    for tracked in tracked_accounts {
+        let balance = summary.account_balances().get(&tracked.wallet_account_id);
+        let sapling_zatoshis = balance
+            .map(|v| u64::from(v.sapling_balance().total()))
+            .unwrap_or(0);
+        let orchard_zatoshis = balance
+            .map(|v| u64::from(v.orchard_balance().total()))
+            .unwrap_or(0);
+        let transparent_zatoshis = balance
+            .map(|v| u64::from(v.unshielded_balance().total()))
+            .unwrap_or(0);
+        let total_zatoshis = balance.map(|v| u64::from(v.total())).unwrap_or(0);
+
+        let mut transparent_utxo_count: u32 = 0;
+        for address in &tracked.transparent_receivers {
+            let outputs = wallet_db
+                .get_spendable_transparent_outputs(
+                    address,
+                    target_height,
+                    zcash_client_backend::data_api::wallet::ConfirmationsPolicy::MIN,
+                )
+                .map_err(|err| {
+                    ZeckError::Wallet(format!(
+                        "loading transparent outputs for account {}: {err}",
+                        tracked.derived.index
+                    ))
+                })?;
+            transparent_utxo_count = transparent_utxo_count.saturating_add(
+                u32::try_from(outputs.len()).map_err(|_| {
+                    ZeckError::Internal("transparent UTXO count overflowed u32".to_owned())
+                })?,
+            );
+        }
+
+        rows.push(crate::models::AccountBalancePreview {
+            account_index: tracked.derived.index,
+            sapling_address: tracked.derived.sapling_address.clone(),
+            unified_address: tracked.derived.unified_address.clone(),
+            transparent_receive_address: tracked.derived.transparent_receive_address.clone(),
+            transparent_change_address: tracked.derived.transparent_change_address.clone(),
+            transparent_utxo_count,
+            sapling_zatoshis,
+            orchard_zatoshis,
+            transparent_zatoshis,
+            total_zatoshis,
+            has_activity: false,
+            status: String::new(),
+        });
+    }
+    Ok(rows)
+}
+
 fn account_total_zatoshis(
     workspace: &RecoveryWorkspace,
     network: crate::models::ZeckNetwork,
@@ -1188,6 +1432,30 @@ mod tests {
         let long_memo = "🎉".repeat(129);
         let result = normalized_memo_text(Some(&long_memo));
         assert!(result.is_err(), "expected InvalidMemo for oversized memo");
+    }
+
+    #[tokio::test]
+    async fn propose_sweep_for_seed_unknown_handle_returns_error() {
+        use crate::{
+            models::{MultiScanHandle, SweepRequest},
+            service::RecoveryService,
+        };
+
+        let service = RecoveryService::new();
+        let handle = MultiScanHandle::new();
+        let err = service
+            .propose_sweep_for_seed(
+                &handle,
+                0,
+                SweepRequest {
+                    destination: "u-test".to_owned(),
+                    memo: None,
+                    max_fee_zatoshis: None,
+                },
+            )
+            .await
+            .expect_err("unknown handle must error");
+        assert!(matches!(err, ZeckError::UnknownScanHandle));
     }
 
     #[tokio::test]

@@ -723,3 +723,30 @@ pre {
   display: flex;
   flex-direction: column;
 }
+
+/* ── Multi-seed sweep cards ───────────────────────────────────────────────── */
+
+.sweep-seed-card {
+  margin-bottom: 12px;
+}
+
+.sweep-card-detail {
+  margin-top: 8px;
+  font-size: 0.9rem;
+}
+
+.sweep-card-detail .discovery-list {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.sweep-card-detail code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+#sweep-summary-panel {
+  margin-bottom: 18px;
+}
