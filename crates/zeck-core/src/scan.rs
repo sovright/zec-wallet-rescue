@@ -417,8 +417,37 @@ async fn import_accounts(
     accounts: &[DerivedAccount],
     state: &SharedScanTaskState,
 ) -> ZeckResult<()> {
-    if accounts.is_empty() {
+    let tracked = import_accounts_into_workspace(
+        workspace,
+        network,
+        seed,
+        birthday,
+        transparent_account,
+        accounts,
+    )?;
+    if tracked.is_empty() {
         return Ok(());
+    }
+    let mut guard = state.lock().await;
+    guard.tracked_accounts.extend(tracked);
+    Ok(())
+}
+
+/// Import a slice of derived accounts into the workspace's wallet DB. Returns
+/// the resulting [`TrackedAccount`] entries so callers can stash them however
+/// they like. Used by both the single-seed [`import_accounts`] (which folds
+/// them into `SharedScanTaskState`) and the multi-seed orchestrator (which
+/// stores them in a per-seed map for discovery polling).
+pub(crate) fn import_accounts_into_workspace(
+    workspace: &RecoveryWorkspace,
+    network: crate::models::ZeckNetwork,
+    seed: &[u8; 64],
+    birthday: &AccountBirthday,
+    transparent_account: &zcash_transparent::keys::AccountPrivKey,
+    accounts: &[DerivedAccount],
+) -> ZeckResult<Vec<TrackedAccount>> {
+    if accounts.is_empty() {
+        return Ok(Vec::new());
     }
 
     let seed_fingerprint = SeedFingerprint::from_seed(seed).ok_or_else(|| {
@@ -508,9 +537,7 @@ async fn import_accounts(
         });
     }
 
-    let mut guard = state.lock().await;
-    guard.tracked_accounts.extend(tracked_accounts);
-    Ok(())
+    Ok(tracked_accounts)
 }
 
 /// Runs the per-seed wallet sync by spawning a [`fetcher`] actor that fills the
@@ -1065,6 +1092,8 @@ async fn run_transparent_quick_probe(
             zatoshis,
             at_block_height: chain_tip,
             address,
+            seed_index: 0,
+            seed_fingerprint: String::new(),
         });
     }
     guard.progress.message = Some(
@@ -1093,7 +1122,7 @@ async fn run_transparent_quick_probe(
 ///
 /// The append-only log is the authoritative source of "has this
 /// `(account, pool)` been surfaced to the user yet?", so dedupe against it.
-fn append_new_discoveries(
+pub(crate) fn append_new_discoveries(
     discoveries: &mut Vec<crate::models::ScanDiscovery>,
     current: &[AccountBalancePreview],
     at_block_height: u64,
@@ -1123,6 +1152,8 @@ fn append_new_discoveries(
                 zatoshis,
                 at_block_height,
                 address,
+                seed_index: 0,
+                seed_fingerprint: String::new(),
             });
         };
 
@@ -1680,6 +1711,8 @@ mod tests {
             zatoshis: 100,
             at_block_height: 50,
             address: "zs".to_owned(),
+            seed_index: 0,
+            seed_fingerprint: String::new(),
         }];
         let next = vec![account_with(0, 0, 0, 0)];
         append_new_discoveries(&mut log, &next, 75);
@@ -1744,6 +1777,8 @@ mod tests {
             zatoshis: 500_000,
             at_block_height: 3_280_500,
             address: "t1".to_owned(),
+            seed_index: 0,
+            seed_fingerprint: String::new(),
         }];
         // Refresh sees the same balance authoritatively; must not duplicate.
         let snapshot = vec![account_with(0, 0, 0, 500_000)];

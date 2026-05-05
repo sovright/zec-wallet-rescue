@@ -181,6 +181,15 @@ pub struct ScanDiscovery {
     /// the sapling z-addr for sapling, the transparent receive t-addr for
     /// transparent.
     pub address: String,
+    /// Index of the seed this discovery belongs to in a multi-seed run.
+    /// Always `0` for single-seed scans. `#[serde(default)]` keeps wire
+    /// compatibility with pre-multi-seed clients.
+    #[serde(default)]
+    pub seed_index: usize,
+    /// Hex-encoded ZIP-32 seed fingerprint of the owning seed. Empty in
+    /// legacy single-seed scans where the field was not populated.
+    #[serde(default)]
+    pub seed_fingerprint: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

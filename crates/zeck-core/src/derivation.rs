@@ -165,7 +165,7 @@ fn transparent_path(scope: AddressScope, index: u32, coin_type: u32) -> String {
     format!("m / 44' / {coin_type}' / 0' / {scope_number} / {index}")
 }
 
-fn legacy_transparent_account_key_from_seed(
+pub(crate) fn legacy_transparent_account_key_from_seed(
     network: ZeckNetwork,
     seed: &[u8; 64],
 ) -> ZeckResult<AccountPrivKey> {

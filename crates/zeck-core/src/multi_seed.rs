@@ -10,17 +10,37 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use rand_core::OsRng;
 use secrecy::{ExposeSecret, SecretString, SecretVec};
+use zcash_client_backend::{
+    data_api::{wallet::ConfirmationsPolicy, AccountBirthday, WalletRead},
+    proto::service::{
+        compact_tx_streamer_client::CompactTxStreamerClient, BlockId,
+    },
+};
+use zcash_client_sqlite::{util::SystemClock, WalletDb};
+use zcash_protocol::consensus::BlockHeight;
 use zip32::fingerprint::SeedFingerprint;
 
 use crate::{
     birthday::detect_birthday,
+    cache::{CacheOpenError, SharedCacheReader, SharedCacheWriter},
     derivation::{derive_accounts, mnemonic_seed},
-    models::{BirthdayDetectResult, DerivedAccount, ZeckNetwork},
-    workspace::find_existing_workspace,
+    error::{ZeckError, ZeckResult},
+    fetcher::{spawn_fetcher, CancellationToken, FetcherConfig, FetcherProgress},
+    lightwalletd::probe_lightwalletd_endpoints,
+    models::{
+        AccountBalancePreview, BirthdayDetectResult, DerivedAccount, ScanDiscovery, ZeckNetwork,
+    },
+    scan::{append_new_discoveries, import_accounts_into_workspace, TrackedAccount},
+    scanner::{spawn_scanner, ChainStateProvider, ScannerSpec, SeedProgress, SeedStatus},
+    workspace::{
+        consensus_network, find_existing_workspace, network_cache_db_path,
+        network_cache_lock_path, RecoveryWorkspace,
+    },
 };
 
 /// Sapling NU activation height on mainnet. Matches `zcash_protocol`'s
@@ -98,7 +118,7 @@ pub enum ResolveError {
 ///
 /// Indexes refer to the **post-sort** position in the returned vec, matching
 /// [`ResolvedSeed::index`], so UI consumers can map warnings to rows directly.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ResolveWarning {
     BirthdayDetectionFellBack {
         index: usize,
@@ -361,10 +381,659 @@ fn nibble(n: u8) -> char {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-seed orchestrator (Phase 3 integration milestone).
+//
+// `start_multi_seed_run` resolves seeds, opens a shared block cache, spawns
+// one fetcher and N scanners, then a driver task that:
+//   * polls each scanner's `SeedProgress` (and the wallet DB for new
+//     discoveries),
+//   * computes aggregate progress (`blocks_scanned`, `synced_to_height`,
+//     `phase`),
+//   * waits for all scanner tasks to complete,
+//   * cancels the fetcher and scanners on user-cancel or fetcher failure.
+//
+// Per-seed scanner failure is contained — the orchestrator marks that seed
+// `Failed(...)` in its `SeedProgress` and lets the remaining scanners run.
+//
+// This is the smallest end-to-end Rust API needed to drive a multi-seed scan;
+// service/Tauri/CLI/GUI integration follow in Phases 4–6.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const AGGREGATOR_TICK: std::time::Duration = std::time::Duration::from_millis(1_000);
+
+/// Aggregator-level configuration (the orchestrator's view of `RuntimeScanConfig`,
+/// minus the seed phrase which is per-seed).
+pub struct MultiSeedConfig {
+    pub network: ZeckNetwork,
+    pub lightwalletd_url: String,
+    pub data_dir: PathBuf,
+    pub gap_limit: u32,
+    pub num_accounts: Option<u32>,
+}
+
+#[derive(Clone, Debug)]
+pub enum MultiSeedPhase {
+    Resolving,
+    Scanning,
+    Completed,
+    Cancelled,
+    Failed(String),
+}
+
+/// Snapshot of the orchestrator's aggregate progress.
+///
+/// `discoveries` is append-only across the run; each entry carries
+/// `seed_index` + `seed_fingerprint` so consumers can route them per-row.
+/// `per_seed` mirrors the latest `SeedProgress` from each scanner.
+#[derive(Clone, Debug)]
+pub struct MultiSeedProgress {
+    pub phase: MultiSeedPhase,
+    pub blocks_scanned: u64,
+    pub synced_to_height: Option<BlockHeight>,
+    pub discoveries: Vec<ScanDiscovery>,
+    pub per_seed: Vec<SeedProgress>,
+    pub fetcher: FetcherProgress,
+    pub warnings: Vec<ResolveWarning>,
+}
+
+impl Default for MultiSeedProgress {
+    fn default() -> Self {
+        Self {
+            phase: MultiSeedPhase::Resolving,
+            blocks_scanned: 0,
+            synced_to_height: None,
+            discoveries: Vec::new(),
+            per_seed: Vec::new(),
+            fetcher: FetcherProgress {
+                downloaded_to_height: None,
+                target_tip: None,
+                retry_count: 0,
+            },
+            warnings: Vec::new(),
+        }
+    }
+}
+
+/// Run handle returned by [`start_multi_seed_run`]. Holds shared progress,
+/// a cancel token, and the driver task.
+pub struct MultiSeedRun {
+    pub progress: Arc<Mutex<MultiSeedProgress>>,
+    pub cancel: CancellationToken,
+    pub task: tokio::task::JoinHandle<()>,
+}
+
+impl MultiSeedRun {
+    /// Lock-and-clone the current progress snapshot.
+    pub fn snapshot(&self) -> MultiSeedProgress {
+        self.progress
+            .lock()
+            .map(|guard| (*guard).clone())
+            .unwrap_or_default()
+    }
+
+    /// Request a clean shutdown. The driver task will propagate cancellation
+    /// to the fetcher and all scanners and transition `phase` to `Cancelled`
+    /// once they've drained.
+    pub fn cancel(&self) {
+        self.cancel.cancel();
+    }
+}
+
+// Per-seed bookkeeping retained by the driver task.
+struct SeedRuntime {
+    seed_index: usize,
+    fingerprint: String,
+    workspace: RecoveryWorkspace,
+    tracked: Vec<TrackedAccount>,
+    progress: Arc<Mutex<SeedProgress>>,
+    task: tokio::task::JoinHandle<Result<(), crate::scanner::ScannerError>>,
+    cancel: CancellationToken,
+    /// Last block-height at which we polled discoveries; used to skip
+    /// redundant DB reads when no new blocks were scanned since the prior
+    /// tick.
+    last_discovery_height: u64,
+    /// Per-seed append-only discovery log; passed to
+    /// [`append_new_discoveries`] each tick so dedupe is scoped to the seed
+    /// (the run-level vec collides on `(account_index, pool)` across seeds
+    /// and can't be used directly).
+    discoveries_log: Vec<ScanDiscovery>,
+}
+
+/// Build a [`MultiSeedRun`] whose `phase` is already terminal — used to
+/// surface resolve-time and cache-open errors via the same handle shape as
+/// successful runs (so callers don't need to discriminate on Result vs Run).
+fn make_terminal_run(progress: MultiSeedProgress) -> MultiSeedRun {
+    let cancel = CancellationToken::new();
+    let progress = Arc::new(Mutex::new(progress));
+    // Spawn a no-op task that resolves immediately so `task.await` is valid
+    // for callers that prefer to await termination uniformly.
+    let task = tokio::spawn(async move {});
+    MultiSeedRun {
+        progress,
+        cancel,
+        task,
+    }
+}
+
+/// Start a multi-seed scan run. See module docs for the high-level flow.
+///
+/// Returns a [`MultiSeedRun`]. Resolve-time failures (invalid mnemonic,
+/// duplicate fingerprint, cache locked) are surfaced via `phase = Failed(...)`
+/// rather than as `Err`, so callers always have a handle to inspect.
+pub async fn start_multi_seed_run(
+    entries: Vec<SeedEntry>,
+    config: MultiSeedConfig,
+) -> ZeckResult<MultiSeedRun> {
+    // ── Phase: Resolving ─────────────────────────────────────────────────────
+    let resolve_config = ResolveConfig {
+        network: config.network,
+        lightwalletd_url: config.lightwalletd_url.clone(),
+        data_dir: config.data_dir.clone(),
+        gap_limit: config.gap_limit,
+        num_accounts: config.num_accounts,
+    };
+
+    let (seeds, warnings) = match resolve_seeds(entries, &resolve_config).await {
+        Ok(pair) => pair,
+        Err(err) => {
+            return Ok(make_terminal_run(MultiSeedProgress {
+                phase: MultiSeedPhase::Failed(format!("resolve failed: {err:?}")),
+                ..Default::default()
+            }));
+        }
+    };
+
+    if seeds.is_empty() {
+        return Ok(make_terminal_run(MultiSeedProgress {
+            phase: MultiSeedPhase::Failed("no seeds provided".to_owned()),
+            warnings,
+            ..Default::default()
+        }));
+    }
+
+    // ── Open shared cache (writer reserves the per-network lock) ────────────
+    let cache_db = network_cache_db_path(&config.data_dir, config.network);
+    let cache_lock = network_cache_lock_path(&config.data_dir, config.network);
+    let writer = match SharedCacheWriter::open(&cache_db, &cache_lock) {
+        Ok(w) => w,
+        Err(CacheOpenError::Locked) => return Err(ZeckError::ScanLocked),
+        Err(other) => {
+            return Err(ZeckError::Storage(format!(
+                "opening shared block cache: {other}"
+            )))
+        }
+    };
+
+    // ── Per-seed: workspace + account import + start-height discovery ───────
+    let consensus = consensus_network(config.network);
+    let mut per_seed_setup: Vec<(ResolvedSeed, RecoveryWorkspace, Vec<TrackedAccount>, BlockHeight)> =
+        Vec::with_capacity(seeds.len());
+    let mut min_start: Option<u32> = None;
+
+    // We need a lightwalletd client both for the fetcher and for per-seed
+    // birthday treestate lookups (used to build `AccountBirthday` for
+    // `import_account_hd`). One initial probe, cloned thereafter.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let (mut probe_client, _endpoint, _resp) =
+        probe_lightwalletd_endpoints(&config.lightwalletd_url).await?;
+
+    for resolved in seeds.into_iter() {
+        let seed_bytes_array = secret_to_seed_array(&resolved.seed_bytes)?;
+        let workspace = RecoveryWorkspace::from_seed_bytes(
+            &seed_bytes_array,
+            config.network,
+            config.data_dir.clone(),
+            resolved.birthday,
+            config.num_accounts,
+            config.gap_limit,
+        )?;
+        workspace.initialize(config.network, &seed_bytes_array)?;
+
+        // Migrate any legacy per-workspace cache into the shared cache.
+        writer.migrate_from(workspace.cache_db_path()).map_err(|err| {
+            ZeckError::Storage(format!(
+                "migrating legacy cache {}: {err}",
+                workspace.cache_db_path().display()
+            ))
+        })?;
+
+        // Build AccountBirthday from lightwalletd treestate.
+        let account_birthday =
+            build_account_birthday(&mut probe_client, resolved.birthday).await?;
+        let transparent_account = crate::derivation::legacy_transparent_account_key_from_seed(
+            config.network,
+            &seed_bytes_array,
+        )?;
+
+        let tracked = import_accounts_into_workspace(
+            &workspace,
+            config.network,
+            &seed_bytes_array,
+            &account_birthday,
+            &transparent_account,
+            &resolved.accounts,
+        )?;
+
+        // Resume cursor: max(birthday, fully_scanned_height + 1).
+        let resume_start = read_resume_start(&workspace, &consensus, resolved.birthday)?;
+        let scanner_birthday = BlockHeight::from_u32(resolved.birthday);
+        min_start = Some(match min_start {
+            Some(prev) => prev.min(u32::from(resume_start)),
+            None => u32::from(resume_start),
+        });
+        per_seed_setup.push((resolved, workspace, tracked, scanner_birthday));
+    }
+
+    let start_height = BlockHeight::from_u32(min_start.unwrap_or(0));
+
+    // ── Spawn fetcher (consumes a client clone + the writer) ────────────────
+    let fetcher_handle = spawn_fetcher(
+        probe_client.clone(),
+        writer,
+        FetcherConfig {
+            start_height,
+            lightwalletd_endpoints: config.lightwalletd_url.clone(),
+        },
+    );
+
+    // ── Build a shared chain-state provider for all scanners ────────────────
+    let chain_state_client = probe_client.clone();
+    let chain_state_provider: ChainStateProvider = Arc::new(move |height: BlockHeight| {
+        let mut c = chain_state_client.clone();
+        Box::pin(async move {
+            let resp = c
+                .get_tree_state(BlockId {
+                    height: u64::from(height),
+                    hash: vec![],
+                })
+                .await
+                .map_err(|err| err.to_string())?;
+            resp.into_inner()
+                .to_chain_state()
+                .map_err(|err| format!("decoding tree state at {height}: {err}"))
+        })
+    });
+
+    // ── Spawn N scanners (each gets its own cache reader + cancel token) ────
+    let mut seed_runtimes: Vec<SeedRuntime> = Vec::with_capacity(per_seed_setup.len());
+    for (resolved, workspace, tracked, scanner_birthday) in per_seed_setup {
+        let reader = SharedCacheReader::open(&cache_db).map_err(|err| {
+            ZeckError::Storage(format!("opening shared cache reader: {err}"))
+        })?;
+        let scanner_cancel = CancellationToken::new();
+        let spec = ScannerSpec {
+            seed_index: resolved.index,
+            seed_fingerprint: resolved.fingerprint.clone(),
+            seed_label: resolved.label.clone(),
+            birthday: scanner_birthday,
+            workspace: workspace.clone(),
+            seed_bytes: SecretVec::new(resolved.seed_bytes.expose_secret().to_vec()),
+            accounts: resolved.accounts.clone(),
+            gap_limit: config.gap_limit,
+            network: consensus,
+        };
+        let handle = spawn_scanner(
+            spec,
+            fetcher_handle.available_height.clone(),
+            reader,
+            chain_state_provider.clone(),
+            scanner_cancel.clone(),
+        );
+
+        seed_runtimes.push(SeedRuntime {
+            seed_index: resolved.index,
+            fingerprint: resolved.fingerprint.clone(),
+            workspace,
+            tracked,
+            progress: handle.progress,
+            task: handle.task,
+            cancel: scanner_cancel,
+            last_discovery_height: 0,
+            discoveries_log: Vec::new(),
+        });
+    }
+
+    // ── Build the run-level progress + cancel + driver task ─────────────────
+    let run_cancel = CancellationToken::new();
+    let progress = Arc::new(Mutex::new(MultiSeedProgress {
+        phase: MultiSeedPhase::Scanning,
+        warnings,
+        per_seed: seed_runtimes
+            .iter()
+            .map(|r| r.progress.lock().map(|g| g.clone()).unwrap())
+            .collect(),
+        ..Default::default()
+    }));
+
+    let driver = spawn_driver(
+        progress.clone(),
+        run_cancel.clone(),
+        fetcher_handle,
+        seed_runtimes,
+        config.network,
+    );
+
+    Ok(MultiSeedRun {
+        progress,
+        cancel: run_cancel,
+        task: driver,
+    })
+}
+
+/// Build the driver task that ticks every [`AGGREGATOR_TICK`], copies per-seed
+/// progress, polls discoveries from each wallet DB, and signals completion.
+fn spawn_driver(
+    progress: Arc<Mutex<MultiSeedProgress>>,
+    cancel: CancellationToken,
+    fetcher_handle: crate::fetcher::FetcherHandle,
+    mut seeds: Vec<SeedRuntime>,
+    network: ZeckNetwork,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let fetcher_cancel = fetcher_handle.cancel.clone();
+        let fetcher_available = fetcher_handle.available_height.clone();
+        let mut fetcher_task = fetcher_handle.task;
+        let mut fetcher_outcome: Option<
+            Result<crate::fetcher::FetcherSummary, crate::fetcher::FetcherError>,
+        > = None;
+
+        loop {
+            // Cancellation propagates immediately to fetcher and scanners.
+            if cancel.is_cancelled() {
+                fetcher_cancel.cancel();
+                for s in &seeds {
+                    s.cancel.cancel();
+                }
+            }
+
+            // Poll fetcher for completion (non-blocking).
+            if fetcher_outcome.is_none() {
+                if let Some(outcome) = poll_fetcher_done(&mut fetcher_task).await {
+                    fetcher_outcome = Some(outcome);
+                    if let Some(Err(crate::fetcher::FetcherError::Transport(_))) =
+                        fetcher_outcome.as_ref()
+                    {
+                        // Fetcher transport failure: cancel all scanners so they
+                        // drain promptly. The scanner's own logic will mark the
+                        // seed Failed when its watch channel closes before
+                        // catch-up.
+                        for s in &seeds {
+                            s.cancel.cancel();
+                        }
+                    }
+                }
+            }
+
+            // Snapshot per-seed progress + poll discoveries from each wallet DB.
+            let mut new_discoveries: Vec<ScanDiscovery> = Vec::new();
+            let mut max_synced: Option<BlockHeight> = None;
+            let mut total_blocks: u64 = 0;
+            let mut per_seed_snapshot = Vec::with_capacity(seeds.len());
+            let mut all_done = true;
+
+            for runtime in seeds.iter_mut() {
+                let snap = runtime
+                    .progress
+                    .lock()
+                    .map(|g| g.clone())
+                    .ok()
+                    .unwrap_or_else(|| SeedProgress {
+                        seed_index: runtime.seed_index,
+                        seed_fingerprint: runtime.fingerprint.clone(),
+                        label: None,
+                        birthday: BlockHeight::from_u32(0),
+                        fully_scanned_height: None,
+                        status: SeedStatus::Pending,
+                    });
+                if let Some(h) = snap.fully_scanned_height {
+                    max_synced = Some(match max_synced {
+                        Some(prev) => prev.max(h),
+                        None => h,
+                    });
+                    let bday_u32 = u32::from(snap.birthday);
+                    let synced_u32 = u32::from(h);
+                    if synced_u32 >= bday_u32 {
+                        total_blocks =
+                            total_blocks.saturating_add(u64::from(synced_u32 - bday_u32));
+                    }
+                }
+                let is_terminal = matches!(
+                    snap.status,
+                    SeedStatus::Done | SeedStatus::Cancelled | SeedStatus::Failed(_)
+                );
+                if !is_terminal {
+                    all_done = false;
+                }
+                per_seed_snapshot.push(snap);
+
+                // Poll wallet DB for new (account, pool) funded balances.
+                if let Some(found) = poll_seed_discoveries(runtime, network) {
+                    new_discoveries.extend(found);
+                }
+            }
+
+            // Update aggregate progress.
+            {
+                let fetcher_height = *fetcher_available.borrow();
+                if let Ok(mut guard) = progress.lock() {
+                    guard.per_seed = per_seed_snapshot;
+                    guard.blocks_scanned = total_blocks;
+                    guard.synced_to_height = max_synced.or(fetcher_height);
+                    guard.fetcher = FetcherProgress {
+                        downloaded_to_height: fetcher_height,
+                        target_tip: fetcher_height,
+                        retry_count: 0,
+                    };
+                    if !new_discoveries.is_empty() {
+                        guard.discoveries.append(&mut new_discoveries);
+                    }
+                    // Update phase if terminal.
+                    if cancel.is_cancelled() && all_done {
+                        guard.phase = MultiSeedPhase::Cancelled;
+                    } else if all_done {
+                        // If fetcher errored, mark Failed; else Completed.
+                        match &fetcher_outcome {
+                            Some(Err(err)) => {
+                                guard.phase = MultiSeedPhase::Failed(err.to_string());
+                            }
+                            _ => {
+                                // If any seed failed, surface that.
+                                let failed_seed = guard
+                                    .per_seed
+                                    .iter()
+                                    .find_map(|p| match &p.status {
+                                        SeedStatus::Failed(msg) => {
+                                            Some((p.seed_index, msg.clone()))
+                                        }
+                                        _ => None,
+                                    });
+                                guard.phase = match failed_seed {
+                                    Some((idx, msg)) => MultiSeedPhase::Failed(format!(
+                                        "seed {idx}: {msg}"
+                                    )),
+                                    None => MultiSeedPhase::Completed,
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+
+            if all_done {
+                break;
+            }
+            tokio::time::sleep(AGGREGATOR_TICK).await;
+        }
+
+        // Drain scanner tasks (best-effort — they should already be done).
+        for runtime in seeds.into_iter() {
+            let _ = runtime.task.await;
+        }
+        // Drain fetcher if it hasn't already.
+        if fetcher_outcome.is_none() {
+            let _ = fetcher_task.await;
+        }
+    })
+}
+
+/// Poll the fetcher's `JoinHandle` without blocking. Returns the inner result
+/// once the task has completed; otherwise `None`.
+async fn poll_fetcher_done(
+    task: &mut tokio::task::JoinHandle<
+        Result<crate::fetcher::FetcherSummary, crate::fetcher::FetcherError>,
+    >,
+) -> Option<Result<crate::fetcher::FetcherSummary, crate::fetcher::FetcherError>> {
+    if task.is_finished() {
+        match tokio::time::timeout(std::time::Duration::from_millis(10), task).await {
+            Ok(Ok(inner)) => Some(inner),
+            Ok(Err(_join_err)) => Some(Err(crate::fetcher::FetcherError::Transport(
+                "fetcher task panicked".to_owned(),
+            ))),
+            Err(_) => None,
+        }
+    } else {
+        None
+    }
+}
+
+/// Open the seed's wallet DB, build account previews from its tracked
+/// receivers, and run [`append_new_discoveries`] against an internal log.
+/// Returns only the *newly emitted* entries, each tagged with `seed_index` +
+/// `seed_fingerprint` so the orchestrator can append them to the run-level
+/// discovery vec without re-deduping.
+fn poll_seed_discoveries(
+    runtime: &mut SeedRuntime,
+    network: ZeckNetwork,
+) -> Option<Vec<ScanDiscovery>> {
+    let wallet_db = WalletDb::for_path(
+        runtime.workspace.wallet_db_path(),
+        consensus_network(network),
+        SystemClock,
+        OsRng,
+    )
+    .ok()?;
+    let summary = wallet_db
+        .get_wallet_summary(ConfirmationsPolicy::MIN)
+        .ok()
+        .flatten()?;
+    let scanned_height = u64::from(u32::from(summary.fully_scanned_height()));
+    if scanned_height == runtime.last_discovery_height {
+        return None;
+    }
+    runtime.last_discovery_height = scanned_height;
+
+    // Build minimal AccountBalancePreview rows: only fields used by
+    // `append_new_discoveries` need to be populated authoritatively.
+    let mut rows: Vec<AccountBalancePreview> = Vec::with_capacity(runtime.tracked.len());
+    for tracked in &runtime.tracked {
+        let balance = summary.account_balances().get(&tracked.wallet_account_id);
+        let sapling_zatoshis = balance
+            .map(|v| u64::from(v.sapling_balance().total()))
+            .unwrap_or(0);
+        let orchard_zatoshis = balance
+            .map(|v| u64::from(v.orchard_balance().total()))
+            .unwrap_or(0);
+        let transparent_zatoshis = balance
+            .map(|v| u64::from(v.unshielded_balance().total()))
+            .unwrap_or(0);
+        rows.push(AccountBalancePreview {
+            account_index: tracked.derived.index,
+            sapling_address: tracked.derived.sapling_address.clone(),
+            unified_address: tracked.derived.unified_address.clone(),
+            transparent_receive_address: tracked.derived.transparent_receive_address.clone(),
+            transparent_change_address: tracked.derived.transparent_change_address.clone(),
+            transparent_utxo_count: 0,
+            sapling_zatoshis,
+            orchard_zatoshis,
+            transparent_zatoshis,
+            total_zatoshis: sapling_zatoshis
+                .saturating_add(orchard_zatoshis)
+                .saturating_add(transparent_zatoshis),
+            has_activity: false,
+            status: String::new(),
+        });
+    }
+
+    // Dedupe is scoped per-seed: `(account_index, pool)` collides across
+    // seeds, so we keep a per-seed append-only log on `SeedRuntime` and only
+    // return the *newly-appended* tail to the caller.
+    let mut log = std::mem::take(&mut runtime.discoveries_log);
+    let before = log.len();
+    append_new_discoveries(&mut log, &rows, scanned_height);
+    let added: Vec<ScanDiscovery> = log[before..]
+        .iter()
+        .map(|d| ScanDiscovery {
+            seed_index: runtime.seed_index,
+            seed_fingerprint: runtime.fingerprint.clone(),
+            ..d.clone()
+        })
+        .collect();
+    runtime.discoveries_log = log;
+    if added.is_empty() {
+        None
+    } else {
+        Some(added)
+    }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn secret_to_seed_array(secret: &SecretVec<u8>) -> ZeckResult<[u8; 64]> {
+    let bytes = secret.expose_secret();
+    if bytes.len() != 64 {
+        return Err(ZeckError::Internal(format!(
+            "expected 64-byte seed, got {}",
+            bytes.len()
+        )));
+    }
+    let mut arr = [0u8; 64];
+    arr.copy_from_slice(bytes);
+    Ok(arr)
+}
+
+async fn build_account_birthday(
+    client: &mut CompactTxStreamerClient<tonic::transport::Channel>,
+    birthday: u32,
+) -> ZeckResult<AccountBirthday> {
+    // Same approach as scan.rs: fetch the treestate at `birthday - 1` (so
+    // the scan starts *at* `birthday` with the prior block's commitment
+    // frontier) and convert via `AccountBirthday::from_treestate`.
+    let prior = birthday.saturating_sub(1);
+    let resp = client
+        .get_tree_state(BlockId {
+            height: u64::from(prior),
+            hash: vec![],
+        })
+        .await
+        .map_err(|err| ZeckError::Lightwalletd(err.to_string()))?
+        .into_inner();
+    AccountBirthday::from_treestate(resp, None)
+        .map_err(|_| ZeckError::Wallet("constructing account birthday from treestate".to_owned()))
+}
+
+fn read_resume_start(
+    workspace: &RecoveryWorkspace,
+    network: &zcash_protocol::consensus::Network,
+    birthday: u32,
+) -> ZeckResult<BlockHeight> {
+    let wallet_db =
+        WalletDb::for_path(workspace.wallet_db_path(), *network, SystemClock, OsRng).map_err(
+            |err| ZeckError::Storage(format!("opening wallet database: {err}")),
+        )?;
+    let fully_scanned = wallet_db
+        .get_wallet_summary(ConfirmationsPolicy::MIN)
+        .map_err(|err| ZeckError::Wallet(format!("loading wallet summary: {err}")))?
+        .map(|s| s.fully_scanned_height());
+    Ok(match fully_scanned {
+        Some(h) if u32::from(h) >= birthday => BlockHeight::from_u32(u32::from(h).saturating_add(1)),
+        _ => BlockHeight::from_u32(birthday),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
     // BIP-39 test vector: 24× abandon + art (entropy 0x00…00).
     const SEED_A: &str = "abandon abandon abandon abandon abandon abandon abandon abandon \
@@ -749,5 +1418,96 @@ mod tests {
                 .any(|w| matches!(w, ResolveWarning::ResumingExisting { .. })),
             "must not resume when only the testnet workspace exists"
         );
+    }
+
+    // ─── Orchestrator tests ──────────────────────────────────────────────────
+    //
+    // The full multi-seed end-to-end test (real lightwalletd + chain blocks)
+    // is intentionally deferred to Task 21's integration test — driving
+    // `scan_cached_blocks` against a synthetic compact-block stream requires
+    // a fully-formed sapling commitment frontier, which is well outside the
+    // surface this task introduces. The two tests below exercise the failure
+    // paths that don't need real chain data.
+
+    #[tokio::test]
+    async fn multi_seed_run_failed_resolve_returns_failed_phase() {
+        // Two entries with the same seed phrase → DuplicateFingerprint.
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = vec![
+            entry(SEED_A, Some(500_000), Some("first")),
+            entry(SEED_A, Some(600_000), Some("dup")),
+        ];
+        let cfg = MultiSeedConfig {
+            network: ZeckNetwork::Mainnet,
+            // Invalid endpoint guarantees no network I/O happens before the
+            // resolver short-circuits on the duplicate.
+            lightwalletd_url: "https://invalid.example:443".to_owned(),
+            data_dir: tmp.path().to_path_buf(),
+            gap_limit: 1,
+            num_accounts: Some(1),
+        };
+        let run = start_multi_seed_run(entries, cfg).await.unwrap();
+        // The driver task on a terminal-failed run resolves immediately.
+        let snap = run.snapshot();
+        let _ = run.task.await;
+        match snap.phase {
+            MultiSeedPhase::Failed(msg) => {
+                assert!(
+                    msg.contains("resolve failed") || msg.contains("Duplicate"),
+                    "unexpected failure message: {msg}"
+                );
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(snap.per_seed.is_empty());
+        assert!(snap.discoveries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn multi_seed_run_no_entries_returns_failed_phase() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = MultiSeedConfig {
+            network: ZeckNetwork::Mainnet,
+            lightwalletd_url: "https://invalid.example:443".to_owned(),
+            data_dir: tmp.path().to_path_buf(),
+            gap_limit: 1,
+            num_accounts: Some(1),
+        };
+        let run = start_multi_seed_run(Vec::new(), cfg).await.unwrap();
+        let snap = run.snapshot();
+        let _ = run.task.await;
+        assert!(matches!(snap.phase, MultiSeedPhase::Failed(_)));
+    }
+
+    #[test]
+    fn multi_seed_progress_default_starts_in_resolving_phase() {
+        let p = MultiSeedProgress::default();
+        assert!(matches!(p.phase, MultiSeedPhase::Resolving));
+        assert_eq!(p.blocks_scanned, 0);
+        assert!(p.synced_to_height.is_none());
+        assert!(p.discoveries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn multi_seed_run_cancel_on_terminal_run_is_noop() {
+        // After a resolve-time failure, the run is already terminal; calling
+        // cancel must not panic and snapshot must remain Failed.
+        let tmp = tempfile::tempdir().unwrap();
+        let entries = vec![
+            entry(SEED_A, Some(500_000), None),
+            entry(SEED_A, Some(600_000), None),
+        ];
+        let cfg = MultiSeedConfig {
+            network: ZeckNetwork::Mainnet,
+            lightwalletd_url: "https://invalid.example:443".to_owned(),
+            data_dir: tmp.path().to_path_buf(),
+            gap_limit: 1,
+            num_accounts: Some(1),
+        };
+        let run = start_multi_seed_run(entries, cfg).await.unwrap();
+        run.cancel();
+        let snap = run.snapshot();
+        let _ = run.task.await;
+        assert!(matches!(snap.phase, MultiSeedPhase::Failed(_)));
     }
 }

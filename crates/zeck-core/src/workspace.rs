@@ -70,32 +70,53 @@ pub struct RecoveryWorkspace {
 impl RecoveryWorkspace {
     pub fn from_runtime(config: &RuntimeScanConfig) -> ZeckResult<Self> {
         let seed = mnemonic_seed(&config.seed_phrase)?;
-        let fingerprint = SeedFingerprint::from_seed(&seed).ok_or_else(|| {
+        Self::from_seed_bytes(
+            &seed,
+            config.network,
+            config.data_dir.clone(),
+            config.birthday,
+            config.num_accounts,
+            config.gap_limit,
+        )
+    }
+
+    /// Construct a workspace handle from raw 64-byte BIP-39 seed bytes,
+    /// bypassing the mnemonic re-derivation in [`Self::from_runtime`]. Used
+    /// by the multi-seed orchestrator, which has already consumed the phrase
+    /// during resolution and only retains the seed bytes.
+    pub fn from_seed_bytes(
+        seed: &[u8; 64],
+        network: ZeckNetwork,
+        data_dir: PathBuf,
+        birthday: u32,
+        num_accounts: Option<u32>,
+        gap_limit: u32,
+    ) -> ZeckResult<Self> {
+        let fingerprint = SeedFingerprint::from_seed(seed).ok_or_else(|| {
             ZeckError::Internal("mnemonic seed length is out of the ZIP 32 range".to_owned())
         })?;
 
-        let scope = match config.num_accounts {
-            Some(num_accounts) => format!("accounts-{num_accounts}"),
-            None => format!("auto-gap-{}", config.gap_limit),
+        let scope = match num_accounts {
+            Some(n) => format!("accounts-{n}"),
+            None => format!("auto-gap-{gap_limit}"),
         };
 
-        let root = config
-            .data_dir
-            .join(config.network.label())
+        let root = data_dir
+            .join(network.label())
             .join(fingerprint.to_string())
-            .join(format!("birthday-{}", config.birthday))
+            .join(format!("birthday-{birthday}"))
             .join(scope);
 
         Ok(Self {
             wallet_db_path: root.join("wallet.sqlite"),
             cache_db_path: root.join("cache.sqlite"),
             root,
-            data_dir: config.data_dir.clone(),
-            network: config.network,
+            data_dir,
+            network,
             fingerprint_hex: hex_lower(&fingerprint.to_bytes()),
-            birthday: config.birthday,
-            num_accounts: config.num_accounts,
-            gap_limit: config.gap_limit,
+            birthday,
+            num_accounts,
+            gap_limit,
         })
     }
 
