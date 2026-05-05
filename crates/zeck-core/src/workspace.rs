@@ -5,6 +5,7 @@ use std::{
 
 use rand_core::OsRng;
 use secrecy::SecretVec;
+use serde::{Deserialize, Serialize};
 use zcash_client_sqlite::{
     chain::init::init_cache_database, util::SystemClock, wallet::init::init_wallet_db, BlockDb,
     WalletDb,
@@ -17,6 +18,25 @@ use crate::{
     error::{ZeckError, ZeckResult},
     models::{RuntimeScanConfig, ZeckNetwork},
 };
+
+const META_FILENAME: &str = "meta.json";
+const META_VERSION: u32 = 1;
+
+/// Persistent metadata for a workspace, written on `initialize` and read by
+/// the multi-seed resolver to detect existing workspaces and override the
+/// user-supplied birthday so the workspace key matches and resume works.
+///
+/// `fingerprint` is the lowercase 64-char hex of the 32-byte ZIP-32 seed
+/// fingerprint, matching the format used by the multi-seed resolver.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceMeta {
+    pub fingerprint: String,
+    pub birthday: u32,
+    pub num_accounts: Option<u32>,
+    pub gap_limit: u32,
+    pub network: ZeckNetwork,
+    pub version: u32,
+}
 
 /// On-disk location of a wallet workspace for one (network, seed, birthday,
 /// gap-strategy) tuple.
@@ -41,6 +61,10 @@ pub struct RecoveryWorkspace {
     cache_db_path: PathBuf,
     data_dir: PathBuf,
     network: ZeckNetwork,
+    fingerprint_hex: String,
+    birthday: u32,
+    num_accounts: Option<u32>,
+    gap_limit: u32,
 }
 
 impl RecoveryWorkspace {
@@ -68,6 +92,10 @@ impl RecoveryWorkspace {
             root,
             data_dir: config.data_dir.clone(),
             network: config.network,
+            fingerprint_hex: hex_lower(&fingerprint.to_bytes()),
+            birthday: config.birthday,
+            num_accounts: config.num_accounts,
+            gap_limit: config.gap_limit,
         })
     }
 
@@ -108,6 +136,36 @@ impl RecoveryWorkspace {
             ))
         })?;
 
+        let meta = WorkspaceMeta {
+            fingerprint: self.fingerprint_hex.clone(),
+            birthday: self.birthday,
+            num_accounts: self.num_accounts,
+            gap_limit: self.gap_limit,
+            network: self.network,
+            version: META_VERSION,
+        };
+        self.write_meta(&meta)?;
+
+        Ok(())
+    }
+
+    pub fn meta_path(&self) -> PathBuf {
+        self.root.join(META_FILENAME)
+    }
+
+    pub fn read_meta(&self) -> Option<WorkspaceMeta> {
+        read_meta_at(&self.meta_path())
+    }
+
+    pub fn write_meta(&self, meta: &WorkspaceMeta) -> ZeckResult<()> {
+        let bytes = serde_json::to_vec_pretty(meta)
+            .map_err(|err| ZeckError::Storage(format!("serializing meta.json: {err}")))?;
+        fs::write(self.meta_path(), bytes).map_err(|err| {
+            ZeckError::Storage(format!(
+                "writing {}: {err}",
+                self.meta_path().display()
+            ))
+        })?;
         Ok(())
     }
 
@@ -130,6 +188,73 @@ impl RecoveryWorkspace {
     pub fn network(&self) -> ZeckNetwork {
         self.network
     }
+}
+
+fn read_meta_at(path: &Path) -> Option<WorkspaceMeta> {
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    s
+}
+
+/// Walk `data_dir` looking for an existing workspace whose `meta.json` matches
+/// the given fingerprint and network. The on-disk layout is
+/// `data_dir/<network>/<fingerprint-zip32>/birthday-<N>/<scope>/meta.json`,
+/// so we descend into the network bucket and walk through fingerprint/birthday
+/// /scope sub-dirs. Malformed or missing meta files are skipped silently.
+///
+/// Returns the workspace `root` (the dir containing `meta.json`) along with
+/// the parsed meta. The first matching workspace is returned; callers should
+/// not rely on a specific ordering when multiple matches exist.
+pub fn find_existing_workspace(
+    data_dir: &Path,
+    network: ZeckNetwork,
+    fingerprint_hex: &str,
+) -> Option<(PathBuf, WorkspaceMeta)> {
+    let network_dir = data_dir.join(network.label());
+    let fp_iter = fs::read_dir(&network_dir).ok()?;
+    for fp_entry in fp_iter.flatten() {
+        let fp_path = fp_entry.path();
+        if !fp_path.is_dir() {
+            continue;
+        }
+        let bday_iter = match fs::read_dir(&fp_path) {
+            Ok(it) => it,
+            Err(_) => continue,
+        };
+        for bday_entry in bday_iter.flatten() {
+            let bday_path = bday_entry.path();
+            if !bday_path.is_dir() {
+                continue;
+            }
+            let scope_iter = match fs::read_dir(&bday_path) {
+                Ok(it) => it,
+                Err(_) => continue,
+            };
+            for scope_entry in scope_iter.flatten() {
+                let scope_path = scope_entry.path();
+                if !scope_path.is_dir() {
+                    continue;
+                }
+                let meta_path = scope_path.join(META_FILENAME);
+                let Some(meta) = read_meta_at(&meta_path) else {
+                    continue;
+                };
+                if meta.fingerprint == fingerprint_hex && meta.network == network {
+                    return Some((scope_path, meta));
+                }
+            }
+        }
+    }
+    None
 }
 
 pub fn network_cache_dir(data_dir: &Path, network: ZeckNetwork) -> PathBuf {
@@ -357,6 +482,55 @@ mod tests {
             .to_string();
         let parts: Vec<&str> = suffix.split('/').collect();
         eprintln!("fingerprint = {}", parts[1]);
+    }
+
+    #[test]
+    fn initialize_writes_meta_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = config(SEED, 3_280_000, None, 20, ZeckNetwork::Mainnet);
+        cfg.data_dir = tmp.path().to_path_buf();
+
+        let ws = RecoveryWorkspace::from_runtime(&cfg).unwrap();
+        let seed = mnemonic_seed(&cfg.seed_phrase).unwrap();
+        ws.initialize(cfg.network, &seed).unwrap();
+
+        let meta = ws
+            .read_meta()
+            .expect("meta.json must be written by initialize");
+        assert_eq!(meta.birthday, 3_280_000);
+        assert_eq!(meta.num_accounts, None);
+        assert_eq!(meta.gap_limit, 20);
+        assert_eq!(meta.network, ZeckNetwork::Mainnet);
+        assert_eq!(meta.version, 1);
+        assert_eq!(meta.fingerprint.len(), 64, "fingerprint must be 64-char hex");
+        assert!(
+            meta.fingerprint.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "fingerprint must be lowercase hex with no prefix"
+        );
+    }
+
+    #[test]
+    fn find_existing_workspace_locates_initialized_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = config(SEED, 3_280_000, None, 20, ZeckNetwork::Mainnet);
+        cfg.data_dir = tmp.path().to_path_buf();
+
+        let ws = RecoveryWorkspace::from_runtime(&cfg).unwrap();
+        let seed = mnemonic_seed(&cfg.seed_phrase).unwrap();
+        ws.initialize(cfg.network, &seed).unwrap();
+
+        let meta = ws.read_meta().unwrap();
+        let found = find_existing_workspace(&cfg.data_dir, ZeckNetwork::Mainnet, &meta.fingerprint);
+        assert!(found.is_some(), "must find the workspace just initialized");
+        let (root, found_meta) = found.unwrap();
+        assert_eq!(root, ws.root());
+        assert_eq!(found_meta.birthday, 3_280_000);
+
+        // Wrong network → no match.
+        assert!(
+            find_existing_workspace(&cfg.data_dir, ZeckNetwork::Testnet, &meta.fingerprint)
+                .is_none()
+        );
     }
 
     #[test]

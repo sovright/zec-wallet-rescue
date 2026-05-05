@@ -20,6 +20,7 @@ use crate::{
     birthday::detect_birthday,
     derivation::{derive_accounts, mnemonic_seed},
     models::{BirthdayDetectResult, DerivedAccount, ZeckNetwork},
+    workspace::find_existing_workspace,
 };
 
 /// Sapling NU activation height on mainnet. Matches `zcash_protocol`'s
@@ -106,6 +107,10 @@ pub enum ResolveWarning {
     },
     /// Reserved for the resume-detection pass (Task 10). Not populated here.
     // TODO(task-10): populate from workspace inspection.
+    /// An existing workspace was found for this seed (matching fingerprint
+    /// and network). Its stored birthday was used as authoritative — any
+    /// user-supplied or auto-detected birthday is ignored so the workspace
+    /// keying matches and resume works.
     ResumingExisting {
         index: usize,
         height: u32,
@@ -247,6 +252,24 @@ pub async fn resolve_seeds_with_detector(
 
     let mut resolved_birthdays: Vec<u32> = Vec::with_capacity(pending.len());
     for p in &pending {
+        // Resume override: if a workspace already exists on disk for this
+        // (data_dir, network, fingerprint), its stored birthday is authoritative
+        // — overriding both user-supplied and auto-detected values so the
+        // workspace key still matches and resume works.
+        if let Some((_root, meta)) =
+            find_existing_workspace(&config.data_dir, config.network, &p.fingerprint)
+        {
+            resolved_birthdays.push(meta.birthday);
+            pre_sort_warnings.push((
+                p.original_index,
+                ResolveWarning::ResumingExisting {
+                    index: 0, // remapped after sort
+                    height: meta.birthday,
+                },
+            ));
+            continue;
+        }
+
         if let Some(b) = p.birthday {
             resolved_birthdays.push(b);
             continue;
@@ -311,7 +334,10 @@ pub async fn resolve_seeds_with_detector(
                 fallback_height,
                 reason,
             },
-            other => other,
+            ResolveWarning::ResumingExisting { height, .. } => ResolveWarning::ResumingExisting {
+                index: orig_to_post.get(&orig).copied().unwrap_or(0),
+                height,
+            },
         })
         .collect();
 
@@ -589,5 +615,139 @@ mod tests {
     fn hex_lower_is_lowercase_and_no_prefix() {
         assert_eq!(hex_lower(&[0x00, 0xff, 0xab]), "00ffab");
         assert_eq!(hex_lower(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
+    }
+
+    /// Compute the resolver-format fingerprint for a phrase, matching the
+    /// hex-encoded ZIP-32 seed fingerprint used both in resolved seeds and
+    /// in `meta.json`. Mirrors the inline derivation in `resolve_seeds`.
+    fn fingerprint_for_phrase(phrase: &str) -> String {
+        let secret = SecretString::new(phrase.to_owned());
+        let seed = mnemonic_seed(&secret).unwrap();
+        let fp = SeedFingerprint::from_seed(&seed).unwrap().to_bytes();
+        hex_lower(&fp)
+    }
+
+    /// Write a synthetic workspace dir matching the on-disk layout
+    /// (`data_dir/<network>/<seed-fp>/birthday-<N>/<scope>/meta.json`) so the
+    /// resolver's `find_existing_workspace` lookup succeeds without running
+    /// the real `RecoveryWorkspace::initialize` (which would create SQLite
+    /// databases and add I/O cost to the test).
+    fn write_fake_workspace(
+        data_dir: &std::path::Path,
+        network: ZeckNetwork,
+        fingerprint_hex: &str,
+        birthday: u32,
+        gap_limit: u32,
+        num_accounts: Option<u32>,
+    ) {
+        // We don't need to mirror the upstream zip32 display string — the
+        // resolver only opens `meta.json` and matches its `fingerprint` field,
+        // so any directory name under the network bucket works.
+        let scope = match num_accounts {
+            Some(n) => format!("accounts-{n}"),
+            None => format!("auto-gap-{gap_limit}"),
+        };
+        let root = data_dir
+            .join(network.label())
+            .join("synthetic-fp-dir")
+            .join(format!("birthday-{birthday}"))
+            .join(scope);
+        std::fs::create_dir_all(&root).unwrap();
+        let meta = crate::workspace::WorkspaceMeta {
+            fingerprint: fingerprint_hex.to_owned(),
+            birthday,
+            num_accounts,
+            gap_limit,
+            network,
+            version: 1,
+        };
+        let bytes = serde_json::to_vec_pretty(&meta).unwrap();
+        std::fs::write(root.join("meta.json"), bytes).unwrap();
+    }
+
+    #[tokio::test]
+    async fn resolver_resumes_existing_workspace_overriding_user_birthday() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fp = fingerprint_for_phrase(SEED_A);
+        write_fake_workspace(tmp.path(), ZeckNetwork::Mainnet, &fp, 2_400_000, 1, Some(1));
+
+        let mut config = cfg();
+        config.data_dir = tmp.path().to_path_buf();
+
+        // User supplied a stale birthday that should be ignored.
+        let entries = vec![entry(SEED_A, Some(9_999_999), Some("a"))];
+        let (resolved, warnings) =
+            resolve_seeds_with_detector(entries, &config, Arc::new(FixedDetector(123_456)))
+                .await
+                .unwrap();
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(
+            resolved[0].birthday, 2_400_000,
+            "stored workspace birthday must override user-supplied value"
+        );
+        assert_eq!(warnings.len(), 1);
+        match &warnings[0] {
+            ResolveWarning::ResumingExisting { index, height } => {
+                assert_eq!(*index, 0);
+                assert_eq!(*height, 2_400_000);
+            }
+            other => panic!("expected ResumingExisting, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolver_resumes_existing_workspace_when_birthday_is_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fp = fingerprint_for_phrase(SEED_A);
+        write_fake_workspace(tmp.path(), ZeckNetwork::Mainnet, &fp, 2_400_000, 1, Some(1));
+
+        let mut config = cfg();
+        config.data_dir = tmp.path().to_path_buf();
+
+        // FailingDetector would fall back to Sapling activation if it ran.
+        // The workspace match should short-circuit before that.
+        let entries = vec![entry(SEED_A, None, None)];
+        let (resolved, warnings) = resolve_seeds_with_detector(
+            entries,
+            &config,
+            Arc::new(FailingDetector("should not be called")),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resolved[0].birthday, 2_400_000);
+        assert!(matches!(
+            warnings[0],
+            ResolveWarning::ResumingExisting { height: 2_400_000, .. }
+        ));
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn resolver_does_not_resume_workspace_with_different_network() {
+        // Workspace is on testnet; resolver runs on mainnet → no resume.
+        let tmp = tempfile::tempdir().unwrap();
+        let fp = fingerprint_for_phrase(SEED_A);
+        write_fake_workspace(tmp.path(), ZeckNetwork::Testnet, &fp, 280_500, 1, Some(1));
+
+        let mut config = cfg();
+        config.network = ZeckNetwork::Mainnet;
+        config.data_dir = tmp.path().to_path_buf();
+
+        let entries = vec![entry(SEED_A, Some(700_000), None)];
+        let (resolved, warnings) =
+            resolve_seeds_with_detector(entries, &config, Arc::new(FixedDetector(0)))
+                .await
+                .unwrap();
+
+        // No resume warning, user-supplied birthday is honored.
+        assert_eq!(resolved[0].birthday, 700_000);
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| matches!(w, ResolveWarning::ResumingExisting { .. })),
+            "must not resume when only the testnet workspace exists"
+        );
     }
 }
