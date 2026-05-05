@@ -7,6 +7,7 @@ pub mod fetcher;
 pub mod lightwalletd;
 pub mod models;
 pub mod scan;
+pub mod scanner;
 pub mod service;
 pub mod workspace;
 
