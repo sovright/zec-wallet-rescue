@@ -268,16 +268,29 @@ impl BlockCache for SqliteBlockCache {
     }
 
     async fn delete(&self, range: ScanRange) -> Result<(), Self::Error> {
-        self.0
+        let guard = self
+            .0
             .lock()
-            .map_err(|_| CacheError::Corrupted("block cache mutex was poisoned".to_owned()))?
-            .execute(
-                "DELETE FROM compactblocks WHERE height >= ? AND height < ?",
-                params![
-                    u32::from(range.block_range().start),
-                    u32::from(range.block_range().end)
-                ],
-            )?;
+            .map_err(|_| CacheError::Corrupted("block cache mutex was poisoned".to_owned()))?;
+        guard.execute(
+            "DELETE FROM compactblocks WHERE height >= ? AND height < ?",
+            params![
+                u32::from(range.block_range().start),
+                u32::from(range.block_range().end)
+            ],
+        )?;
+        // Return freed pages to the OS. No-op when the database was created
+        // before `auto_vacuum=INCREMENTAL` was set (older workspaces).
+        //
+        // `PRAGMA incremental_vacuum` releases one freelist page per
+        // `sqlite3_step` call and returns a row each step, so we must drain
+        // the result set to actually clear the freelist. Using `execute` or
+        // `execute_batch` would only free a single page per scan range.
+        if let Ok(mut stmt) = guard.prepare("PRAGMA incremental_vacuum") {
+            if let Ok(mut rows) = stmt.query([]) {
+                while matches!(rows.next(), Ok(Some(_))) {}
+            }
+        }
         Ok(())
     }
 }
@@ -2074,6 +2087,122 @@ mod tests {
                 account_ids.len(),
                 2,
                 "re-importing the same 2 accounts must yield exactly 2 in the DB (not 4)"
+            );
+        }
+    }
+
+    /// Verifies that `cache.sqlite` is created with `auto_vacuum=INCREMENTAL`
+    /// and that issuing a `DELETE` followed by `PRAGMA incremental_vacuum`
+    /// actually shrinks the file. Without auto-vacuum these would leave the
+    /// freed pages in the file and the cache would grow unboundedly across
+    /// the lifetime of a long historical scan.
+    mod cache_pruning {
+        use rusqlite::{params, Connection};
+        use secrecy::SecretString;
+
+        use crate::{
+            derivation::mnemonic_seed,
+            models::{RuntimeScanConfig, ZeckNetwork},
+            workspace::RecoveryWorkspace,
+        };
+
+        const TEST_SEED: &str = "abandon abandon abandon abandon abandon abandon \
+                                  abandon abandon abandon abandon abandon abandon \
+                                  abandon abandon abandon abandon abandon abandon \
+                                  abandon abandon abandon abandon abandon art";
+
+        fn test_config(data_dir: std::path::PathBuf) -> RuntimeScanConfig {
+            RuntimeScanConfig {
+                seed_phrase: SecretString::new(TEST_SEED.to_owned()),
+                birthday: 419_200,
+                num_accounts: Some(1),
+                gap_limit: 5,
+                lightwalletd_url: "https://example.invalid:443".to_owned(),
+                data_dir,
+                network: ZeckNetwork::Mainnet,
+            }
+        }
+
+        fn auto_vacuum_mode(path: &std::path::Path) -> u32 {
+            let conn = Connection::open(path).expect("open cache.sqlite");
+            conn.query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+                .expect("query auto_vacuum")
+        }
+
+        #[test]
+        fn fresh_cache_db_has_incremental_auto_vacuum() {
+            let tempdir = tempfile::tempdir().expect("temp dir");
+            let config = test_config(tempdir.path().to_owned());
+            let workspace = RecoveryWorkspace::from_runtime(&config).expect("workspace");
+            let seed = mnemonic_seed(&config.seed_phrase).expect("seed");
+            workspace
+                .initialize(config.network, &seed)
+                .expect("initialize workspace");
+
+            assert_eq!(
+                auto_vacuum_mode(workspace.cache_db_path()),
+                2,
+                "cache.sqlite must be created with auto_vacuum=INCREMENTAL (mode 2)"
+            );
+        }
+
+        #[test]
+        fn delete_with_incremental_vacuum_shrinks_cache_file() {
+            let tempdir = tempfile::tempdir().expect("temp dir");
+            let config = test_config(tempdir.path().to_owned());
+            let workspace = RecoveryWorkspace::from_runtime(&config).expect("workspace");
+            let seed = mnemonic_seed(&config.seed_phrase).expect("seed");
+            workspace
+                .initialize(config.network, &seed)
+                .expect("initialize workspace");
+
+            let cache_path = workspace.cache_db_path();
+            let conn = Connection::open(cache_path).expect("open cache.sqlite");
+
+            // Write enough synthetic compact-block payload (~1 MB) that the
+            // file grows well past initial allocation, so a successful vacuum
+            // is observable as a real reduction in on-disk size.
+            let payload = vec![0u8; 16 * 1024];
+            for height in 0..64u32 {
+                conn.execute(
+                    "INSERT INTO compactblocks(height, data) VALUES (?, ?)",
+                    params![height, payload],
+                )
+                .expect("insert compactblocks row");
+            }
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").ok();
+            drop(conn);
+
+            let size_after_insert = std::fs::metadata(cache_path)
+                .expect("stat cache.sqlite")
+                .len();
+            assert!(
+                size_after_insert > 512 * 1024,
+                "cache.sqlite should be at least 512 KiB after seeding (was {size_after_insert})"
+            );
+
+            let conn = Connection::open(cache_path).expect("reopen cache.sqlite");
+            conn.execute("DELETE FROM compactblocks", [])
+                .expect("delete rows");
+            // Drain `PRAGMA incremental_vacuum` — it returns one row per
+            // freed page. `execute_batch` only frees a single page.
+            let mut stmt = conn
+                .prepare("PRAGMA incremental_vacuum")
+                .expect("prepare incremental_vacuum");
+            let mut rows = stmt.query([]).expect("query incremental_vacuum");
+            while rows.next().expect("step incremental_vacuum").is_some() {}
+            drop(rows);
+            drop(stmt);
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").ok();
+            drop(conn);
+
+            let size_after_vacuum = std::fs::metadata(cache_path)
+                .expect("stat cache.sqlite")
+                .len();
+            assert!(
+                size_after_vacuum * 4 < size_after_insert,
+                "cache.sqlite should shrink dramatically after delete + incremental_vacuum \
+                 (was {size_after_insert}, now {size_after_vacuum})"
             );
         }
     }

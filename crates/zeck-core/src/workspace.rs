@@ -103,6 +103,29 @@ impl RecoveryWorkspace {
         })?;
         set_private_file_permissions(&self.wallet_db_path)?;
 
+        // Set `auto_vacuum=INCREMENTAL` on a fresh cache file so that the
+        // deletions `zcash_client_backend::sync::run` issues after each scan
+        // range can release pages back to the OS via `PRAGMA incremental_vacuum`
+        // in `SqliteBlockCache::delete`. The pragma only takes effect on a
+        // database that has no tables yet, so it must be set before
+        // `init_cache_database`. Existing caches are left as-is — converting
+        // them would require a full `VACUUM`, which is multi-GB on long scans.
+        if !self.cache_db_path.exists() {
+            let conn = rusqlite::Connection::open(&self.cache_db_path).map_err(|err| {
+                ZeckError::Storage(format!(
+                    "preparing cache database {}: {err}",
+                    self.cache_db_path.display()
+                ))
+            })?;
+            conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")
+                .map_err(|err| {
+                    ZeckError::Storage(format!(
+                        "enabling auto_vacuum on {}: {err}",
+                        self.cache_db_path.display()
+                    ))
+                })?;
+        }
+
         let cache_db = BlockDb::for_path(&self.cache_db_path).map_err(|err| {
             ZeckError::Storage(format!(
                 "opening cache database {}: {err}",
