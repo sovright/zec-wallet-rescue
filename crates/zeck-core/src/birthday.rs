@@ -24,8 +24,21 @@ const SAPLING_ACTIVATION_DATE: CalendarDate = CalendarDate {
     month: 10,
     day: 28,
 };
-const AVERAGE_BLOCK_SECONDS: i64 = 75;
+/// Pre-Blossom block target was 150 s.  Used by the offline fallback only.
+const PRE_BLOSSOM_BLOCK_SECONDS: i64 = 150;
+/// Post-Blossom (and current) block target is 75 s.
+const POST_BLOSSOM_BLOCK_SECONDS: i64 = 75;
+/// Mainnet Blossom activation: block 653,600 ≈ 2019-12-11.
+const BLOSSOM_ACTIVATION_HEIGHT: u32 = 653_600;
+const BLOSSOM_ACTIVATION_DATE: CalendarDate = CalendarDate {
+    year: 2019,
+    month: 12,
+    day: 11,
+};
 const DAY_SECONDS: i64 = 86_400;
+/// Safety margin (~1 week at 75 s/block) subtracted from any date-derived
+/// birthday so we err on the side of over-scanning rather than missing notes.
+const DATE_SAFETY_BUFFER_BLOCKS: u32 = 8_064;
 
 /// Approximate blocks per year at 75 s/block.
 const PROBE_YEAR_STEP: u32 = 420_480;
@@ -43,21 +56,132 @@ struct CalendarDate {
     day: u8,
 }
 
-pub fn estimate_birthday_from_date(date: &str) -> ZeckResult<u32> {
+/// Offline piecewise estimator: 150 s/block from Sapling activation through
+/// Blossom (block 653,600), then 75 s/block thereafter.  Used as the fallback
+/// when lightwalletd is unreachable, and as the round-trip helper below.
+pub fn estimate_birthday_from_date_offline(date: &str) -> ZeckResult<u32> {
     let parsed = CalendarDate::parse(date)?;
-    let anchor = SAPLING_ACTIVATION_DATE;
-
-    if parsed <= anchor {
+    if parsed <= SAPLING_ACTIVATION_DATE {
         return Ok(SAPLING_ACTIVATION_HEIGHT);
+    }
+
+    if parsed <= BLOSSOM_ACTIVATION_DATE {
+        let seconds = parsed
+            .days_since_unix_epoch()
+            .saturating_sub(SAPLING_ACTIVATION_DATE.days_since_unix_epoch())
+            .saturating_mul(DAY_SECONDS);
+        let blocks = (seconds / PRE_BLOSSOM_BLOCK_SECONDS).max(0) as u32;
+        return Ok(SAPLING_ACTIVATION_HEIGHT.saturating_add(blocks));
     }
 
     let seconds = parsed
         .days_since_unix_epoch()
-        .saturating_sub(anchor.days_since_unix_epoch())
+        .saturating_sub(BLOSSOM_ACTIVATION_DATE.days_since_unix_epoch())
         .saturating_mul(DAY_SECONDS);
-    let estimated_blocks = seconds / AVERAGE_BLOCK_SECONDS;
+    let blocks = (seconds / POST_BLOSSOM_BLOCK_SECONDS).max(0) as u32;
+    Ok(BLOSSOM_ACTIVATION_HEIGHT.saturating_add(blocks))
+}
 
-    Ok(SAPLING_ACTIVATION_HEIGHT.saturating_add(estimated_blocks.max(0) as u32))
+/// Estimate a wallet birthday from a date by binary-searching lightwalletd for
+/// the first block whose timestamp meets-or-exceeds the target.  Falls back to
+/// the offline piecewise heuristic if any RPC fails.
+///
+/// A safety margin of ~1 week (`DATE_SAFETY_BUFFER_BLOCKS`) is subtracted so
+/// we err toward over-scanning rather than missing notes.
+pub async fn estimate_birthday_from_date(
+    date: &str,
+    lightwalletd_url: &str,
+) -> ZeckResult<u32> {
+    let parsed = CalendarDate::parse(date)?;
+    if parsed <= SAPLING_ACTIVATION_DATE {
+        return Ok(SAPLING_ACTIVATION_HEIGHT);
+    }
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let target_unix = parsed
+        .days_since_unix_epoch()
+        .saturating_mul(DAY_SECONDS);
+
+    let probed = match probe_lightwalletd_endpoints(lightwalletd_url).await {
+        Ok(probe) => probe,
+        Err(_) => return estimate_birthday_from_date_offline(date),
+    };
+    let (mut client, _endpoint, chain_info) = probed;
+
+    let chain_tip = match u32::try_from(chain_info.block_height) {
+        Ok(h) => h,
+        Err(_) => return estimate_birthday_from_date_offline(date),
+    };
+    let sapling_floor = u32::try_from(chain_info.sapling_activation_height)
+        .unwrap_or(SAPLING_ACTIVATION_HEIGHT);
+
+    let tip_time = match fetch_block_time(&mut client, chain_tip).await {
+        Ok(t) => t,
+        Err(_) => return estimate_birthday_from_date_offline(date),
+    };
+    if target_unix >= tip_time {
+        return Ok(chain_tip
+            .saturating_sub(DATE_SAFETY_BUFFER_BLOCKS)
+            .max(sapling_floor));
+    }
+
+    let mut lo = sapling_floor;
+    let mut hi = chain_tip;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let mid_time = match fetch_block_time(&mut client, mid).await {
+            Ok(t) => t,
+            Err(_) => return estimate_birthday_from_date_offline(date),
+        };
+        if mid_time < target_unix {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+
+    Ok(lo.saturating_sub(DATE_SAFETY_BUFFER_BLOCKS).max(sapling_floor))
+}
+
+/// Inverse of the offline estimator: given a block height, return the
+/// approximate calendar date as `YYYY-MM-DD`.
+pub fn estimate_date_from_height_offline(height: u32) -> String {
+    let (anchor_date, anchor_height, block_seconds) = if height <= BLOSSOM_ACTIVATION_HEIGHT {
+        (
+            SAPLING_ACTIVATION_DATE,
+            SAPLING_ACTIVATION_HEIGHT,
+            PRE_BLOSSOM_BLOCK_SECONDS,
+        )
+    } else {
+        (
+            BLOSSOM_ACTIVATION_DATE,
+            BLOSSOM_ACTIVATION_HEIGHT,
+            POST_BLOSSOM_BLOCK_SECONDS,
+        )
+    };
+
+    let delta_blocks = i64::from(height.saturating_sub(anchor_height));
+    let delta_days = (delta_blocks * block_seconds) / DAY_SECONDS;
+    let absolute_days = anchor_date
+        .days_since_unix_epoch()
+        .saturating_add(delta_days);
+    CalendarDate::from_days_since_unix_epoch(absolute_days).format()
+}
+
+async fn fetch_block_time(
+    client: &mut CompactTxStreamerClient<Channel>,
+    height: u32,
+) -> ZeckResult<i64> {
+    let block = client
+        .get_block(BlockId {
+            height: u64::from(height),
+            hash: vec![],
+        })
+        .await
+        .map_err(|err| ZeckError::Lightwalletd(err.to_string()))?
+        .into_inner();
+    Ok(i64::from(block.time))
 }
 
 impl CalendarDate {
@@ -111,6 +235,33 @@ impl CalendarDate {
         let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
 
         era * 146_097 + day_of_era - 719_468
+    }
+
+    /// Inverse of [`days_since_unix_epoch`] using Howard Hinnant's
+    /// civil_from_days algorithm.
+    fn from_days_since_unix_epoch(days: i64) -> Self {
+        let z = days + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let day_of_era = z - era * 146_097;
+        let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524
+            - day_of_era / 146_096)
+            / 365;
+        let year = year_of_era + era * 400;
+        let day_of_year =
+            day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+        let mp = (5 * day_of_year + 2) / 153;
+        let day = day_of_year - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let calendar_year = year + i64::from(month <= 2);
+        Self {
+            year: calendar_year as i32,
+            month: month as u8,
+            day: day as u8,
+        }
+    }
+
+    fn format(self) -> String {
+        format!("{:04}-{:02}-{:02}", self.year, self.month, self.day)
     }
 }
 
@@ -383,21 +534,42 @@ mod tests {
 
     #[test]
     fn sapling_activation_date_returns_activation_height() {
-        let h = estimate_birthday_from_date("2018-10-28").unwrap();
+        let h = estimate_birthday_from_date_offline("2018-10-28").unwrap();
         assert_eq!(h, SAPLING_ACTIVATION_HEIGHT);
     }
 
     #[test]
     fn pre_sapling_date_clamps_to_activation_height() {
-        let h = estimate_birthday_from_date("2016-01-01").unwrap();
+        let h = estimate_birthday_from_date_offline("2016-01-01").unwrap();
         assert_eq!(h, SAPLING_ACTIVATION_HEIGHT);
     }
 
     #[test]
-    fn one_year_after_sapling_gives_plausible_height() {
-        let h = estimate_birthday_from_date("2019-10-28").unwrap();
-        let expected_min = SAPLING_ACTIVATION_HEIGHT + 400_000;
-        let expected_max = SAPLING_ACTIVATION_HEIGHT + 450_000;
+    fn one_year_after_sapling_uses_pre_blossom_block_time() {
+        // 1 year ≈ 365 days * 86400s / 150s = ~210k blocks, NOT 420k.
+        let h = estimate_birthday_from_date_offline("2019-10-28").unwrap();
+        let expected_min = SAPLING_ACTIVATION_HEIGHT + 195_000;
+        let expected_max = SAPLING_ACTIVATION_HEIGHT + 220_000;
+        assert!(
+            h >= expected_min && h <= expected_max,
+            "height {h} outside [{expected_min}, {expected_max}]"
+        );
+    }
+
+    #[test]
+    fn blossom_activation_date_lands_near_blossom_height() {
+        let h = estimate_birthday_from_date_offline("2019-12-11").unwrap();
+        assert!(
+            (h as i64 - BLOSSOM_ACTIVATION_HEIGHT as i64).abs() < 5_000,
+            "height {h} too far from blossom height {BLOSSOM_ACTIVATION_HEIGHT}"
+        );
+    }
+
+    #[test]
+    fn one_year_after_blossom_uses_post_blossom_block_time() {
+        let h = estimate_birthday_from_date_offline("2020-12-11").unwrap();
+        let expected_min = BLOSSOM_ACTIVATION_HEIGHT + 410_000;
+        let expected_max = BLOSSOM_ACTIVATION_HEIGHT + 430_000;
         assert!(
             h >= expected_min && h <= expected_max,
             "height {h} outside [{expected_min}, {expected_max}]"
@@ -406,21 +578,21 @@ mod tests {
 
     #[test]
     fn invalid_date_format_is_rejected() {
-        assert!(estimate_birthday_from_date("28-10-2018").is_err());
-        assert!(estimate_birthday_from_date("2018/10/28").is_err());
-        assert!(estimate_birthday_from_date("not-a-date").is_err());
-        assert!(estimate_birthday_from_date("").is_err());
+        assert!(estimate_birthday_from_date_offline("28-10-2018").is_err());
+        assert!(estimate_birthday_from_date_offline("2018/10/28").is_err());
+        assert!(estimate_birthday_from_date_offline("not-a-date").is_err());
+        assert!(estimate_birthday_from_date_offline("").is_err());
     }
 
     #[test]
     fn future_date_produces_height_above_current_chain() {
-        let h = estimate_birthday_from_date("2030-01-01").unwrap();
+        let h = estimate_birthday_from_date_offline("2030-01-01").unwrap();
         assert!(h > 2_000_000, "expected large height, got {h}");
     }
 
     #[test]
     fn leap_year_february_29_is_handled() {
-        let h = estimate_birthday_from_date("2020-02-29").unwrap();
+        let h = estimate_birthday_from_date_offline("2020-02-29").unwrap();
         assert!(
             h > SAPLING_ACTIVATION_HEIGHT,
             "expected height above activation"
@@ -432,5 +604,45 @@ mod tests {
         assert!(CalendarDate::parse("2024-02-30").is_err());
         assert!(CalendarDate::parse("2024-13-01").is_err());
         assert!(CalendarDate::parse("2025-04-31").is_err());
+    }
+
+    #[test]
+    fn date_height_round_trip_is_close() {
+        for date in ["2019-06-01", "2020-01-01", "2022-07-15", "2024-03-01"] {
+            let h = estimate_birthday_from_date_offline(date).unwrap();
+            let back = estimate_date_from_height_offline(h);
+            let parsed_in = CalendarDate::parse(date).unwrap();
+            let parsed_out = CalendarDate::parse(&back).unwrap();
+            let drift =
+                (parsed_in.days_since_unix_epoch() - parsed_out.days_since_unix_epoch()).abs();
+            assert!(drift <= 1, "round-trip drift {drift} days for {date} -> {back}");
+        }
+    }
+
+    #[test]
+    fn date_from_height_at_activation() {
+        assert_eq!(
+            estimate_date_from_height_offline(SAPLING_ACTIVATION_HEIGHT),
+            "2018-10-28"
+        );
+        // Just past Blossom we anchor exactly to its date.
+        assert!(
+            estimate_date_from_height_offline(BLOSSOM_ACTIVATION_HEIGHT + 1)
+                .starts_with("2019-12-")
+        );
+    }
+
+    #[test]
+    fn calendar_date_round_trip_via_days_since_epoch() {
+        for (y, m, d) in [
+            (1970, 1, 1),
+            (2000, 2, 29),
+            (2018, 10, 28),
+            (2024, 12, 31),
+        ] {
+            let cd = CalendarDate { year: y, month: m, day: d };
+            let back = CalendarDate::from_days_since_unix_epoch(cd.days_since_unix_epoch());
+            assert_eq!(back, cd, "round trip failed for {y}-{m}-{d}");
+        }
     }
 }

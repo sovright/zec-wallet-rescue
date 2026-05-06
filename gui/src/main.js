@@ -312,21 +312,76 @@ function updateScanEstimate() {
   }
 }
 
-$("birthday-height").addEventListener("input", updateScanEstimate);
+// Piecewise height→date (Sapling 150 s/block until Blossom @ 653,600,
+// then 75 s/block). Mirrors crates/zeck-core/src/birthday.rs and lets us
+// give the user instant round-trip feedback as they type a height.
+const SAPLING_ACTIVATION_HEIGHT_JS = 419_200;
+const SAPLING_ACTIVATION_DATE_JS = Date.UTC(2018, 9, 28); // Oct 28 2018
+const BLOSSOM_ACTIVATION_HEIGHT_JS = 653_600;
+const BLOSSOM_ACTIVATION_DATE_JS = Date.UTC(2019, 11, 11); // Dec 11 2019
+const PRE_BLOSSOM_BLOCK_SECONDS = 150;
+const POST_BLOSSOM_BLOCK_SECONDS = 75;
+
+function approxDateFromHeight(height) {
+  if (!Number.isFinite(height) || height <= SAPLING_ACTIVATION_HEIGHT_JS) {
+    return new Date(SAPLING_ACTIVATION_DATE_JS);
+  }
+  let anchorMs, anchorHeight, blockSeconds;
+  if (height <= BLOSSOM_ACTIVATION_HEIGHT_JS) {
+    anchorMs = SAPLING_ACTIVATION_DATE_JS;
+    anchorHeight = SAPLING_ACTIVATION_HEIGHT_JS;
+    blockSeconds = PRE_BLOSSOM_BLOCK_SECONDS;
+  } else {
+    anchorMs = BLOSSOM_ACTIVATION_DATE_JS;
+    anchorHeight = BLOSSOM_ACTIVATION_HEIGHT_JS;
+    blockSeconds = POST_BLOSSOM_BLOCK_SECONDS;
+  }
+  return new Date(anchorMs + (height - anchorHeight) * blockSeconds * 1000);
+}
+
+function formatApproxMonth(date) {
+  return date.toLocaleString(undefined, { month: "short", year: "numeric", timeZone: "UTC" });
+}
+
+function setBirthdayHint(text, tone) {
+  const el = $("birthday-probe-status");
+  el.textContent = text;
+  el.style.color =
+    tone === "success" ? "var(--color-success,#137a3a)" :
+    tone === "error" ? "var(--color-danger,#a8181f)" :
+    "var(--color-muted,#888)";
+}
+
+function updateBirthdayHint() {
+  const height = parseInt($("birthday-height").value, 10);
+  if (!Number.isFinite(height) || height <= 0) {
+    setBirthdayHint("", "");
+    return;
+  }
+  const approx = formatApproxMonth(approxDateFromHeight(height));
+  setBirthdayHint(`Block ${height.toLocaleString()} ≈ ${approx}.`, "");
+}
+
+$("birthday-height").addEventListener("input", () => {
+  updateScanEstimate();
+  updateBirthdayHint();
+});
 updateScanEstimate();
+updateBirthdayHint();
 
 $("birthday-autodetect").addEventListener("click", async () => {
   const seedVal = seedInput.value.trim();
   if (!seedVal) {
-    setStatus("config-status", "Enter your seed phrase on step 2 first.", "error");
+    setBirthdayHint("Enter your seed phrase on step 2 first.", "error");
     return;
   }
   $("birthday-autodetect").disabled = true;
-  $("birthday-probe-status").textContent = "Starting detection…";
+  $("birthday-estimate").disabled = true;
+  setBirthdayHint("Starting detection…", "");
   setStatus("config-status", "", "");
 
   const unlistenProbe = await listen("birthday-probe-progress", (event) => {
-    $("birthday-probe-status").textContent = event.payload;
+    setBirthdayHint(event.payload, "");
   });
 
   try {
@@ -337,13 +392,16 @@ $("birthday-autodetect").addEventListener("click", async () => {
     });
     $("birthday-height").value = result.birthday;
     updateScanEstimate();
-    $("birthday-probe-status").textContent = "";
-    setStatus("config-status", `✓ ${result.message}`, "success");
+    const approx = formatApproxMonth(approxDateFromHeight(result.birthday));
+    setBirthdayHint(
+      `✓ Auto-detected birthday: block ${Number(result.birthday).toLocaleString()} (≈ ${approx}).`,
+      "success",
+    );
   } catch (err) {
-    $("birthday-probe-status").textContent = "";
-    setStatus("config-status", `✗ Birthday detection failed: ${err}`, "error");
+    setBirthdayHint(`✗ Auto-detect failed: ${err}`, "error");
   } finally {
     $("birthday-autodetect").disabled = false;
+    $("birthday-estimate").disabled = false;
     unlistenProbe();
   }
 });
@@ -351,16 +409,28 @@ $("birthday-autodetect").addEventListener("click", async () => {
 $("birthday-estimate").addEventListener("click", async () => {
   const dateVal = $("birthday-date").value;
   if (!dateVal) {
-    setStatus("config-status", "Pick a date first.", "error");
+    setBirthdayHint("Pick a date first.", "error");
     return;
   }
+  $("birthday-estimate").disabled = true;
+  setBirthdayHint("Looking up block height for that date…", "");
+  setStatus("config-status", "", "");
   try {
-    const height = await invoke("estimate_birthday_from_date", { date: dateVal });
+    const height = await invoke("estimate_birthday_from_date", {
+      date: dateVal,
+      lightwalletdUrl: $("lightwalletd-url").value.trim(),
+    });
     $("birthday-height").value = height;
     updateScanEstimate();
-    setStatus("config-status", `Birthday estimated: block ${Number(height).toLocaleString()}`, "success");
+    const approx = formatApproxMonth(approxDateFromHeight(height));
+    setBirthdayHint(
+      `✓ Birthday set to block ${Number(height).toLocaleString()} (≈ ${approx}, with ~1 week safety margin).`,
+      "success",
+    );
   } catch (err) {
-    setStatus("config-status", String(err), "error");
+    setBirthdayHint(`✗ Estimate failed: ${err}`, "error");
+  } finally {
+    $("birthday-estimate").disabled = false;
   }
 });
 
