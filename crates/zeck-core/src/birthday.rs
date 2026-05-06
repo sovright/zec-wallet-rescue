@@ -469,6 +469,7 @@ async fn probe_shielded_window(
         lightwalletd_url: lightwalletd_url.to_owned(),
         data_dir: probe_dir.clone(),
         network,
+        label: String::new(),
     };
 
     let workspace = RecoveryWorkspace::from_runtime(&probe_config)?;

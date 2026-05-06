@@ -11,8 +11,10 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use zeck_core::{
     detect_birthday as zeck_detect_birthday, estimate_birthday_from_date as estimate_birthday,
-    validate_destination_address, validate_mnemonic_words, BirthdayDetectResult, RecoveryService,
-    ScanConfig, ScanHandle, SweepProposal, SweepRequest, TxBroadcastResult, ZeckNetwork,
+    list_incomplete_sessions as zeck_list_incomplete_sessions, parse_workspace_keying,
+    validate_destination_address, validate_mnemonic_words, verify_seed_for_workspace,
+    BirthdayDetectResult, IncompleteSession, RecoveryService, ScanConfig, ScanHandle,
+    SweepProposal, SweepRequest, TxBroadcastResult, ZeckNetwork,
 };
 
 #[derive(Clone)]
@@ -29,6 +31,12 @@ pub struct ScanConfigInput {
     pub lightwalletd_url: String,
     pub data_dir: String,
     pub network: ZeckNetwork,
+    /// User-supplied label for the scan, written to the on-disk session
+    /// sidecar so the launch-time "resume an unfinished scan" UI can show
+    /// something more recognizable than a fingerprint suffix. Optional —
+    /// empty/missing strings render as "(unlabeled scan)".
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 #[tauri::command]
@@ -59,29 +67,30 @@ pub async fn start_scan(
                 lightwalletd_url: config.lightwalletd_url,
                 data_dir: PathBuf::from(config.data_dir),
                 network: config.network,
+                label: config.label.unwrap_or_default(),
             },
             SecretString::new(config.seed),
         )
         .await
         .map_err(|err| err.to_string())?;
 
-    let pump_service = state.service.clone();
-    let pump_handle = handle.clone();
+    spawn_scan_progress_pump(app, state.service.clone(), handle.clone());
+
+    Ok(handle)
+}
+
+/// Forward `scan-progress` / `scan-discovery` / `scan-complete` events to
+/// the frontend while a scan is running. Identical for fresh scans and
+/// resumed scans, so it's factored out.
+fn spawn_scan_progress_pump(app: AppHandle, service: RecoveryService, handle: ScanHandle) {
     tokio::spawn(async move {
-        // Track how many entries of the append-only discovery log we've
-        // already forwarded — emit only the new tail each tick so the
-        // frontend gets one event per discovery, never duplicates.
         let mut emitted_discoveries = 0usize;
         loop {
-            let progress = match pump_service.get_scan_progress(&pump_handle).await {
+            let progress = match service.get_scan_progress(&handle).await {
                 Ok(progress) => progress,
                 Err(_) => break,
             };
 
-            // Self-heal: the discovery log is contractually append-only,
-            // but if a future bug ever shrinks it, clamp the cursor so
-            // we don't index past the end and don't silently skip later
-            // events.
             if emitted_discoveries > progress.discoveries.len() {
                 emitted_discoveries = progress.discoveries.len();
             }
@@ -106,8 +115,6 @@ pub async fn start_scan(
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
     });
-
-    Ok(handle)
 }
 
 #[tauri::command]
@@ -376,6 +383,133 @@ pub async fn notify_user(title: String, body: String) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Frontend-facing row for an incomplete scan workspace. Mirrors
+/// `IncompleteSession` with the path serialized as a string so it
+/// round-trips through Tauri without needing PathBuf serde wiring.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionRow {
+    pub workspace_path: String,
+    pub label: String,
+    pub network: ZeckNetwork,
+    pub birthday: u32,
+    pub synced_to_height: Option<u32>,
+    pub target_height: Option<u32>,
+    pub last_run_at_epoch_seconds: Option<i64>,
+}
+
+impl From<IncompleteSession> for SessionRow {
+    fn from(s: IncompleteSession) -> Self {
+        Self {
+            workspace_path: s.workspace_path.display().to_string(),
+            label: s.label,
+            network: s.network,
+            birthday: s.birthday,
+            synced_to_height: s.synced_to_height,
+            target_height: s.target_height,
+            last_run_at_epoch_seconds: s.last_run_at_epoch_seconds,
+        }
+    }
+}
+
+/// List any workspaces under `data_dir` that have an incomplete or missing
+/// session sidecar. Called on GUI launch so the user can pick up where
+/// they left off without re-entering all their scan parameters.
+#[tauri::command]
+pub async fn list_incomplete_sessions(
+    app: AppHandle,
+    data_dir: Option<String>,
+) -> Result<Vec<SessionRow>, String> {
+    let resolved = match data_dir {
+        Some(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
+        _ => {
+            let base = app
+                .path()
+                .app_data_dir()
+                .map_err(|err| format!("resolving app data dir: {err}"))?;
+            base.join("workspace")
+        }
+    };
+    let rows = zeck_list_incomplete_sessions(&resolved)
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .map(SessionRow::from)
+        .collect();
+    Ok(rows)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResumeSessionInput {
+    pub workspace_path: String,
+    pub seed: String,
+    pub lightwalletd_url: String,
+    /// If supplied (non-empty after trimming), overwrites the existing
+    /// label in the sidecar at resume time. Mostly useful when resuming a
+    /// legacy "(unlabeled scan)" workspace.
+    pub label: Option<String>,
+}
+
+/// Resume an incomplete scan: verify the seed matches the workspace, then
+/// hand off to the existing scan entry point with parameters reconstructed
+/// from the workspace path. The data dir for `ScanConfig` is inferred from
+/// the workspace path's keying segments so the same `RecoveryWorkspace`
+/// resolves and the existing resume logic in `scan.rs` picks up where the
+/// previous run left off.
+#[tauri::command]
+pub async fn resume_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: ResumeSessionInput,
+) -> Result<ScanHandle, String> {
+    let workspace_path = PathBuf::from(input.workspace_path.trim());
+    if workspace_path.as_os_str().is_empty() {
+        return Err("workspace path cannot be empty".to_owned());
+    }
+    let seed_phrase = SecretString::new(input.seed);
+
+    verify_seed_for_workspace(&workspace_path, &seed_phrase).map_err(|err| err.to_string())?;
+    let keying = parse_workspace_keying(&workspace_path).map_err(|err| err.to_string())?;
+    let data_dir = data_dir_from_workspace(&workspace_path)
+        .ok_or_else(|| "workspace path is not under a recognizable data dir".to_owned())?;
+
+    let label = input
+        .label
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default();
+
+    let handle = state
+        .service
+        .start_scan(
+            ScanConfig {
+                birthday: keying.birthday,
+                num_accounts: keying.num_accounts,
+                gap_limit: keying.gap_limit,
+                lightwalletd_url: input.lightwalletd_url,
+                data_dir,
+                network: keying.network,
+                label,
+            },
+            seed_phrase,
+        )
+        .await
+        .map_err(|err| err.to_string())?;
+
+    spawn_scan_progress_pump(app, state.service.clone(), handle.clone());
+    Ok(handle)
+}
+
+/// Strip the four keying segments (`<network>/<fp>/birthday-N/<scope>`)
+/// from `workspace_path` to recover the original data dir.
+fn data_dir_from_workspace(workspace_path: &Path) -> Option<PathBuf> {
+    let mut p = workspace_path.to_path_buf();
+    for _ in 0..4 {
+        if !p.pop() {
+            return None;
+        }
+    }
+    Some(p)
 }
 
 #[cfg(target_os = "windows")]

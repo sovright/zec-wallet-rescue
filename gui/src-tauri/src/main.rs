@@ -23,7 +23,9 @@ fn main() {
             commands::detect_birthday,
             commands::save_recovery_report,
             commands::default_data_dir,
-            commands::notify_user
+            commands::notify_user,
+            commands::list_incomplete_sessions,
+            commands::resume_session
         ])
         .setup(|app| {
             let _window = app.get_webview_window("main");

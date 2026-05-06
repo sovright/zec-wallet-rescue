@@ -506,6 +506,7 @@ $("start-scan").addEventListener("click", async () => {
   }
 
   const autoGap = $("auto-gap-limit").checked;
+  const labelRaw = ($("scan-label")?.value ?? "").trim();
   const config = {
     seed: seedInput.value.trim().toLowerCase(),
     birthday: parseInt($("birthday-height").value, 10) || 419200,
@@ -514,6 +515,7 @@ $("start-scan").addEventListener("click", async () => {
     lightwalletd_url: $("lightwalletd-url").value.trim(),
     data_dir: dataDirVal,
     network: $("network-select").value,
+    label: labelRaw || defaultScanLabel(),
   };
 
   setStatus("config-status", "Starting scan…", "");
@@ -1098,11 +1100,156 @@ const SIDEBAR_KEY = "zeck-sidebar-w";
   });
 })();
 
+// ─── Resume incomplete sessions ───────────────────────────────────────────────
+
+function defaultScanLabel() {
+  // Matches the spec default ("Scan started YYYY-MM-DD"). Locale-independent
+  // so the label is identical across launches and easy to grep through later.
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `Scan started ${yyyy}-${mm}-${dd}`;
+}
+
+function fmtRelativeTime(epochSeconds) {
+  if (!epochSeconds) return "(no recent run)";
+  const diff = Math.max(0, Math.floor(Date.now() / 1000) - Number(epochSeconds));
+  if (diff < 60) return "just now";
+  if (diff < 3600) {
+    const m = Math.floor(diff / 60);
+    return `${m} minute${m === 1 ? "" : "s"} ago`;
+  }
+  if (diff < 86400) {
+    const h = Math.floor(diff / 3600);
+    return `${h} hour${h === 1 ? "" : "s"} ago`;
+  }
+  const days = Math.floor(diff / 86400);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+let pendingResumeRow = null;
+
+function buildSessionRow(row) {
+  const li = document.createElement("li");
+  li.className = "session-row";
+
+  const info = document.createElement("div");
+  const labelEl = document.createElement("div");
+  labelEl.className = "session-label";
+  labelEl.textContent = row.label || "(unlabeled scan)";
+  info.appendChild(labelEl);
+
+  const synced = row.synced_to_height
+    ? Number(row.synced_to_height).toLocaleString()
+    : "0";
+  const target = row.target_height ? Number(row.target_height).toLocaleString() : "?";
+  const meta = document.createElement("div");
+  meta.className = "session-meta";
+  meta.textContent =
+    `${row.network} · birthday ${Number(row.birthday).toLocaleString()} · ` +
+    `scanned ${synced} of ${target} · ${fmtRelativeTime(row.last_run_at_epoch_seconds)}`;
+  info.appendChild(meta);
+  li.appendChild(info);
+
+  const btn = document.createElement("button");
+  btn.className = "primary";
+  btn.textContent = "Resume";
+  btn.addEventListener("click", () => openResumeModal(row));
+  li.appendChild(btn);
+
+  return li;
+}
+
+async function refreshResumePanel() {
+  const dataDir = $("data-dir").value.trim() || null;
+  let rows = [];
+  try {
+    rows = await invoke("list_incomplete_sessions", { dataDir });
+  } catch (err) {
+    // Non-fatal — the user can still start a new scan from welcome.
+    console.warn("list_incomplete_sessions failed:", err);
+    rows = [];
+  }
+  const panel = $("resume-panel");
+  const list = $("resume-sessions");
+  list.innerHTML = "";
+  if (!rows.length) {
+    panel.hidden = true;
+    return;
+  }
+  for (const row of rows) list.appendChild(buildSessionRow(row));
+  panel.hidden = false;
+}
+
+function openResumeModal(row) {
+  pendingResumeRow = row;
+  $("resume-modal-title").textContent = `Resume "${row.label || "(unlabeled scan)"}"`;
+  $("resume-seed-input").value = "";
+  $("resume-seed-input").classList.add("masked");
+  $("resume-seed-visibility").checked = false;
+  $("resume-label-input").value = "";
+  setStatus("resume-modal-status", "", "");
+  $("resume-modal").hidden = false;
+  $("resume-seed-input").focus();
+}
+
+function closeResumeModal() {
+  pendingResumeRow = null;
+  $("resume-modal").hidden = true;
+  $("resume-seed-input").value = "";
+}
+
+$("resume-cancel").addEventListener("click", closeResumeModal);
+$("resume-seed-visibility").addEventListener("change", () => {
+  $("resume-seed-input").classList.toggle("masked", !$("resume-seed-visibility").checked);
+});
+
+$("resume-confirm").addEventListener("click", async () => {
+  if (!pendingResumeRow) return;
+  const seed = $("resume-seed-input").value.trim().toLowerCase();
+  if (!seed) {
+    setStatus("resume-modal-status", "Enter the seed phrase to continue.", "error");
+    return;
+  }
+  const labelOverride = $("resume-label-input").value.trim();
+  const lightwalletdUrl =
+    $("lightwalletd-url").value.trim() ||
+    (pendingResumeRow.network === "testnet"
+      ? SERVER_PRESETS.testnet
+      : SERVER_PRESETS.mainnet);
+
+  $("resume-confirm").disabled = true;
+  setStatus("resume-modal-status", "Verifying seed and resuming…", "");
+  try {
+    const handle = await invoke("resume_session", {
+      input: {
+        workspace_path: pendingResumeRow.workspace_path,
+        seed,
+        lightwalletd_url: lightwalletdUrl,
+        label: labelOverride || null,
+      },
+    });
+    state.scanHandle = handle;
+    closeResumeModal();
+    // Skip the seed/config screens — they don't apply to a resumed scan.
+    furthestStep = steps.indexOf("scan");
+    goTo("scan");
+    await startProgressListeners();
+  } catch (err) {
+    setStatus("resume-modal-status", `✗ ${err}`, "error");
+  } finally {
+    $("resume-confirm").disabled = false;
+  }
+});
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 $("lightwalletd-url").value = SERVER_PRESETS.mainnet;
 $("gap-limit-row").style.display = $("auto-gap-limit").checked ? "none" : "block";
 $("accounts-range").disabled = !$("auto-gap-limit").checked;
+$("scan-label").value = defaultScanLabel();
+$("scan-label").placeholder = defaultScanLabel();
 goTo("welcome");
 
 invoke("default_data_dir")
@@ -1111,6 +1258,11 @@ invoke("default_data_dir")
   })
   .catch(() => {
     // Non-fatal: user can always type a path manually.
+  })
+  .finally(() => {
+    // Populate resume panel after the data dir is known so we list
+    // sessions under the dir the user actually configured.
+    refreshResumePanel();
   });
 
 }); // end DOMContentLoaded

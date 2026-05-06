@@ -162,6 +162,15 @@
               >I have a .dat file</a
             >
           </div>
+
+          <div id="resume-panel" class="report-card" hidden>
+            <h3>Resume an unfinished scan</h3>
+            <p class="lead">
+              ZECK found scans on this computer that didn't finish. Pick one to continue, or start a
+              brand-new scan above.
+            </p>
+            <ul id="resume-sessions" class="session-list"></ul>
+          </div>
         </section>
 
         <section class="screen" data-step="seed">
@@ -201,6 +210,11 @@
           <p class="eyebrow">Step 3</p>
           <h2>Configure the recovery session</h2>
           <div class="form-grid">
+            <label class="field span-two">
+              <span>Label for this scan</span>
+              <input id="scan-label" type="text" maxlength="120" placeholder="" />
+              <small>A short note to help you tell this scan apart from others on the resume screen later. Defaults to today's date.</small>
+            </label>
             <label class="field">
               <span>Network</span>
               <select id="network-select">
@@ -427,6 +441,35 @@
           </div>
         </section>
       </main>
+    </div>
+
+    <div id="resume-modal" class="modal-overlay" hidden>
+      <div class="modal-card">
+        <p class="eyebrow">Resume scan</p>
+        <h2 id="resume-modal-title">Resume scan</h2>
+        <p class="lead">
+          Enter the 24-word seed phrase that this scan was started with. ZECK verifies it matches
+          before unlocking the saved scan data.
+        </p>
+        <label class="field">
+          <span>Seed phrase</span>
+          <textarea id="resume-seed-input" rows="4" class="masked"></textarea>
+        </label>
+        <label class="checkline">
+          <input type="checkbox" id="resume-seed-visibility" />
+          <span>Show words on screen</span>
+        </label>
+        <label class="field">
+          <span>Label (optional rename)</span>
+          <input id="resume-label-input" type="text" maxlength="120" />
+          <small>Leave blank to keep the existing label.</small>
+        </label>
+        <p id="resume-modal-status" class="status-line"></p>
+        <div class="actions split">
+          <button class="secondary" id="resume-cancel">Cancel</button>
+          <button class="primary" id="resume-confirm">Resume scan</button>
+        </div>
+      </div>
     </div>
 
     <script src="./main.js"></script>

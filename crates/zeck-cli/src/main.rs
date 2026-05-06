@@ -191,9 +191,10 @@ async fn main() -> Result<()> {
                         birthday,
                         num_accounts: cli.num_accounts,
                         gap_limit: cli.gap_limit,
-                        lightwalletd_url: cli.lightwalletd_url,
+                        lightwalletd_url: cli.lightwalletd_url.clone(),
                         data_dir: cli.data_dir.clone(),
                         network,
+                        label: String::new(),
                     },
                     seed_phrase,
                 )
@@ -238,9 +239,10 @@ async fn main() -> Result<()> {
                         birthday,
                         num_accounts: cli.num_accounts,
                         gap_limit: cli.gap_limit,
-                        lightwalletd_url: cli.lightwalletd_url,
+                        lightwalletd_url: cli.lightwalletd_url.clone(),
                         data_dir: cli.data_dir.clone(),
                         network,
+                        label: String::new(),
                     },
                     seed_phrase,
                 )

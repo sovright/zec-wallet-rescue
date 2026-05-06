@@ -75,6 +75,10 @@ pub struct RuntimeScanConfig {
     pub lightwalletd_url: String,
     pub data_dir: PathBuf,
     pub network: ZeckNetwork,
+    /// User-facing label written to `session.json` so the launch-time
+    /// "resume an unfinished scan" UI can identify this scan without the
+    /// seed. Empty string is allowed and treated as "(unlabeled scan)".
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +89,8 @@ pub struct ScanConfig {
     pub lightwalletd_url: String,
     pub data_dir: PathBuf,
     pub network: ZeckNetwork,
+    #[serde(default)]
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

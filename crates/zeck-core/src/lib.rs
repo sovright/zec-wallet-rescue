@@ -14,3 +14,7 @@ pub use derivation::{derive_accounts, validate_mnemonic_words};
 pub use error::{ZeckError, ZeckResult};
 pub use models::*;
 pub use service::RecoveryService;
+pub use workspace::{
+    list_incomplete_sessions, parse_workspace_keying, verify_seed_for_workspace, IncompleteSession,
+    SessionMetadata, WorkspaceKeying,
+};

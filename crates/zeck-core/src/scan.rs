@@ -50,8 +50,21 @@ use crate::{
         LightwalletdProbe, RuntimeScanConfig, ScanDiscovery, ScanHandle, ScanPhase, ScanProgress,
         ScanSummary, SleepEvent,
     },
-    workspace::{consensus_network, RecoveryWorkspace},
+    workspace::{
+        consensus_network, mark_session_completed, touch_session_last_run, write_session_metadata,
+        RecoveryWorkspace, SessionMetadata,
+    },
 };
+
+/// Best-effort wall-clock for sidecar timestamps. Returns 0 if the system
+/// clock is set before the Unix epoch (the sidecar is not security-relevant
+/// and a wrong timestamp is not worth surfacing as an error to the user).
+fn now_epoch_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
 
 const MAX_ACCOUNT_SCAN_COUNT: u32 = 500;
 const SYNC_BATCH_SIZE: u32 = 1_000;
@@ -485,6 +498,29 @@ async fn run_recovery_scan_inner(
     workspace.initialize(config.network, &seed)?;
     let transparent_account = legacy_transparent_account_key(&config.seed_phrase, config.network)?;
 
+    // Sidecar v1: written once we have a workspace on disk and before any
+    // long-running probe/sync work. `target_height` is unknown until the
+    // lightwalletd probe succeeds, so it starts as `None` and is filled in
+    // below. An interrupted scan that never reached the probe still surfaces
+    // in the launch-time list, just without progress numbers.
+    let session_label = if config.label.trim().is_empty() {
+        "(unlabeled scan)".to_owned()
+    } else {
+        config.label.clone()
+    };
+    if let Err(err) = write_session_metadata(
+        workspace.root(),
+        &SessionMetadata::new_in_progress(
+            session_label.clone(),
+            config.network,
+            config.birthday,
+            None,
+            now_epoch_seconds(),
+        ),
+    ) {
+        warn!("failed to write initial session sidecar (continuing): {err}");
+    }
+
     {
         let mut guard = state.lock().await;
         guard.workspace = Some(workspace.clone());
@@ -546,6 +582,21 @@ async fn run_recovery_scan_inner(
         let mut guard = state.lock().await;
         guard.progress.server = Some(probe);
         guard.progress.blocks_total = block_delta(chain_tip_height, effective_birthday);
+    }
+
+    // Update the sidecar with the chain tip we just observed so the resume
+    // UI can show "scanned X / Y" instead of "scanned X / ?". Best-effort.
+    if let Err(err) = write_session_metadata(
+        workspace.root(),
+        &SessionMetadata::new_in_progress(
+            session_label.clone(),
+            config.network,
+            config.birthday,
+            Some(chain_tip_height),
+            now_epoch_seconds(),
+        ),
+    ) {
+        warn!("failed to update session sidecar with target height (continuing): {err}");
     }
 
     while imported_accounts < target_accounts {
@@ -681,6 +732,13 @@ async fn run_recovery_scan_inner(
             "Recovery scan finished. Review the authoritative per-account balances and continue to the sweep step when you are ready."
                 .to_owned(),
         );
+    }
+
+    // Flip the sidecar to `completed: true` so the launch-time resume list
+    // stops surfacing this workspace. Best-effort: a failure here doesn't
+    // affect the scan outcome, only the next launch's UI.
+    if let Err(err) = mark_session_completed(workspace.root(), now_epoch_seconds()) {
+        warn!("failed to mark session sidecar completed (continuing): {err}");
     }
 
     Ok(())
@@ -866,6 +924,16 @@ async fn run_wallet_sync_with_retry(
                 warn!(
                     "lightwalletd connection dropped (attempt {attempts}/{MAX_SYNC_RETRIES}), reconnecting in {SYNC_RETRY_DELAY_SECS}s: {msg}"
                 );
+
+                // Touch the sidecar so the launch-time list shows a fresh
+                // "last run" timestamp on each reconnect — useful for users
+                // who interrupt a long-running scan and want to confirm
+                // it's the one they were running today.
+                if let Err(err) =
+                    touch_session_last_run(workspace.root(), now_epoch_seconds())
+                {
+                    warn!("failed to touch session sidecar (continuing): {err}");
+                }
 
                 {
                     let mut guard = state.lock().await;
@@ -1514,6 +1582,7 @@ mod tests {
             lightwalletd_url: "https://example.com".to_owned(),
             data_dir: std::path::PathBuf::from("zeck_data"),
             network: ZeckNetwork::Mainnet,
+            label: String::new(),
         }
     }
 
@@ -1968,6 +2037,7 @@ mod tests {
                 lightwalletd_url: "https://example.invalid:443".to_owned(),
                 data_dir,
                 network: ZeckNetwork::Mainnet,
+                label: String::new(),
             }
         }
 

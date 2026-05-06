@@ -88,6 +88,7 @@ impl RecoveryService {
             lightwalletd_url: config.lightwalletd_url,
             data_dir: config.data_dir,
             network: config.network,
+            label: config.label,
         };
 
         let workspace_root = RecoveryWorkspace::from_runtime(&runtime)?.root().to_owned();
