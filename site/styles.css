@@ -411,6 +411,32 @@ th {
   gap: 16px;
 }
 
+.safety-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.safety-grid .info-card {
+  min-height: 0;
+}
+
+.legacy-badge {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.legacy-badge img {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+}
+
+.legacy-badge h2 {
+  margin: 0;
+}
+
 .info-card,
 .download-card,
 .check-panel,

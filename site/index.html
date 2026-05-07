@@ -55,7 +55,7 @@
       <div class="header-right">
         <nav class="site-nav" aria-label="Primary navigation">
           <a href="#recovery-flow">How it works</a>
-          <a href="#notice">Notice</a>
+          <a href="#safety">Safety</a>
           <a href="#download">Download</a>
           <a href="./guide.html">User Guide</a>
         </nav>
@@ -166,7 +166,10 @@
       <section class="section" id="recovery-flow">
         <div class="section-heading">
           <p class="eyebrow">Recovery Flow</p>
-          <h2>Made for legacy ZecWallet Lite seeds</h2>
+          <div class="legacy-badge">
+            <img src="./assets/zecwallet-lite-logo.svg" alt="" width="40" height="40" />
+            <h2>Made for legacy ZecWallet Lite seeds</h2>
+          </div>
           <p>
             ZecWallet Lite is no longer maintained. ZECK reads its seed format, finds every address
             your old wallet used, and walks you through moving the funds — with every step visible.
@@ -218,6 +221,64 @@
         </div>
       </section>
 
+      <section class="section safety-section" id="safety">
+        <div class="section-heading">
+          <p class="eyebrow">Safety</p>
+          <h2>Pick a machine that matches what's at stake</h2>
+          <p>
+            Entering a seed phrase into a laptop is inherently risky. Match your precautions to
+            the value you're recovering — and after the sweep finishes, retire the ZecWallet Lite
+            seed permanently.
+          </p>
+        </div>
+        <div class="safety-grid">
+          <article class="info-card">
+            <h3>Large amounts</h3>
+            <p>
+              Use a brand-new computer for the recovery — ideally one bought with cash and set up
+              from a verified OS installer. A factory reset is not enough at this tier, because
+              it does not remove firmware-level malware that may already be present on a
+              long-used machine.
+            </p>
+          </article>
+          <article class="info-card">
+            <h3>Smaller amounts</h3>
+            <p>
+              On the recovery machine, run nothing except ZECK and the operating system during
+              the session. No browsing, no email login, no password manager you don't strictly
+              need, no other apps open. Make sure full-disk encryption is on, the OS is up to
+              date, and no one else is using the machine.
+            </p>
+          </article>
+          <article class="info-card">
+            <h3>Internet required</h3>
+            <p>
+              ZECK reads Zcash blocks from a public lightwalletd server, so an air-gapped
+              machine won't work. Your seed never leaves your computer — only public block data
+              comes in, and only the final sweep transaction goes out.
+            </p>
+          </article>
+          <article class="info-card">
+            <h3>If you tested with Zodl first</h3>
+            <p>
+              The diagnostic step on the FAQ asks you to try your seed in Zodl. After you've
+              confirmed ZECK is the right tool, delete that Zodl wallet from your phone — its
+              only job was to tell you whether the funds were elsewhere. Otherwise the seed now
+              lives in a second place you'll need to track.
+            </p>
+          </article>
+          <article class="info-card">
+            <h3>Retire the seed afterward</h3>
+            <p>
+              Any malware that touched the recovery machine may now know your ZecWallet Lite
+              seed. The seed itself is the lasting compromise, not the machine — so reusing it
+              on a different "clean" computer doesn't make you safe. Sweep the funds to a fresh
+              wallet, then destroy the paper backup.
+            </p>
+          </article>
+        </div>
+      </section>
+
       <section class="section download-section" id="download">
         <div class="section-heading">
           <p class="eyebrow">Download</p>
@@ -255,6 +316,16 @@
         </div>
         <div class="faq-list">
           <details>
+            <summary>How do I know if ZECK can help me?</summary>
+            <p>
+              A good first test: enter your ZecWallet Lite seed into
+              <a href="https://zodl.com">Zodl</a>. Zodl derives only one address per seed, so if
+              you remember having funds in ZecWallet Lite but Zodl shows none, those funds are
+              almost certainly sitting at other addresses ZecWallet Lite generated — and ZECK is
+              built to find them.
+            </p>
+          </details>
+          <details>
             <summary>Which kinds of Zcash funds can ZECK recover?</summary>
             <p>
               ZECK recovers transparent, Sapling, and Orchard funds — the three pools that ZecWallet
@@ -275,9 +346,11 @@
             <p>
               We recommend <a href="https://zodl.com">Zodl</a> (formerly Zashi), a free
               mobile wallet from Electric Coin Co. for iOS and Android. Open Zodl, tap Receive,
-              copy the Unified Address it shows you, and paste that into ZECK as your destination
-              before sweeping. Any other modern Zcash wallet that supports Unified Addresses will
-              also work — make sure you control its seed.
+              and copy the Unified Address it shows you. To get that address onto your laptop
+              without typos, send it to yourself via Signal's Note to Self or a notes app that
+              syncs across your devices — the destination UA is public, so this is just a
+              copy-without-mistakes step, not a security one. Any other modern Zcash wallet that
+              supports Unified Addresses will also work; just make sure you control its seed.
             </p>
           </details>
         </div>
