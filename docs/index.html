@@ -1,0 +1,693 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ZECK — Recover Your Zcash from ZecWallet Lite</title>
+    <meta name="description" content="ZECK is a free, open-source desktop tool that recovers your Zcash from a ZecWallet Lite seed phrase and sweeps it to your new wallet. Runs entirely on your machine — your seed never leaves." />
+    <style>
+      :root {
+        --bg: #f4efe6;
+        --panel: rgba(255, 252, 247, 0.92);
+        --ink: #18251f;
+        --muted: #5e685f;
+        --line: rgba(24, 37, 31, 0.12);
+        --accent: #1f6b56;
+        --accent-soft: rgba(31, 107, 86, 0.10);
+        --gold: #c99649;
+        --radius: 26px;
+      }
+
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+
+      body {
+        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(31, 107, 86, 0.12), transparent 38%),
+          radial-gradient(circle at bottom right, rgba(207, 155, 77, 0.15), transparent 32%),
+          linear-gradient(140deg, #f5f1ea 0%, #eee5d8 46%, #f7f2ea 100%);
+        min-height: 100vh;
+      }
+
+      code, button, nav, small, .label {
+        font-family: "IBM Plex Sans", "Avenir Next", "Helvetica Neue", sans-serif;
+      }
+
+      /* ── Nav ── */
+      nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 24px 32px;
+      }
+
+      .nav-brand {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        text-decoration: none;
+        color: var(--ink);
+      }
+
+      .nav-brand .eyebrow {
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--accent);
+        font-family: "IBM Plex Sans", sans-serif;
+      }
+
+      .nav-brand .wordmark {
+        font-size: 1.9rem;
+        font-weight: 700;
+        line-height: 1;
+      }
+
+      .nav-links {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+
+      .nav-links a {
+        padding: 10px 18px;
+        border-radius: 999px;
+        font-size: 0.9rem;
+        font-weight: 600;
+        text-decoration: none;
+        transition: transform 120ms ease, background 120ms ease;
+        font-family: "IBM Plex Sans", sans-serif;
+      }
+
+      .nav-links a:hover { transform: translateY(-1px); }
+
+      .nav-links .ghost {
+        color: var(--ink);
+        background: rgba(255,255,255,0.72);
+        border: 1px solid var(--line);
+      }
+
+      .nav-links .primary {
+        color: white;
+        background: linear-gradient(135deg, #1f6b56, #154a3c);
+      }
+
+      /* ── Hero ── */
+      .hero {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 60px 32px 80px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 60px;
+        align-items: center;
+      }
+
+      .hero-text .eyebrow {
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin-bottom: 16px;
+        font-family: "IBM Plex Sans", sans-serif;
+      }
+
+      .hero-text h1 {
+        font-size: clamp(2.8rem, 5vw, 4.2rem);
+        line-height: 1.0;
+        margin-bottom: 22px;
+        color: var(--ink);
+      }
+
+      .hero-text h1 em {
+        font-style: normal;
+        color: var(--accent);
+      }
+
+      .hero-text p {
+        font-size: 1.08rem;
+        line-height: 1.7;
+        color: var(--muted);
+        margin-bottom: 32px;
+        max-width: 480px;
+      }
+
+      .hero-actions {
+        display: flex;
+        gap: 14px;
+        flex-wrap: wrap;
+      }
+
+      .btn {
+        display: inline-block;
+        padding: 14px 24px;
+        border-radius: 999px;
+        font-size: 0.96rem;
+        font-weight: 700;
+        text-decoration: none;
+        cursor: pointer;
+        transition: transform 120ms ease, box-shadow 120ms ease;
+        font-family: "IBM Plex Sans", sans-serif;
+      }
+
+      .btn:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.12); }
+
+      .btn-primary {
+        color: white;
+        background: linear-gradient(135deg, #1f6b56, #154a3c);
+      }
+
+      .btn-secondary {
+        color: var(--ink);
+        background: rgba(255,255,255,0.82);
+        border: 1px solid var(--line);
+      }
+
+      /* Hero visual */
+      .hero-visual {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        box-shadow: 0 24px 80px rgba(23, 34, 28, 0.13);
+        backdrop-filter: blur(18px);
+        padding: 28px;
+        overflow: hidden;
+      }
+
+      .mock-step-list {
+        list-style: none;
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        padding: 0;
+      }
+
+      .mock-step-list li {
+        padding: 11px 14px;
+        border-radius: 14px;
+        font-size: 0.9rem;
+        font-family: "IBM Plex Sans", sans-serif;
+        border: 1px solid transparent;
+        background: rgba(255,255,255,0.44);
+        color: var(--muted);
+      }
+
+      .mock-step-list li.active {
+        background: var(--accent-soft);
+        border-color: rgba(31, 107, 86, 0.22);
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      .mock-step-list li.done {
+        border-color: rgba(31, 107, 86, 0.16);
+        color: var(--accent);
+      }
+
+      .mock-step-list li.dim { opacity: 0.4; }
+
+      .mock-progress {
+        margin-top: 20px;
+        padding: 14px 16px;
+        background: rgba(255,255,255,0.7);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+      }
+
+      .mock-label {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--muted);
+        font-family: "IBM Plex Sans", sans-serif;
+        margin-bottom: 10px;
+      }
+
+      .mock-bar-shell {
+        width: 100%;
+        height: 10px;
+        border-radius: 999px;
+        background: rgba(22,33,28,0.1);
+        overflow: hidden;
+      }
+
+      .mock-bar-fill {
+        height: 100%;
+        width: 62%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #c99649, #1f6b56);
+      }
+
+      .mock-stat {
+        margin-top: 8px;
+        font-size: 0.82rem;
+        color: var(--muted);
+        font-family: "IBM Plex Sans", sans-serif;
+      }
+
+      /* ── Trust bar ── */
+      .trust-bar {
+        max-width: 1100px;
+        margin: 0 auto 80px;
+        padding: 0 32px;
+        display: flex;
+        gap: 36px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      .trust-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--muted);
+        font-size: 0.88rem;
+        font-family: "IBM Plex Sans", sans-serif;
+      }
+
+      .trust-icon {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: var(--accent-soft);
+        border: 1px solid rgba(31,107,86,0.2);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.9rem;
+        flex-shrink: 0;
+      }
+
+      /* ── Section ── */
+      section {
+        max-width: 1100px;
+        margin: 0 auto 100px;
+        padding: 0 32px;
+      }
+
+      .section-label {
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin-bottom: 12px;
+        font-family: "IBM Plex Sans", sans-serif;
+      }
+
+      .section-heading {
+        font-size: clamp(1.9rem, 3vw, 2.8rem);
+        line-height: 1.1;
+        margin-bottom: 14px;
+      }
+
+      .section-subhead {
+        font-size: 1.04rem;
+        line-height: 1.65;
+        color: var(--muted);
+        max-width: 560px;
+        margin-bottom: 48px;
+      }
+
+      /* ── Feature cards ── */
+      .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 20px;
+      }
+
+      .feature-card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 28px;
+        box-shadow: 0 4px 20px rgba(23,34,28,0.06);
+      }
+
+      .feature-icon {
+        width: 44px;
+        height: 44px;
+        background: var(--accent-soft);
+        border: 1px solid rgba(31,107,86,0.18);
+        border-radius: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.3rem;
+        margin-bottom: 16px;
+      }
+
+      .feature-card h3 {
+        font-size: 1.12rem;
+        margin-bottom: 8px;
+        color: var(--ink);
+      }
+
+      .feature-card p {
+        font-size: 0.94rem;
+        line-height: 1.65;
+        color: var(--muted);
+      }
+
+      /* ── How it works ── */
+      .steps-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 18px;
+      }
+
+      .step-card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        padding: 22px 24px;
+        display: flex;
+        gap: 18px;
+        align-items: flex-start;
+      }
+
+      .step-number {
+        flex-shrink: 0;
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #1f6b56, #154a3c);
+        color: white;
+        font-weight: 700;
+        font-size: 0.88rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: "IBM Plex Sans", sans-serif;
+      }
+
+      .step-body h4 {
+        font-size: 1rem;
+        font-weight: 700;
+        margin-bottom: 4px;
+        color: var(--ink);
+      }
+
+      .step-body p {
+        font-size: 0.9rem;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+
+      /* ── Security callout ── */
+      .security-callout {
+        background: linear-gradient(135deg, rgba(31,107,86,0.08), rgba(31,107,86,0.04));
+        border: 1px solid rgba(31,107,86,0.2);
+        border-radius: var(--radius);
+        padding: 36px 40px;
+        display: flex;
+        gap: 32px;
+        align-items: center;
+      }
+
+      .security-callout .icon {
+        font-size: 2.4rem;
+        flex-shrink: 0;
+      }
+
+      .security-callout h3 {
+        font-size: 1.4rem;
+        margin-bottom: 8px;
+        color: var(--ink);
+      }
+
+      .security-callout p {
+        font-size: 0.96rem;
+        line-height: 1.65;
+        color: var(--muted);
+      }
+
+      /* ── CTA ── */
+      .cta-section {
+        text-align: center;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 64px 40px;
+        box-shadow: 0 4px 20px rgba(23,34,28,0.07);
+      }
+
+      .cta-section h2 {
+        font-size: clamp(1.8rem, 3vw, 2.6rem);
+        margin-bottom: 14px;
+      }
+
+      .cta-section p {
+        font-size: 1.02rem;
+        color: var(--muted);
+        max-width: 500px;
+        margin: 0 auto 32px;
+        line-height: 1.65;
+      }
+
+      /* ── Footer ── */
+      footer {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 28px 32px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-top: 1px solid var(--line);
+        font-size: 0.84rem;
+        color: var(--muted);
+        font-family: "IBM Plex Sans", sans-serif;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      footer a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+
+      footer a:hover { text-decoration: underline; }
+
+      /* ── Responsive ── */
+      @media (max-width: 900px) {
+        .hero { grid-template-columns: 1fr; gap: 40px; padding: 40px 24px 60px; }
+        .feature-grid { grid-template-columns: 1fr; }
+        .steps-grid { grid-template-columns: 1fr; }
+        .security-callout { flex-direction: column; gap: 20px; padding: 28px 24px; }
+        nav, section, .trust-bar, footer { padding-left: 24px; padding-right: 24px; }
+      }
+    </style>
+  </head>
+  <body>
+
+    <!-- Nav -->
+    <nav>
+      <a class="nav-brand" href="#">
+        <span class="eyebrow">ZecWallet Lite Recovery</span>
+        <span class="wordmark">ZECK</span>
+      </a>
+      <div class="nav-links">
+        <a class="ghost" href="https://github.com/sovright/zec-wallet-rescue" target="_blank">GitHub</a>
+        <a class="primary" href="https://github.com/sovright/zec-wallet-rescue/releases" target="_blank">Download</a>
+      </div>
+    </nav>
+
+    <!-- Hero -->
+    <div class="hero">
+      <div class="hero-text">
+        <p class="eyebrow">Free &amp; Open Source</p>
+        <h1>Recover your <em>Zcash</em> from ZecWallet Lite</h1>
+        <p>
+          Enter your 24-word seed phrase. ZECK scans the blockchain, finds your
+          funds across every pool and account, and sweeps them to your new wallet —
+          all without your seed ever leaving your machine.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="https://github.com/sovright/zec-wallet-rescue/releases" target="_blank">Download for Mac / Windows / Linux</a>
+          <a class="btn btn-secondary" href="https://github.com/sovright/zec-wallet-rescue" target="_blank">View source</a>
+        </div>
+      </div>
+
+      <div class="hero-visual">
+        <p style="font-size:0.7rem;font-family:'IBM Plex Sans',sans-serif;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted);margin-bottom:14px;">Recovery steps</p>
+        <ol class="mock-step-list">
+          <li class="done">Welcome</li>
+          <li class="done">Seed Entry</li>
+          <li class="done">Configure</li>
+          <li class="active">Scan</li>
+          <li class="dim">Sweep</li>
+          <li class="dim">Complete</li>
+        </ol>
+        <div class="mock-progress">
+          <div class="mock-label">Scanning shielded blocks</div>
+          <div class="mock-bar-shell">
+            <div class="mock-bar-fill"></div>
+          </div>
+          <div class="mock-stat">1,023,400 / 1,648,200 &nbsp;·&nbsp; about 15 minutes remaining &nbsp;·&nbsp; scanning ~2022</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Trust bar -->
+    <div class="trust-bar">
+      <div class="trust-item">
+        <div class="trust-icon">🔒</div>
+        <span>Seed stays on your machine</span>
+      </div>
+      <div class="trust-item">
+        <div class="trust-icon">⚡</div>
+        <span>Transparent funds found in seconds</span>
+      </div>
+      <div class="trust-item">
+        <div class="trust-icon">↩</div>
+        <span>Resumable — pick up where you left off</span>
+      </div>
+      <div class="trust-item">
+        <div class="trust-icon">🪟</div>
+        <span>Mac · Windows · Linux</span>
+      </div>
+      <div class="trust-item">
+        <div class="trust-icon">⚖</div>
+        <span>MIT licensed</span>
+      </div>
+    </div>
+
+    <!-- Features -->
+    <section>
+      <p class="section-label">Why ZECK</p>
+      <h2 class="section-heading">Built for one job, done right</h2>
+      <p class="section-subhead">ZECK is a single-purpose recovery tool — not a full wallet. It handles the hard parts so you can move your ZEC and close this chapter.</p>
+
+      <div class="feature-grid">
+        <div class="feature-card">
+          <div class="feature-icon">🌱</div>
+          <h3>Seed-phrase only</h3>
+          <p>No wallet files, no backups, no databases. Just your 24-word BIP-39 seed phrase — everything else is derived from that.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🔍</div>
+          <h3>Finds every ZEC</h3>
+          <p>Scans Sapling, Orchard, and transparent pools across all your accounts. A quick transparent probe surfaces t-addr balances within seconds of starting.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🛡</div>
+          <h3>Privacy first</h3>
+          <p>Your seed phrase never leaves your device. All derivation and scanning happens locally — ZECK connects only to public lightwalletd nodes to fetch compact block data.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">⏸</div>
+          <h3>Safely resumable</h3>
+          <p>Long scans can be interrupted and resumed from the last saved block. Restart your computer, close the app, come back later — your progress is preserved.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📅</div>
+          <h3>Birthday auto-detection</h3>
+          <p>Not sure when you created your wallet? ZECK can probe the blockchain to estimate your wallet birthday automatically, minimising unnecessary scan time.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🔄</div>
+          <h3>Connection resilient</h3>
+          <p>Automatically reconnects and retries when lightwalletd servers drop the connection — normal behaviour on long scans — so you don't have to babysit it.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- How it works -->
+    <section>
+      <p class="section-label">How it works</p>
+      <h2 class="section-heading">Six steps from seed to safe</h2>
+      <p class="section-subhead">The whole process takes a few clicks and some patience while the blockchain scans.</p>
+
+      <div class="steps-grid">
+        <div class="step-card">
+          <div class="step-number">1</div>
+          <div class="step-body">
+            <h4>Welcome</h4>
+            <p>Open ZECK and confirm you have your 24-word BIP-39 seed phrase from ZecWallet Lite.</p>
+          </div>
+        </div>
+        <div class="step-card">
+          <div class="step-number">2</div>
+          <div class="step-body">
+            <h4>Enter your seed</h4>
+            <p>Paste your seed phrase. ZECK validates it locally and clears it from the UI after the session starts.</p>
+          </div>
+        </div>
+        <div class="step-card">
+          <div class="step-number">3</div>
+          <div class="step-body">
+            <h4>Configure</h4>
+            <p>Set your network, wallet birthday, and destination Unified Address (from Zashi, YWallet, or another modern wallet).</p>
+          </div>
+        </div>
+        <div class="step-card">
+          <div class="step-number">4</div>
+          <div class="step-body">
+            <h4>Scan</h4>
+            <p>ZECK syncs compact blocks and probes UTXOs. Watch funds appear in real time as each account is scanned.</p>
+          </div>
+        </div>
+        <div class="step-card">
+          <div class="step-number">5</div>
+          <div class="step-body">
+            <h4>Review the sweep</h4>
+            <p>Inspect the proposed transactions — gross, fee, and net — before committing. Transparent funds are shielded first.</p>
+          </div>
+        </div>
+        <div class="step-card">
+          <div class="step-number">6</div>
+          <div class="step-body">
+            <h4>Done</h4>
+            <p>ZECK broadcasts the transactions and shows you the txids. Save a recovery report for your records.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Security callout -->
+    <section>
+      <div class="security-callout">
+        <div class="icon">🔐</div>
+        <div>
+          <h3>Your seed phrase never leaves your computer</h3>
+          <p>
+            ZECK derives all keys locally and stores a temporary wallet database only on your machine.
+            It connects to public Zcash lightwalletd servers solely to download compact block data —
+            the same data every full node downloads. No seed, no keys, no balances are ever transmitted.
+            You can review every line of code on <a href="https://github.com/sovright/zec-wallet-rescue" target="_blank" style="color:var(--accent)">GitHub</a>.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- CTA -->
+    <section>
+      <div class="cta-section">
+        <h2>Ready to recover your ZEC?</h2>
+        <p>Download the desktop app for your platform. Free, open-source, no account needed.</p>
+        <div style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap;">
+          <a class="btn btn-primary" href="https://github.com/sovright/zec-wallet-rescue/releases" target="_blank">Download the latest release</a>
+          <a class="btn btn-secondary" href="https://github.com/sovright/zec-wallet-rescue/blob/main/gui/src/guide.html" target="_blank">Read the user guide</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+      <span>ZECK — ZecWallet Lite Recovery Tool</span>
+      <span>
+        <a href="https://github.com/sovright/zec-wallet-rescue" target="_blank">GitHub</a>
+        &nbsp;·&nbsp;
+        Built by <a href="https://sovright.com" target="_blank">Sovright</a>
+        &nbsp;·&nbsp;
+        MIT License
+      </span>
+    </footer>
+
+  </body>
+</html>
