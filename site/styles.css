@@ -206,20 +206,28 @@ p {
 .assurance-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px 22px;
   margin: 24px 0 0;
   padding: 0;
   list-style: none;
 }
 
 .assurance-list li {
-  padding: 8px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  background: none;
+  border: none;
   color: var(--green-dark);
-  background: #eef4ec;
-  border: 1px solid #d3dfcf;
-  border-radius: 8px;
   font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.assurance-list li::before {
+  content: "✓";
   font-weight: 700;
+  color: var(--green-dark);
 }
 
 .product-visual {
