@@ -1,3 +1,39 @@
+@font-face {
+  font-family: "EB Garamond";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/eb-garamond-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "EB Garamond";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./assets/fonts/eb-garamond-latin-700-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/ibm-plex-sans-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./assets/fonts/ibm-plex-sans-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./assets/fonts/ibm-plex-sans-latin-700-normal.woff2") format("woff2");
+}
+
 :root {
   --bg: #f4efe6;
   --panel: rgba(255, 252, 247, 0.92);
@@ -20,7 +56,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+  font-family: "Iowan Old Style", "Palatino Linotype", "EB Garamond", "Book Antiqua", serif;
   color: var(--ink);
   background:
     radial-gradient(circle at top left, rgba(31, 107, 86, 0.15), transparent 34%),
@@ -33,7 +69,7 @@ input,
 textarea,
 button,
 table {
-  font-family: "IBM Plex Sans", "Avenir Next", "Helvetica Neue", sans-serif;
+  font-family: "Avenir Next", "Helvetica Neue", "IBM Plex Sans", sans-serif;
 }
 
 .app-shell {
@@ -90,7 +126,7 @@ table {
   gap: 8px;
   margin: 0;
   color: var(--muted);
-  font-family: "IBM Plex Sans", "Avenir Next", "Helvetica Neue", sans-serif;
+  font-family: "Avenir Next", "Helvetica Neue", "IBM Plex Sans", sans-serif;
   font-size: 0.88rem;
   font-weight: 600;
   letter-spacing: 0.01em;
@@ -650,7 +686,7 @@ select {
   width: 100%;
   padding: 14px 16px;
   font-size: 0.98rem;
-  font-family: "IBM Plex Sans", "Avenir Next", "Helvetica Neue", sans-serif;
+  font-family: "Avenir Next", "Helvetica Neue", "IBM Plex Sans", sans-serif;
   color: var(--ink);
   background: rgba(255, 255, 255, 0.9);
   border: 1px solid var(--line);

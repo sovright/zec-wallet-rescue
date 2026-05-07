@@ -2190,6 +2190,7 @@ mod tests {
                 lightwalletd_url: "https://example.invalid:443".to_owned(),
                 data_dir,
                 network: ZeckNetwork::Mainnet,
+                label: String::new(),
             }
         }
 
