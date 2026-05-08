@@ -150,14 +150,15 @@
         </div>
       </section>
 
-      <section class="notice-band" id="notice">
+      <section class="notice-band" id="safety">
         <div>
           <p class="eyebrow">Important</p>
           <h2>This website is not a wallet</h2>
         </div>
         <p>
-          This is a download page — there is nowhere to enter a seed here, and there never will be.
-          ZECK is a desktop app; everything sensitive happens locally on your machine.
+          Never enter a seed phrase into this splash page. ZECK is a downloadable desktop app; seed
+          validation, key derivation, wallet scanning, transaction building, and report generation
+          happen on your machine.
         </p>
       </section>
 
@@ -174,23 +175,23 @@
         <div class="flow-grid">
           <article class="info-card">
             <span class="step-number">01</span>
-            <h3>Paste your 24-word seed</h3>
-            <p>Type or paste your ZecWallet Lite seed into the desktop app. ZECK checks it locally before doing anything else.</p>
+            <h3>Validate the seed locally</h3>
+            <p>Paste a 24-word phrase into the desktop app and verify the BIP-39 checksum.</p>
           </article>
           <article class="info-card">
             <span class="step-number">02</span>
-            <h3>Tell ZECK how far back to scan</h3>
-            <p>Pick a starting date or block height. Earlier means a more thorough scan; later means a faster one.</p>
+            <h3>Configure scan depth</h3>
+            <p>Choose the network, birthday height, lightwalletd endpoint, and account gap limit.</p>
           </article>
           <article class="info-card">
             <span class="step-number">03</span>
-            <h3>Scan your wallet history</h3>
-            <p>ZECK scans the Zcash blockchain for transparent, Sapling, and Orchard funds linked to your seed.</p>
+            <h3>Scan authoritative state</h3>
+            <p>Use the persisted wallet workspace to scan transparent, Sapling, and Orchard funds.</p>
           </article>
           <article class="info-card">
             <span class="step-number">04</span>
-            <h3>Review and move your funds</h3>
-            <p>Check the destination address, fees, and discovered balances, then broadcast the sweep transaction.</p>
+            <h3>Sweep with review</h3>
+            <p>Review fees, memo, destination address, skipped accounts, and broadcast results.</p>
           </article>
         </div>
       </section>
@@ -205,12 +206,12 @@
           </p>
         </div>
         <div class="check-panel">
-          <h3>What you'll need</h3>
+          <h3>Best fit</h3>
           <ul class="check-list">
-            <li>Your 24-word ZecWallet Lite seed phrase</li>
-            <li>A modern Zcash wallet to receive your funds (e.g. Zashi or Ywallet)</li>
-            <li>A few hours for the scan to complete</li>
-            <li>A computer you trust for handling sensitive keys</li>
+            <li>24-word ZecWallet Lite recovery seed</li>
+            <li>Funds that may live in transparent, Sapling, or Orchard pools</li>
+            <li>A modern Zcash wallet with a Unified Address destination</li>
+            <li>Enough time to let compact-block sync complete</li>
           </ul>
         </div>
       </section>
@@ -220,7 +221,7 @@
           <p class="eyebrow">Download</p>
           <h2>Install ZECK on a trusted desktop</h2>
           <p>
-            Download from the <a href="https://github.com/sovright/zec-wallet-rescue/releases">official GitHub releases page</a>. Verify checksums or
+            Use the official project release page for desktop builds. Verify checksums or
             signatures when they are published with a release.
           </p>
         </div>
@@ -247,7 +248,7 @@
       <section class="section faq-section">
         <div class="section-heading">
           <p class="eyebrow">FAQ</p>
-          <h2>Frequently asked questions</h2>
+          <h2>Sharp edges, named clearly</h2>
         </div>
         <div class="faq-list">
           <details>
@@ -258,9 +259,10 @@
             </p>
           </details>
           <details>
-            <summary>What if my scan is interrupted?</summary>
+            <summary>Can I resume a recovery scan?</summary>
             <p>
-              ZECK saves your progress locally. If the scan stops for any reason — crash, power loss, or manual cancel — you can reopen the app and resume from where it left off.
+              Yes. ZECK stores a local recovery workspace so repeated scans can reuse synced state
+              and recovery metadata.
             </p>
           </details>
           <details>
