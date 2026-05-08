@@ -1,5 +1,5 @@
 use bip0039::{English, Mnemonic};
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::{ExposeSecret, Secret, SecretString};
 use zcash_address::unified::{Address as UnifiedAddress, Encoding, Receiver};
 use zcash_keys::{encoding::AddressCodec, keys::sapling};
 use zcash_protocol::consensus::{MAIN_NETWORK, TEST_NETWORK};
@@ -26,7 +26,8 @@ pub fn derive_accounts(
     account_count: u32,
 ) -> ZeckResult<Vec<DerivedAccount>> {
     let seed = mnemonic_seed(seed_phrase)?;
-    let transparent_account = legacy_transparent_account_key_from_seed(network, &seed)?;
+    let transparent_account =
+        legacy_transparent_account_key_from_seed(network, seed.expose_secret())?;
 
     let external_ivk = transparent_account
         .to_account_pubkey()
@@ -38,14 +39,22 @@ pub fn derive_accounts(
         .map_err(|err| ZeckError::Internal(err.to_string()))?;
 
     (0..account_count)
-        .map(|index| derive_account(index, network, &seed, &external_ivk, &internal_ivk))
+        .map(|index| {
+            derive_account(
+                index,
+                network,
+                seed.expose_secret(),
+                &external_ivk,
+                &internal_ivk,
+            )
+        })
         .collect()
 }
 
-pub(crate) fn mnemonic_seed(seed_phrase: &SecretString) -> ZeckResult<[u8; 64]> {
+pub(crate) fn mnemonic_seed(seed_phrase: &SecretString) -> ZeckResult<Secret<[u8; 64]>> {
     let mnemonic = Mnemonic::<English>::from_phrase(seed_phrase.expose_secret())
         .map_err(|err| ZeckError::InvalidMnemonic(err.to_string()))?;
-    Ok(mnemonic.to_seed(""))
+    Ok(Secret::new(mnemonic.to_seed("")))
 }
 
 pub(crate) fn legacy_transparent_account_key(
@@ -53,7 +62,7 @@ pub(crate) fn legacy_transparent_account_key(
     network: ZeckNetwork,
 ) -> ZeckResult<AccountPrivKey> {
     let seed = mnemonic_seed(seed_phrase)?;
-    legacy_transparent_account_key_from_seed(network, &seed)
+    legacy_transparent_account_key_from_seed(network, seed.expose_secret())
 }
 
 pub(crate) fn legacy_transparent_pubkey(

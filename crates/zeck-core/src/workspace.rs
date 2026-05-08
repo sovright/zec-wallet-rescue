@@ -4,7 +4,7 @@ use std::{
 };
 
 use rand_core::OsRng;
-use secrecy::{SecretString, SecretVec};
+use secrecy::{ExposeSecret, SecretString, SecretVec};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zcash_client_backend::data_api::{wallet::ConfirmationsPolicy, WalletRead};
@@ -60,7 +60,7 @@ pub struct RecoveryWorkspace {
 impl RecoveryWorkspace {
     pub fn from_runtime(config: &RuntimeScanConfig) -> ZeckResult<Self> {
         let seed = mnemonic_seed(&config.seed_phrase)?;
-        let fingerprint = SeedFingerprint::from_seed(&seed).ok_or_else(|| {
+        let fingerprint = SeedFingerprint::from_seed(seed.expose_secret()).ok_or_else(|| {
             ZeckError::Internal("mnemonic seed length is out of the ZIP 32 range".to_owned())
         })?;
 
@@ -553,7 +553,7 @@ pub fn verify_seed_for_workspace(
     let scope = scope_segment(&keying);
 
     let seed = mnemonic_seed(seed_phrase)?;
-    let fingerprint = SeedFingerprint::from_seed(&seed).ok_or_else(|| {
+    let fingerprint = SeedFingerprint::from_seed(seed.expose_secret()).ok_or_else(|| {
         ZeckError::Internal("mnemonic seed length is out of the ZIP 32 range".to_owned())
     })?;
     let expected_id =
@@ -676,7 +676,7 @@ pub fn parse_workspace_keying(workspace_path: &Path) -> ZeckResult<WorkspaceKeyi
 mod tests {
     use std::path::PathBuf;
 
-    use secrecy::SecretString;
+    use secrecy::{ExposeSecret, SecretString};
     use zip32::fingerprint::SeedFingerprint;
 
     use super::*;
@@ -862,7 +862,7 @@ mod tests {
         let path_str = ws.root().display().to_string();
 
         let seed = mnemonic_seed(&cfg.seed_phrase).expect("seed should derive");
-        let fingerprint_str = SeedFingerprint::from_seed(&seed)
+        let fingerprint_str = SeedFingerprint::from_seed(seed.expose_secret())
             .expect("seed fingerprint should derive")
             .to_string();
 
@@ -1079,7 +1079,7 @@ mod tests {
     fn workspace_id_is_deterministic_and_distinct_across_inputs() {
         let cfg = config(SEED, 3_280_000, None, 20, ZeckNetwork::Mainnet);
         let seed = mnemonic_seed(&cfg.seed_phrase).unwrap();
-        let fp = SeedFingerprint::from_seed(&seed).unwrap();
+        let fp = SeedFingerprint::from_seed(seed.expose_secret()).unwrap();
         let a = derive_workspace_id(ZeckNetwork::Mainnet, &fp, 3_280_000, "auto-gap-20");
         let b = derive_workspace_id(ZeckNetwork::Mainnet, &fp, 3_280_000, "auto-gap-20");
         assert_eq!(a, b);

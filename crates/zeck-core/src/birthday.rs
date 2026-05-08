@@ -337,7 +337,7 @@ where
     let transparent_account = legacy_transparent_account_key(seed_phrase, network)?;
     let probe_keys = ShieldedProbeKeys {
         seed_phrase,
-        seed: &seed,
+        seed: seed.expose_secret(),
         transparent_account: &transparent_account,
         sapling_floor,
     };

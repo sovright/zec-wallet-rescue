@@ -1,6 +1,6 @@
 use std::{collections::HashMap, convert::Infallible, sync::Arc, time::Instant};
 
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use tokio::{
     sync::{Mutex, RwLock},
     task::JoinHandle,
@@ -517,7 +517,7 @@ async fn execute_sweep_for_session(
                     tracked_account.derived.index
                 ))
             })?;
-        let usk = UnifiedSpendingKey::from_seed(&network, &seed, zip32_index).map_err(|err| {
+        let usk = UnifiedSpendingKey::from_seed(&network, seed.expose_secret(), zip32_index).map_err(|err| {
             ZeckError::Wallet(format!(
                 "deriving account {}: {err}",
                 tracked_account.derived.index

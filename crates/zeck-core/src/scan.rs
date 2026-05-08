@@ -8,7 +8,7 @@ use prost::Message;
 use rand_core::OsRng;
 use rusqlite::{params, Connection, OptionalExtension};
 use rustls::crypto::ring::default_provider;
-use secrecy::SecretVec;
+use secrecy::{ExposeSecret, SecretVec};
 use tokio::sync::Mutex;
 use tonic::{
     body::Body as TonicBody,
@@ -495,7 +495,7 @@ async fn run_recovery_scan_inner(
 
     let seed = mnemonic_seed(&config.seed_phrase)?;
     let workspace = RecoveryWorkspace::from_runtime(&config)?;
-    workspace.initialize(config.network, &seed)?;
+    workspace.initialize(config.network, seed.expose_secret())?;
     let transparent_account = legacy_transparent_account_key(&config.seed_phrase, config.network)?;
 
     // Sidecar v1: written once we have a workspace on disk and before any
@@ -640,7 +640,7 @@ async fn run_recovery_scan_inner(
         import_accounts(
             &workspace,
             config.network,
-            &seed,
+            seed.expose_secret(),
             &account_birthday,
             &transparent_account,
             &derived_accounts[usize::try_from(imported_accounts)
@@ -2009,7 +2009,7 @@ mod tests {
     mod cancel_resume {
         use std::sync::Arc;
 
-        use secrecy::SecretString;
+        use secrecy::{ExposeSecret, SecretString};
         use tokio::sync::Mutex;
         use zcash_client_backend::data_api::{chain::ChainState, AccountBirthday, WalletRead};
         use zcash_client_sqlite::{util::SystemClock, WalletDb};
@@ -2057,7 +2057,9 @@ mod tests {
             let config = test_config(tempdir.path().to_owned());
             let workspace = RecoveryWorkspace::from_runtime(&config).expect("workspace");
             let seed = mnemonic_seed(&config.seed_phrase).expect("seed");
-            workspace.initialize(config.network, &seed).expect("workspace.initialize");
+            workspace
+                .initialize(config.network, seed.expose_secret())
+                .expect("workspace.initialize");
             let transparent_account =
                 legacy_transparent_account_key(&config.seed_phrase, config.network)
                     .expect("transparent account key");
@@ -2068,7 +2070,7 @@ mod tests {
             import_accounts(
                 &workspace,
                 config.network,
-                &seed,
+                seed.expose_secret(),
                 &test_birthday(),
                 &transparent_account,
                 &accounts,
@@ -2102,11 +2104,13 @@ mod tests {
 
             // ── First scan pass: import 2 accounts then simulate abort ──────────
             let workspace1 = RecoveryWorkspace::from_runtime(&config).expect("workspace");
-            workspace1.initialize(config.network, &seed).expect("workspace.initialize");
+            workspace1
+                .initialize(config.network, seed.expose_secret())
+                .expect("workspace.initialize");
             import_accounts(
                 &workspace1,
                 config.network,
-                &seed,
+                seed.expose_secret(),
                 &test_birthday(),
                 &transparent_account,
                 &accounts,
@@ -2126,13 +2130,15 @@ mod tests {
                 root1,
                 "resume must reuse the same workspace directory"
             );
-            workspace2.initialize(config.network, &seed).expect("workspace2.initialize");
+            workspace2
+                .initialize(config.network, seed.expose_secret())
+                .expect("workspace2.initialize");
 
             // Re-importing the same accounts must be idempotent.
             import_accounts(
                 &workspace2,
                 config.network,
-                &seed,
+                seed.expose_secret(),
                 &test_birthday(),
                 &transparent_account,
                 &accounts,
@@ -2168,7 +2174,7 @@ mod tests {
     /// the lifetime of a long historical scan.
     mod cache_pruning {
         use rusqlite::{params, Connection};
-        use secrecy::SecretString;
+        use secrecy::{ExposeSecret, SecretString};
 
         use crate::{
             derivation::mnemonic_seed,
@@ -2207,7 +2213,7 @@ mod tests {
             let workspace = RecoveryWorkspace::from_runtime(&config).expect("workspace");
             let seed = mnemonic_seed(&config.seed_phrase).expect("seed");
             workspace
-                .initialize(config.network, &seed)
+                .initialize(config.network, seed.expose_secret())
                 .expect("initialize workspace");
 
             assert_eq!(
@@ -2224,7 +2230,7 @@ mod tests {
             let workspace = RecoveryWorkspace::from_runtime(&config).expect("workspace");
             let seed = mnemonic_seed(&config.seed_phrase).expect("seed");
             workspace
-                .initialize(config.network, &seed)
+                .initialize(config.network, seed.expose_secret())
                 .expect("initialize workspace");
 
             let cache_path = workspace.cache_db_path();
