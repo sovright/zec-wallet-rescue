@@ -1996,27 +1996,44 @@ mod tests {
 
     /// Cancel-then-resume workspace persistence tests.
     ///
-    /// These tests exercise the invariant that:
+    /// These tests exercise the invariants that:
     ///   1. `import_accounts` leaves a persistent SQLite wallet DB on disk
     ///      (matching what happens when a scan task is `abort()`-ed mid-flight).
     ///   2. A second scan started with the same `RuntimeScanConfig` resolves to
     ///      the same workspace directory and does not duplicate already-imported
     ///      accounts.
+    ///   3. `scan_cached_blocks` advances `fully_scanned_height` in the wallet DB,
+    ///      that the cursor survives a workspace handle drop + reopen, and that
+    ///      `suggest_scan_ranges` on the reopened wallet starts strictly above the
+    ///      preserved cursor — i.e. a resume scan skips already-scanned blocks
+    ///      instead of restarting from the birthday.
     ///
-    /// A mock lightwalletd gRPC server is not required because these properties
-    /// live entirely in the workspace-keying and SQLite layers; they do not
-    /// depend on `run_wallet_sync_with_retry` advancing `fully_scanned_height`.
+    /// (3) covers the end-to-end resume contract directly at the
+    /// `zcash_client_backend::data_api::chain::scan_cached_blocks` layer rather
+    /// than going through `run_wallet_sync_with_retry`, which would require a
+    /// mock tonic `CompactTxStreamer` gRPC server. The cursor advancement and
+    /// persistence behaviour we want to pin is the same in either case — it
+    /// lives in the wallet DB, not the gRPC client — so testing one layer down
+    /// gets us the same coverage with no new infrastructure.
     mod cancel_resume {
         use std::sync::Arc;
 
+        use prost::Message as _;
         use secrecy::{ExposeSecret, SecretString};
         use tokio::sync::Mutex;
-        use zcash_client_backend::data_api::{chain::ChainState, AccountBirthday, WalletRead};
+        use zcash_client_backend::{
+            data_api::{
+                chain::{scan_cached_blocks, ChainState},
+                wallet::ConfirmationsPolicy,
+                AccountBirthday, WalletCommitmentTrees, WalletRead, WalletWrite,
+            },
+            proto::compact_formats::{ChainMetadata, CompactBlock},
+        };
         use zcash_client_sqlite::{util::SystemClock, WalletDb};
         use zcash_primitives::block::BlockHash;
         use zcash_protocol::consensus::BlockHeight;
 
-        use super::super::{import_accounts, ScanTaskState};
+        use super::super::{import_accounts, ScanTaskState, SqliteBlockCache};
         use crate::{
             derivation::{derive_accounts, legacy_transparent_account_key, mnemonic_seed},
             models::{RuntimeScanConfig, ScanHandle, ZeckNetwork},
@@ -2164,6 +2181,202 @@ mod tests {
                 2,
                 "re-importing the same 2 accounts must yield exactly 2 in the DB (not 4)"
             );
+        }
+
+        /// Builds an empty (no transactions) `CompactBlock` at the given height
+        /// with the given prev-block hash. Tree sizes are unchanged from the
+        /// previous block — appropriate for a block with no shielded outputs.
+        fn empty_compact_block(
+            height: u64,
+            prev_hash: [u8; 32],
+            sapling_tree_size: u32,
+            orchard_tree_size: u32,
+        ) -> CompactBlock {
+            // Hash needs to be unique within a chain but is not validated for
+            // PoW or merkle-root correctness by the scanner. A simple
+            // height-derived hash is enough to keep the chain linkage
+            // unambiguous for tests with a single-block chain.
+            let mut hash = [0u8; 32];
+            hash[..8].copy_from_slice(&height.to_le_bytes());
+            CompactBlock {
+                proto_version: 1,
+                height,
+                hash: hash.to_vec(),
+                prev_hash: prev_hash.to_vec(),
+                time: 0,
+                header: vec![],
+                vtx: vec![],
+                chain_metadata: Some(ChainMetadata {
+                    sapling_commitment_tree_size: sapling_tree_size,
+                    orchard_commitment_tree_size: orchard_tree_size,
+                }),
+            }
+        }
+
+        /// End-to-end resume contract test:
+        ///   1. Import accounts into a fresh workspace.
+        ///   2. Prime the wallet's view of subtree roots + chain tip, then call
+        ///      `scan_cached_blocks` on a single empty block at birthday+1.
+        ///   3. Verify `fully_scanned_height` advanced to the scanned height.
+        ///   4. Drop all in-memory state (simulated cancel/abort).
+        ///   5. Re-open the workspace with the same config and re-open the DB.
+        ///   6. Verify the persisted `fully_scanned_height` matches step 3.
+        ///   7. Bump the chain tip and check `suggest_scan_ranges` only returns
+        ///      ranges starting strictly above the previous cursor — i.e. a
+        ///      resume scan would skip the already-scanned block instead of
+        ///      restarting from the birthday.
+        #[tokio::test]
+        async fn scan_advances_cursor_and_resume_skips_already_scanned_blocks() {
+            let tempdir = tempfile::tempdir().expect("temp dir");
+            let config = test_config(tempdir.path().to_owned());
+            let seed = mnemonic_seed(&config.seed_phrase).expect("seed");
+            let transparent_account =
+                legacy_transparent_account_key(&config.seed_phrase, config.network)
+                    .expect("transparent account key");
+            let accounts =
+                derive_accounts(&config.seed_phrase, config.network, 1).expect("accounts");
+            let state = Arc::new(Mutex::new(ScanTaskState::new(ScanHandle::new())));
+
+            let network = consensus_network(config.network);
+            // Birthday is 419_200 (Sapling activation). The block prior is
+            // 419_199 with empty Sapling/Orchard frontiers.
+            let birthday_height: u32 = 419_200;
+            let scan_height = BlockHeight::from_u32(birthday_height);
+            let chain_state_before_scan =
+                ChainState::empty(BlockHeight::from_u32(birthday_height - 1), BlockHash([0u8; 32]));
+
+            // ─── Initial scan: import + scan one empty block ─────────────────
+            let workspace1 = RecoveryWorkspace::from_runtime(&config).expect("workspace");
+            workspace1
+                .initialize(config.network, &seed)
+                .expect("workspace.initialize");
+            import_accounts(
+                &workspace1,
+                config.network,
+                &seed,
+                &test_birthday(),
+                &transparent_account,
+                &accounts,
+                &state,
+            )
+            .await
+            .expect("import_accounts should succeed");
+
+            let cache_db_path = workspace1.cache_db_path().to_owned();
+            let wallet_db_path = workspace1.wallet_db_path().to_owned();
+
+            {
+                let cache_db = SqliteBlockCache::for_path(&cache_db_path).expect("cache_db");
+                let mut wallet_db = WalletDb::for_path(
+                    &wallet_db_path,
+                    network,
+                    SystemClock,
+                    rand_core::OsRng,
+                )
+                .expect("wallet_db");
+
+                // Prime the wallet's commitment-tree state and chain tip — the
+                // same calls that `zcash_client_backend::sync` issues before
+                // its first `scan_cached_blocks` invocation.
+                wallet_db
+                    .put_sapling_subtree_roots(0, &[])
+                    .expect("put_sapling_subtree_roots");
+                wallet_db
+                    .put_orchard_subtree_roots(0, &[])
+                    .expect("put_orchard_subtree_roots");
+                wallet_db
+                    .update_chain_tip(scan_height)
+                    .expect("update_chain_tip");
+
+                // Insert one empty block at the birthday height.
+                let block = empty_compact_block(scan_height.into(), [0u8; 32], 0, 0);
+                // Sanity-check the block round-trips via prost — guards against
+                // accidentally constructing a block that the cache can't decode.
+                let bytes = block.encode_to_vec();
+                CompactBlock::decode(&bytes[..]).expect("compact block round-trip");
+                <SqliteBlockCache as super::super::BlockCache>::insert(&cache_db, vec![block])
+                    .await
+                    .expect("cache insert");
+
+                scan_cached_blocks(
+                    &network,
+                    &cache_db,
+                    &mut wallet_db,
+                    scan_height,
+                    &chain_state_before_scan,
+                    1,
+                )
+                .expect("scan_cached_blocks");
+
+                let summary = wallet_db
+                    .get_wallet_summary(ConfirmationsPolicy::MIN)
+                    .expect("get_wallet_summary")
+                    .expect("wallet summary present after scan");
+                assert_eq!(
+                    summary.fully_scanned_height(),
+                    scan_height,
+                    "fully_scanned_height must advance to the scanned block"
+                );
+            }
+            // Simulated cancel: every in-memory handle dropped.
+            drop(workspace1);
+
+            // ─── Resume: same config must reuse the on-disk wallet DB ────────
+            let workspace2 = RecoveryWorkspace::from_runtime(&config).expect("workspace (resume)");
+            workspace2
+                .initialize(config.network, &seed)
+                .expect("workspace2.initialize");
+            assert_eq!(
+                workspace2.wallet_db_path(),
+                wallet_db_path,
+                "resume must resolve to the same wallet DB path"
+            );
+
+            let mut wallet_db = WalletDb::for_path(
+                workspace2.wallet_db_path(),
+                network,
+                SystemClock,
+                rand_core::OsRng,
+            )
+            .expect("wallet_db reopen");
+
+            let summary = wallet_db
+                .get_wallet_summary(ConfirmationsPolicy::MIN)
+                .expect("get_wallet_summary on reopen")
+                .expect("wallet summary present after reopen");
+            assert_eq!(
+                summary.fully_scanned_height(),
+                scan_height,
+                "fully_scanned_height must be preserved across cancel/resume"
+            );
+
+            // Advance the wallet's view of the chain tip to mimic discovering
+            // new blocks during the resume. The next suggested scan range must
+            // start strictly above the preserved cursor, proving a resume
+            // would not re-scan the already-scanned block.
+            let resumed_tip = BlockHeight::from_u32(birthday_height + 100);
+            wallet_db
+                .update_chain_tip(resumed_tip)
+                .expect("update_chain_tip on resume");
+
+            let ranges = wallet_db
+                .suggest_scan_ranges()
+                .expect("suggest_scan_ranges on resume");
+            assert!(
+                !ranges.is_empty(),
+                "with a chain tip above the cursor, resume should suggest at least one scan range"
+            );
+            for range in &ranges {
+                let start = u32::from(range.block_range().start);
+                assert!(
+                    start > u32::from(scan_height),
+                    "resume scan range must start above the preserved fully_scanned_height \
+                     ({}); got {} for range {:?}",
+                    u32::from(scan_height),
+                    start,
+                    range,
+                );
+            }
         }
     }
 
