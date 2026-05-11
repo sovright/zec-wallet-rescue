@@ -36,7 +36,7 @@ jobs:
           node-version: 20
 
       - name: Install Tauri CLI
-        run: npm install -g @tauri-apps/cli@latest
+        run: npm install -g @tauri-apps/cli@2.11.1
 
       - name: Build Tauri app
         working-directory: gui
@@ -64,7 +64,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.87"
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -76,7 +76,7 @@ jobs:
           node-version: 20
 
       - name: Install Tauri CLI
-        run: npm install -g @tauri-apps/cli@latest
+        run: npm install -g @tauri-apps/cli@2.11.1
 
       - name: Build Tauri app
         working-directory: gui
@@ -124,7 +124,7 @@ jobs:
           node-version: 20
 
       - name: Install Tauri CLI
-        run: npm install -g @tauri-apps/cli@latest
+        run: npm install -g @tauri-apps/cli@2.11.1
 
       - name: Build Tauri app
         working-directory: gui
@@ -163,8 +163,6 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/**/*
-            artifacts/SHA256SUMS
+          files: artifacts/**/*
           generate_release_notes: true
           draft: true
