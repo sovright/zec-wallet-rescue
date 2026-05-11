@@ -6,22 +6,8 @@ on:
       - "v*"
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: ubuntu-22.04
-            args: ""
-          - platform: macos-latest
-            args: "--target aarch64-apple-darwin"
-          - platform: macos-latest
-            args: "--target x86_64-apple-darwin"
-          - platform: windows-latest
-            args: ""
-
-    runs-on: ${{ matrix.platform }}
-
+  build-linux:
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -29,14 +15,12 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.87"
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
 
       - name: Install Linux system dependencies
-        if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -52,7 +36,47 @@ jobs:
           node-version: 20
 
       - name: Install Tauri CLI
-        run: npm install -g @tauri-apps/cli@latest
+        run: npm install -g @tauri-apps/cli@2.11.1
+
+      - name: Build Tauri app
+        working-directory: gui
+        run: tauri build
+
+      - name: Upload artifacts (Linux)
+        uses: actions/upload-artifact@v4
+        with:
+          name: zeck-linux
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
+
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    runs-on: macos-latest
+    environment: release-sign
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.87
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.87"
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install Node (for Tauri CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2.11.1
 
       - name: Build Tauri app
         working-directory: gui
@@ -63,33 +87,50 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: tauri build ${{ matrix.args }}
-
-      - name: Upload artifacts (Linux)
-        if: matrix.platform == 'ubuntu-22.04'
-        uses: actions/upload-artifact@v4
-        with:
-          name: zeck-linux
-          path: |
-            target/release/bundle/deb/*.deb
-            target/release/bundle/appimage/*.AppImage
+        run: tauri build --target ${{ matrix.target }}
 
       - name: Upload artifacts (macOS ARM)
-        if: matrix.platform == 'macos-latest' && contains(matrix.args, 'aarch64')
+        if: matrix.target == 'aarch64-apple-darwin'
         uses: actions/upload-artifact@v4
         with:
           name: zeck-macos-arm
           path: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
 
       - name: Upload artifacts (macOS Intel)
-        if: matrix.platform == 'macos-latest' && contains(matrix.args, 'x86_64')
+        if: matrix.target == 'x86_64-apple-darwin'
         uses: actions/upload-artifact@v4
         with:
           name: zeck-macos-intel
           path: target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
 
+  build-windows:
+    runs-on: windows-latest
+    environment: release-sign
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.87
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.87"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install Node (for Tauri CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2.11.1
+
+      - name: Build Tauri app
+        working-directory: gui
+        run: tauri build
+
       - name: Upload artifacts (Windows)
-        if: matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
           name: zeck-windows
@@ -98,8 +139,9 @@ jobs:
             target/release/bundle/nsis/*.exe
 
   release:
-    needs: build
+    needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
+    environment: release-publish
     permissions:
       contents: write
     steps:
@@ -109,6 +151,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Generate SHA256SUMS manifest
+        working-directory: artifacts
+        run: |
+          find . -type f ! -name SHA256SUMS -print0 \
+            | xargs -0 sha256sum \
+            | sort \
+            | tee SHA256SUMS
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
