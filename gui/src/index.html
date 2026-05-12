@@ -58,6 +58,47 @@
               <p>If the scan is interrupted, ZECK saves your progress so you don't have to start over.</p>
             </article>
           </div>
+
+          <section class="surface-infographic" aria-labelledby="surface-title">
+            <div class="surface-heading">
+              <p class="eyebrow">Security Posture</p>
+              <h3 id="surface-title">Small JavaScript Surface by Design</h3>
+              <p>
+                ZECK keeps the browser side deliberately small: one local wizard, one JavaScript
+                file, and one runtime bridge into the Rust recovery backend.
+              </p>
+            </div>
+            <div class="surface-metrics" aria-label="ZECK JavaScript surface summary">
+              <div class="surface-metric">
+                <strong>1</strong>
+                <span>runtime npm dependency</span>
+                <p>Only <code>@tauri-apps/api</code> ships for the Tauri browser-to-Rust bridge.</p>
+              </div>
+              <div class="surface-metric">
+                <strong>0</strong>
+                <span>frontend framework packages</span>
+                <p>No React, Vue, Svelte, router, state library, UI kit, analytics, or widgets.</p>
+              </div>
+              <div class="surface-metric">
+                <strong>1</strong>
+                <span>rescue-only workflow</span>
+                <p>Validate, scan, review, and sweep. The GUI is not an everyday wallet surface.</p>
+              </div>
+            </div>
+            <div class="surface-comparison" aria-label="ZODL and ZECK surface comparison">
+              <div>
+                <span>ZODL</span>
+                <strong>Everyday wallet surface</strong>
+                <p>Mobile wallet UX, long-lived account activity, payments, swaps, and CrossPay.</p>
+              </div>
+              <div>
+                <span>ZECK</span>
+                <strong>Rescue-only surface</strong>
+                <p>A local desktop wizard with explicit Tauri commands into audited Rust code.</p>
+              </div>
+            </div>
+          </section>
+
           <div class="actions">
             <button class="primary" data-next="seed">I have my 24-word seed phrase</button>
             <a class="secondary-link" href="https://github.com/zingolabs/zexcavator" target="_blank"

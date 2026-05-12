@@ -251,6 +251,99 @@ h3 {
   padding: 18px;
 }
 
+.surface-infographic {
+  display: grid;
+  gap: 20px;
+  margin: 8px 0 28px;
+  padding: 26px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.surface-heading {
+  max-width: 760px;
+}
+
+.surface-heading h3 {
+  margin-bottom: 8px;
+  font-size: 1.45rem;
+}
+
+.surface-heading p:last-child {
+  margin-bottom: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.surface-metrics,
+.surface-comparison {
+  display: grid;
+  gap: 14px;
+}
+
+.surface-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.surface-metric {
+  min-width: 0;
+  padding-left: 16px;
+  border-left: 3px solid rgba(31, 107, 86, 0.32);
+}
+
+.surface-metric strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--accent);
+  font-family: "IBM Plex Sans", "Avenir Next", "Helvetica Neue", sans-serif;
+  font-size: 2.25rem;
+  line-height: 1;
+}
+
+.surface-metric span,
+.surface-comparison span {
+  display: block;
+  color: var(--ink);
+  font-family: "IBM Plex Sans", "Avenir Next", "Helvetica Neue", sans-serif;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.surface-metric p,
+.surface-comparison p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.surface-metric code {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.surface-comparison {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding-top: 18px;
+  border-top: 1px dashed rgba(24, 37, 31, 0.18);
+}
+
+.surface-comparison div {
+  padding: 16px 0 0;
+}
+
+.surface-comparison div:last-child {
+  border-left: 1px solid var(--line);
+  padding-left: 18px;
+}
+
+.surface-comparison strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 1.05rem;
+}
+
 .field {
   display: grid;
   gap: 8px;
@@ -494,7 +587,15 @@ pre {
   }
 
   .card-grid,
-  .form-grid {
+  .form-grid,
+  .surface-metrics,
+  .surface-comparison {
     grid-template-columns: 1fr;
+  }
+
+  .surface-comparison div:last-child {
+    border-left: none;
+    border-top: 1px solid var(--line);
+    padding-left: 0;
   }
 }
