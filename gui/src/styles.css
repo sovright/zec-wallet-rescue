@@ -189,8 +189,8 @@ h1 {
 
 .sidebar-brand img {
   flex: 0 0 auto;
-  width: 54px;
-  height: 54px;
+  width: 72px;
+  height: 72px;
 }
 
 .sidebar-brand h1 {
@@ -276,6 +276,23 @@ h3 {
 .form-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   margin: 28px 0 12px;
+}
+
+.form-section-heading {
+  margin: 8px 0 0;
+  padding: 8px 0 6px;
+  font-family: "Avenir Next", "Helvetica Neue", "IBM Plex Sans", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border-top: 1px solid var(--line);
+}
+
+.form-section-heading:first-child {
+  border-top: none;
+  margin-top: 0;
 }
 
 .info-card,

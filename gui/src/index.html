@@ -13,7 +13,7 @@
           <div>
             <p class="eyebrow">ZecWallet Lite Recovery</p>
             <div class="sidebar-brand">
-              <img src="./zeck-icon.svg" alt="" width="54" height="54" />
+              <img src="./zeck-icon.svg" alt="" width="72" height="72" />
               <h1>ZECK</h1>
             </div>
             <p class="sidebar-copy">
@@ -210,6 +210,9 @@
           <p class="eyebrow">Step 3</p>
           <h2>Configure the recovery session</h2>
           <div class="form-grid">
+
+            <p class="form-section-heading span-two">Scan identity</p>
+
             <label class="field span-two">
               <span>Label for this scan</span>
               <input id="scan-label" type="text" maxlength="120" placeholder="" />
@@ -223,46 +226,55 @@
               </select>
               <small>Use Mainnet unless you were testing with play money (testnet).</small>
             </label>
-            <label class="field">
-              <span>Wallet birthday</span>
+
+            <p class="form-section-heading span-two">Wallet birthday</p>
+
+            <label class="field span-two">
+              <span>Birthday block height</span>
               <input id="birthday-height" type="number" min="0" value="419200" />
-              <small>The block number when your wallet was created. Not sure? Use the date picker below to estimate it automatically.</small>
+              <small>The block number when your wallet was created. The scan begins here — an earlier birthday means a longer scan but won't miss funds.</small>
               <small id="birthday-scan-estimate" style="font-weight:600"></small>
             </label>
-            <label class="field">
-              <span>Approximate wallet creation date</span>
+            <label class="field span-two">
+              <span>Don't know your birthday? Estimate it from a date</span>
               <input id="birthday-date" type="date" />
               <div class="inline-actions">
                 <button class="ghost" id="birthday-estimate">Estimate from this date</button>
-                <button class="ghost" id="birthday-autodetect">Auto-detect (probes node)</button>
+                <button class="ghost" id="birthday-autodetect">Auto-detect from blockchain</button>
               </div>
               <small id="birthday-probe-status" class="status-line"></small>
-              <small>Pick roughly when you first created your ZecWallet Lite — ZECK will fill in the block number for you. Or use <strong>Auto-detect</strong> to probe the blockchain (requires your seed phrase from step 2).</small>
+              <small>Pick roughly when you first created your ZecWallet Lite — ZECK will fill in the block height for you. <strong>Auto-detect</strong> probes the blockchain using your seed phrase (requires a server connection).</small>
             </label>
+
+            <p class="form-section-heading span-two">Accounts to scan</p>
+
             <label class="field">
-              <span>Number of accounts to scan</span>
+              <span>Starting number of accounts</span>
               <input id="accounts-range" type="range" min="1" max="500" value="20" />
               <strong id="accounts-range-value">20</strong>
-              <small>Most users only ever had 1 account. Leave at 20 to be safe.</small>
+              <small>Most users only ever had 1 account. Leave at 20 to be safe. With gap scanning enabled, ZECK may check additional accounts beyond this number.</small>
             </label>
             <label class="checkline field">
               <input id="auto-gap-limit" type="checkbox" checked />
-              <span>Scan until no more funds are found <em>(recommended)</em></span>
+              <span>Keep scanning until no more funds are found <em>(recommended)</em></span>
             </label>
             <div id="gap-limit-row" class="field" style="display:none">
               <label class="field">
-                <span>Advanced: how many empty accounts before stopping</span>
+                <span>Stop after this many consecutive empty accounts</span>
                 <input id="gap-limit" type="number" min="1" max="50" value="20" />
                 <small>Only change this if you know you had many unused accounts. Default of 20 is fine for almost everyone.</small>
               </label>
             </div>
+
+            <p class="form-section-heading span-two">Server</p>
+
             <label class="field">
               <span>Server preset</span>
               <select id="server-preset">
                 <option value="recommended" selected>Recommended for selected network</option>
                 <option value="mainnet">Mainnet public server</option>
                 <option value="testnet">Testnet public server</option>
-                <option value="custom">Keep custom value</option>
+                <option value="custom">Use current server</option>
               </select>
               <small>Leave on "Recommended" unless you have your own server.</small>
             </label>
@@ -280,6 +292,9 @@
               <input id="data-dir" type="text" placeholder="platform default populated on load" />
               <small>ZECK saves its progress here so a scan can be resumed if interrupted. Change this to a permanent folder if you want to keep the data after a reboot.</small>
             </label>
+
+            <p class="form-section-heading span-two">Destination &amp; sweep options</p>
+
             <label class="field span-two">
               <span>Destination address — where to send your recovered ZEC</span>
               <input id="destination-input" type="text" placeholder="u1..." />
@@ -416,7 +431,7 @@
           </label>
           <p id="sweep-execute-status" class="status-line"></p>
           <div class="actions split">
-            <button class="secondary" data-prev="scan">Back</button>
+            <button class="secondary" id="sweep-back">Back</button>
             <button class="primary" id="execute-sweep" disabled>Sweep Funds</button>
           </div>
         </section>
@@ -434,6 +449,7 @@
           </label>
           <div class="inline-actions">
             <button class="ghost" id="save-report">Save recovery report</button>
+            <button class="ghost" id="copy-report-path" style="display:none">Copy path</button>
             <p id="save-report-status" class="status-line"></p>
           </div>
           <div class="actions">
