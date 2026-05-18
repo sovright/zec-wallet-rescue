@@ -35,6 +35,22 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace -- -D warnings
 
+  check-windows:
+    name: Cargo check (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.87
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.87"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo check (core + cli)
+        run: cargo check -p zeck-core -p zeck-cli
+
   test:
     name: Cargo test
     runs-on: ubuntu-latest

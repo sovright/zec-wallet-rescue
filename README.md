@@ -48,6 +48,14 @@ ZECK now includes the major recovery phases end to end:
 └── ZECK_WALLET_LIGHT_RECOVERY_SPEC.md
 ```
 
+## Installing on Windows
+
+**The prebuilt installer is the supported Windows path.** Download the `.exe` from the [Releases page](https://github.com/sovright/zec-wallet-rescue/releases), verify the SHA256 checksum published alongside it, and run the installer. No additional dependencies are required.
+
+Building from source is an advanced/auditor path and is supported on **Windows x64** only. Windows on ARM (aarch64-pc-windows-msvc) is not currently a supported build target; ARM64 Windows users should use the prebuilt binary.
+
+Security note: for a wallet-recovery tool, the ability to audit and build from source is a trust property. If you are relying on the prebuilt binary, verify the published checksum before running it.
+
 ## Development
 
 ```bash
