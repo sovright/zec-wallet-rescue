@@ -33,14 +33,14 @@ jobs:
       - name: Install Node (for Tauri CLI)
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli@2.11.1
 
       - name: Build Tauri app
         working-directory: gui
-        run: tauri build --bundles deb,appimage
+        run: tauri build --bundles deb --bundles appimage
 
       - name: Upload artifacts (Linux)
         uses: actions/upload-artifact@v4
@@ -73,7 +73,7 @@ jobs:
       - name: Install Node (for Tauri CLI)
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli@2.11.1
@@ -121,14 +121,14 @@ jobs:
       - name: Install Node (for Tauri CLI)
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli@2.11.1
 
       - name: Build Tauri app
         working-directory: gui
-        run: tauri build --bundles msi,nsis
+        run: tauri build --bundles msi --bundles nsis
 
       - name: Upload artifacts (Windows)
         uses: actions/upload-artifact@v4
