@@ -1234,7 +1234,6 @@ function buildSessionRow(row, onDismiss) {
   actions.appendChild(dismissBtn);
 
   li.appendChild(actions);
-
   return li;
 }
 

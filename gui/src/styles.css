@@ -282,7 +282,7 @@ h3 {
 }
 
 .form-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   margin: 28px 0 12px;
 }
 
