@@ -121,6 +121,17 @@
             </div>
 
             <div class="guide-section">
+              <h3>Security</h3>
+              <p>ZECK is built to keep the JavaScript surface as small as possible:</p>
+              <ul>
+                <li><strong>No npm packages run in the browser.</strong> <code>window.__TAURI__</code> is injected by the Rust host via <code>withGlobalTauri</code> — <code>main.js</code> imports nothing from node_modules.</li>
+                <li><strong>No frontend framework.</strong> No React, Vue, Svelte, router, state library, UI kit, or analytics.</li>
+                <li><strong>Rescue-only workflow.</strong> The GUI is not an everyday wallet — it does one thing (validate, scan, sweep) and exits. There is no persistent session or background process.</li>
+                <li><strong>All key operations happen in Rust.</strong> Seed derivation, scanning, and transaction building run in audited Rust code behind explicit Tauri commands. JavaScript only drives the UI.</li>
+              </ul>
+            </div>
+
+            <div class="guide-section">
               <h3>Frequently asked questions</h3>
               <ul>
                 <li><strong>Is my seed phrase safe?</strong> Yes. ZECK never transmits your seed. All key derivation happens locally. Only compact block data is downloaded from lightwalletd servers.</li>
