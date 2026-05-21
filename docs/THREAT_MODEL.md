@@ -73,9 +73,9 @@ In rough priority order:
 ## 4. Trust boundaries
 
 - **User ↔ host OS:** ZECK trusts the host. A compromised OS defeats every other mitigation.
-- **Tauri host process ↔ WebView renderer:** The renderer can only reach the host via explicit `#[tauri::command]` handlers and is constrained by the CSP in `gui/src-tauri/tauri.conf.json` (`default-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost`). No remote script, style, or `connect-src` is permitted.
+- **Tauri host process ↔ WebView renderer:** The renderer can only reach the host via explicit `#[tauri::command]` handlers and is constrained by the CSP in `gui/src-tauri/tauri.conf.json` (`default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: asset: http://asset.localhost; font-src 'self'; connect-src ipc: http://ipc.localhost`). No remote script or remote `connect-src` is permitted.
 - **ZECK ↔ lightwalletd:** Untrusted server reachable only over TLS. Default endpoints (`zec.rocks`, `na.zec.rocks` for mainnet; `lightwalletd.testnet.electriccoin.co` for testnet) are configurable per scan.
-- **ZECK ↔ local disk:** Workspace files are written to a user-chosen directory (defaulting to the platform `AppDataDir/workspace`). File permissions inherit from the OS default (umask).
+- **ZECK ↔ local disk:** Workspace directories and database files are written to a user-chosen directory (defaulting to the platform `AppDataDir/workspace`). Workspace directories are created with `0o700` and database files with `0o600` (`workspace.rs:set_private_file_permissions`). The `session.json` sidecar contains no keys — only label, network, birthday, and timestamps — and inherits the OS umask.
 - **Build pipeline ↔ release artifact:** Signing keys live in GitHub Actions environments gated to protected branches (PR #48). Windows signing is **not yet implemented** (see §8).
 
 ## 5. Threat actors
@@ -124,7 +124,7 @@ Severity: **C**ritical / **H**igh / **M**edium / **L**ow. Status: ✅ mitigated,
 | T-N1 | Passive observer learns user is scanning Zcash | L | ✅ | All lightwalletd traffic is TLS. Endpoint discoverable via SNI, which is expected for a public service. |
 | T-N2 | Active MITM substitutes lightwalletd | H | ⚠️ | Standard webpki trust roots only — **no certificate pinning** of `zec.rocks`. A user with a poisoned trust store can have their queries (and broadcasts) routed to a hostile node. Pinning the default endpoints is tracked as a follow-up. |
 | T-N3 | Hostile lightwalletd serves invalid compact blocks | M | ✅ | `zcash_client_backend::sync::run` validates witness consistency against the chain tip and rejects malformed/inconsistent blocks. |
-| T-N4 | Hostile lightwalletd correlates a user's IP with their wallet | H | ⚠️ | Inherent to the lightwalletd protocol. Mitigations: configurable endpoint (run your own), the `GetAddressUtxos` quick-probe queries up to 10 t-addrs which leaks them in plaintext (post-TLS) to the server, and the compact-block scan range leaks the wallet birthday. No Tor integration. |
+| T-N4 | Hostile lightwalletd correlates a user's IP with their wallet | H | ⚠️ | Inherent to the lightwalletd protocol. Mitigations: configurable endpoint (run your own), the `GetAddressUtxos` quick-probe queries 10 t-addrs (5 accounts × 2 addresses: external + change) which leaks them in plaintext (post-TLS) to the server, and the compact-block scan range leaks the wallet birthday. No Tor integration. |
 | T-N5 | Auto-detect probe leaks viewing-key-derived addresses | M | ⚠️ | The auto-detect flow (`crates/zeck-core/src/birthday.rs`) imports an account into a temp workspace and runs a windowed sync. This sends FVK-derived address queries to the server. Documented in the UI ("requires a server connection"), but worth surfacing more clearly. |
 | T-N6 | Sweep transaction broadcast reveals consolidation pattern | M | ⚠️ | A single sweep aggregates funds from many ZWL accounts into one destination, which on-chain analysis can link. Inherent to recovery — no good mitigation without changing the sweep model. |
 
@@ -132,7 +132,7 @@ Severity: **C**ritical / **H**igh / **M**edium / **L**ow. Status: ✅ mitigated,
 
 | ID | Threat | Severity | Status | Mitigation |
 |---|---|---|---|---|
-| T-L1 | Other local users / processes read the workspace DB | M | ⚠️ | Workspace files are written with default OS umask. On macOS/Linux that's typically `rw-r--r--` or stricter for `AppDataDir`. We do not explicitly `chmod 600`. Workspace contains FVKs/IVKs (privacy leak) and witnesses, not the seed. |
+| T-L1 | Other local users / processes read the workspace DB | M | ✅ | Workspace directories are created `0o700` and database files `0o600` at creation time (`workspace.rs:set_private_file_permissions`, implemented in PR #43). Workspace contains FVKs/IVKs (privacy leak) and witnesses, not the seed. `session.json` (label, network, birthday, timestamps — no keys) inherits the OS umask. |
 | T-L2 | Recovery report contains sensitive metadata | L | ✅ | Report is user-initiated, written to a user-chosen path. Contents are documented in the UI before save (network, birthday, accounts, mode, workspace path, txids, net amounts). |
 | T-L3 | Workspace persists indefinitely after recovery | L | ⚠️ | Workspace is not auto-deleted. Documented in the README/help; the user is responsible for removing it after recovery is complete. We should consider an explicit "delete workspace" action in a future release. |
 | T-L4 | Resume-session metadata identifies prior recoveries | L | ✅ | The resume panel only shows workspaces under the configured data-dir; dismissed sessions stay dismissed via localStorage (PR #53). Sessions can be excluded without deleting on-disk state. |
@@ -160,7 +160,6 @@ These are intentionally listed in one place so the document drives a backlog rat
 - [ ] **T-S2** — strip the seed from `state.scanConfig` in the GUI (PR #53 follow-up).
 - [ ] **T-N2** — pin the certificate of `zec.rocks` / `na.zec.rocks` for the default endpoints.
 - [ ] **T-N5** — surface the auto-detect privacy implication more loudly in the UI.
-- [ ] **T-L1** — set explicit `0o600` permissions on workspace files at creation time on Unix.
 - [ ] **T-L3** — add a "Delete workspace" action that securely wipes a session post-recovery.
 - [ ] **T-B1** — add `cargo audit` (or `cargo deny check advisories`) to CI on every push.
 - [ ] **T-B3** — provision a Windows code-signing certificate and gate it behind the same protected-environment mechanism as macOS.
@@ -176,10 +175,11 @@ These are intentionally listed in one place so the document drives a backlog rat
 
 ## 10. Reporting a security issue
 
-Please **do not** open a public GitHub issue for a security vulnerability. Email `security@sovright.com` with a description and reproduction steps; we will respond within five business days. A PGP key for confidential reports is published at [TODO: link].
+Please **do not** open a public GitHub issue for a security vulnerability. Email `security@sovright.com` with a description and reproduction steps; we will respond within five business days. A PGP key for confidential reports will be published on the GitHub repository once provisioned (**TODO: add link before v0.1.0 release**).
 
 ## 11. Revision history
 
 | Date | Author | Notes |
 |---|---|---|
-| 2026-05-19 | Initial draft | Covers v0.1.0-rc. Open items listed in §8. |
+| 2026-05-19 | Zaki | Initial draft. Covers v0.1.0-rc. Open items listed in §8. |
+| 2026-05-13 | Kristi | Correct T-L1 status (permissions implemented); fix CSP quote; clarify T-N4 address count; PGP note. |
