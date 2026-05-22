@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(accounts.len(), 1);
         let acc = &accounts[0];
 
-        // Verify the known values produced by `zeck-cli show-keys` with this seed
+        // Verify the known values produced by `argos show-keys` with this seed
         assert_eq!(
             acc.unified_address,
             "u1nvgt6yr35mhc9wdf4wckvl38476vqy96dx3cwkfdwy4jet9300l5v8l2yg27ql7w9qwm0lf8kncnj9nus4mgete06j3cu3mhrqvstg6swvdya6xgzwhh6a9xxdhxkavvvmztqeuaurjtqfk3dzetuzgnu0zjvmdpe8ehvj53sy6yhzxj"

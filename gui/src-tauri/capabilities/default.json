@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default ZECK desktop permissions",
+  "description": "Default Argos desktop permissions",
   "windows": ["main"],
   "permissions": ["core:default"]
 }

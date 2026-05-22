@@ -1,5 +1,5 @@
 [package]
-name = "zeck-gui"
+name = "argos-gui"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -16,4 +16,4 @@ serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
 tokio.workspace = true
-zeck-core = { path = "../../crates/zeck-core" }
+argos-core = { path = "../../crates/zeck-core" }

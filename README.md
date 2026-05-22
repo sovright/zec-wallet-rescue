@@ -1,16 +1,16 @@
-# ZECK
+# Argos
 
-ZECK is a recovery workspace for legacy ZecWallet Lite seeds.
+Argos is a recovery workspace for legacy ZecWallet Lite seeds.
 
 This repository now contains:
 
-- `crates/zeck-core`: shared Rust library for seed validation, address derivation, lightwalletd probing, and recovery session orchestration.
-- `crates/zeck-cli`: a terminal interface for showing keys, scanning derived accounts, and preparing sweep requests.
+- `crates/argos-core`: shared Rust library for seed validation, address derivation, lightwalletd probing, and recovery session orchestration.
+- `crates/argos-cli`: a terminal interface for showing keys, scanning derived accounts, and preparing sweep requests.
 - `gui/`: a Tauri v2 desktop shell with a step-by-step recovery wizard.
 
 ## Current Status
 
-ZECK now includes the major recovery phases end to end:
+Argos now includes the major recovery phases end to end:
 
 - BIP-39 validation and normalization
 - ZecWallet Lite-compatible Sapling, Orchard, and transparent derivation
@@ -26,11 +26,11 @@ ZECK now includes the major recovery phases end to end:
 ## Operational Notes
 
 - Recovery sessions persist wallet/cache state on disk for auditability and sweep construction. Workspace subdirectories are random per session so the path does not reveal a stable seed fingerprint.
-- On Unix platforms, ZECK creates recovery workspace directories with private `0700` permissions and wallet/cache database files with `0600` permissions.
-- Transparent funds are imported into the wallet workspace using ZECK's audited legacy derivation, not modern per-account transparent derivation.
+- On Unix platforms, Argos creates recovery workspace directories with private `0700` permissions and wallet/cache database files with `0600` permissions.
+- Transparent funds are imported into the wallet workspace using Argos's audited legacy derivation, not modern per-account transparent derivation.
 - Public lightwalletd servers learn scan metadata such as requested block ranges. Use your own lightwalletd or a local privacy proxy when that metadata matters.
 - Custom lightwalletd endpoints must use HTTPS unless they target localhost/loopback for local testing.
-- Broadcasted transactions are polled for confirmation during a bounded wait window. If they are still unmined at the end of that window, ZECK reports them as pending instead of pretending they confirmed.
+- Broadcasted transactions are polled for confirmation during a bounded wait window. If they are still unmined at the end of that window, Argos reports them as pending instead of pretending they confirmed.
 - Sprout recovery is still out of scope for seed-only flows because ZecWallet Lite did not derive Sprout keys from the HD seed.
 - The GUI defaults to auto gap-limit mode and can switch to an explicit account count when the user wants an exact scan depth.
 - The desktop complete screen can save a plain-text recovery report inside the persisted workspace.
@@ -40,8 +40,8 @@ ZECK now includes the major recovery phases end to end:
 ```text
 .
 ├── crates/
-│   ├── zeck-core/
-│   └── zeck-cli/
+│   ├── argos-core/
+│   └── argos-cli/
 ├── gui/
 │   ├── src/
 │   └── src-tauri/
@@ -60,7 +60,7 @@ Security note: for a wallet-recovery tool, the ability to audit and build from s
 
 ```bash
 cargo fmt
-cargo test -p zeck-core
+cargo test -p argos-core
 cargo check --workspace
 cd gui && npm install
 cd gui && npm run build

@@ -1,8 +1,8 @@
-# ZECK Testing Plan
+# Argos Testing Plan
 
 ## Overview
 
-This document tracks the testing strategy for ZECK — a ZecWallet Lite recovery tool. The primary focus is **GUI testing**, with live network scan testing as a key component.
+This document tracks the testing strategy for Argos — a ZecWallet Lite recovery tool. The primary focus is **GUI testing**, with live network scan testing as a key component.
 
 ---
 
@@ -117,17 +117,17 @@ This document tracks the testing strategy for ZECK — a ZecWallet Lite recovery
 
 ```bash
 # Show derived keys (no network needed)
-zeck-cli show-keys --seed "word1 word2 ... word24" --network mainnet
+argos show-keys --seed "word1 word2 ... word24" --network mainnet
 
 # Scan (network required)
-zeck-cli scan \
+argos scan \
   --seed "word1 word2 ... word24" \
   --lightwalletd-url "zec.rocks:443" \
   --data-dir /tmp/zeck-test \
   --birthday 2000000
 
 # Sweep proposal (dry run, no broadcast)
-zeck-cli sweep \
+argos sweep \
   --seed "word1 word2 ... word24" \
   --lightwalletd-url "zec.rocks:443" \
   --data-dir /tmp/zeck-test \

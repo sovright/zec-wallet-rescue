@@ -34,7 +34,7 @@ const SESSION_SCHEMA_VERSION: u32 = 1;
 ///
 /// Resume keying: identical scan args MUST resolve to the same `root`
 /// across runs. This module's tests pin that contract. The downstream
-/// behavior — that re-running ZECK with the same args actually resumes
+/// behavior — that re-running Argos with the same args actually resumes
 /// from `WalletSummary::fully_scanned_height` — depends on `WalletDb`
 /// and `BlockDb` initializers being idempotent against existing on-disk
 /// workspaces, which is an upstream contract from `zcash_client_sqlite`.

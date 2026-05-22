@@ -87,7 +87,7 @@ function formatSleepDetail(event) {
 }
 
 // Friendly, deliberately imprecise ETA banding. Mirrors `format_eta_range` in
-// zeck-cli; if you change one, change both.
+// argos-cli; if you change one, change both.
 function formatEtaRange(secs) {
   if (secs == null || !Number.isFinite(secs) || secs < 0) return null;
   if (secs < 60) return "less than a minute remaining";
@@ -104,7 +104,7 @@ function formatEtaRange(secs) {
 }
 
 // Map a block height to its approximate calendar year on mainnet so users can
-// feel the scan moving through time. Mirrors `era_hint` in zeck-cli.
+// feel the scan moving through time. Mirrors `era_hint` in argos-cli.
 function eraHint(height) {
   if (!height) return null;
   const SAPLING_HEIGHT = 419_200;
@@ -116,7 +116,7 @@ function eraHint(height) {
   return String(SAPLING_YEAR + Math.floor(elapsedYears + 0.18));
 }
 
-// Sliding-window ETA tracker — see `EtaTracker` in zeck-cli.
+// Sliding-window ETA tracker — see `EtaTracker` in argos-cli.
 const eta = (() => {
   const WINDOW_MS = 45_000;
   let samples = [];
@@ -315,7 +315,7 @@ function updateScanEstimate() {
 }
 
 // Piecewise height→date (Sapling 150 s/block until Blossom @ 653,600,
-// then 75 s/block). Mirrors crates/zeck-core/src/birthday.rs and lets us
+// then 75 s/block). Mirrors crates/argos-core/src/birthday.rs and lets us
 // give the user instant round-trip feedback as they type a height.
 const SAPLING_ACTIVATION_HEIGHT_JS = 419_200;
 const SAPLING_ACTIVATION_DATE_JS = Date.UTC(2018, 9, 28); // Oct 28 2018
@@ -616,9 +616,9 @@ function scanCompletionSummary(progress) {
 function notifyScanComplete(progress) {
   let title;
   switch (progress.phase) {
-    case "complete":  title = "ZECK scan complete"; break;
-    case "cancelled": title = "ZECK scan cancelled"; break;
-    case "error":     title = "ZECK scan failed"; break;
+    case "complete":  title = "Argos scan complete"; break;
+    case "cancelled": title = "Argos scan cancelled"; break;
+    case "error":     title = "Argos scan failed"; break;
     default: return;
   }
   invoke("notify_user", { title, body: scanCompletionSummary(progress) }).catch(() => {});
@@ -970,7 +970,7 @@ function buildReport(results) {
   const workspace = prog?.summary?.workspace_dir ?? "—";
 
   return [
-    "ZECK Recovery Report",
+    "Argos Recovery Report",
     `Date: ${new Date().toISOString()}`,
     "",
     "Scan Summary",
@@ -996,7 +996,7 @@ function buildReport(results) {
 function buildDefaultReportPath() {
   // Paths are resolved relative to the recovery workspace by the backend's
   // resolve_report_path, so we just return the bare file name here.
-  return "zeck-recovery-report.txt";
+  return "argos-recovery-report.txt";
 }
 
 $("save-report").addEventListener("click", async () => {
@@ -1106,7 +1106,7 @@ document.addEventListener("keydown", (e) => {
 
 const SIDEBAR_MIN = 160;
 const SIDEBAR_MAX = 420;
-const SIDEBAR_KEY = "zeck-sidebar-w";
+const SIDEBAR_KEY = "argos-sidebar-w";
 
 (function initSidebarResize() {
   const handle = $("sidebar-resize-handle");
@@ -1176,7 +1176,7 @@ function fmtRelativeTime(epochSeconds) {
 
 let pendingResumeRow = null;
 
-const DISMISSED_SESSIONS_KEY = "zeck-dismissed-sessions";
+const DISMISSED_SESSIONS_KEY = "argos-dismissed-sessions";
 
 function getDismissedSessions() {
   try {

@@ -8,7 +8,7 @@ use dialoguer::Password;
 use indicatif::{ProgressBar, ProgressStyle};
 use secrecy::SecretString;
 use tracing_subscriber::EnvFilter;
-use zeck_core::{
+use argos_core::{
     detect_birthday, derive_accounts, estimate_birthday_from_date, validate_destination_address,
     RecoveryService, ScanConfig, ScanDiscovery, ScanHandle, ScanPhase, SweepProposal, SweepRequest,
     ZeckNetwork,
@@ -16,9 +16,9 @@ use zeck_core::{
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "zeck",
+    name = "argos",
     about = "Legacy ZecWallet Lite recovery tool",
-    long_about = "ZECK recovers funds from ZecWallet Lite wallets using a BIP-39 seed phrase.\n\
+    long_about = "Argos recovers funds from ZecWallet Lite wallets using a BIP-39 seed phrase.\n\
                   It derives keys, scans the Zcash blockchain via lightwalletd, and can sweep\n\
                   recovered funds to a new Unified Address.",
     version
@@ -30,7 +30,7 @@ struct Cli {
     seed_file: Option<PathBuf>,
 
     /// Directory for wallet database and block cache.
-    #[arg(long, default_value = "./zeck_data")]
+    #[arg(long, default_value = "./argos_data")]
     data_dir: PathBuf,
 
     /// lightwalletd gRPC endpoint(s). Comma-separated URLs are tried in order.
@@ -66,7 +66,7 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = NetworkArg::Mainnet)]
     network: NetworkArg,
 
-    /// Enable debug-level logging from zeck-core.
+    /// Enable debug-level logging from argos-core.
     #[arg(long)]
     verbose: bool,
 
@@ -306,7 +306,7 @@ async fn main() -> Result<()> {
 
 fn init_tracing(verbose: bool) -> Result<()> {
     let filter = if verbose {
-        EnvFilter::new("zeck_core=debug,zeck_cli=debug")
+        EnvFilter::new("argos_core=debug,argos_cli=debug")
     } else {
         EnvFilter::new("warn")
     };
@@ -416,7 +416,7 @@ fn format_zec(zatoshis: u64) -> String {
 async fn wait_for_scan(
     service: &RecoveryService,
     handle: &ScanHandle,
-) -> Result<zeck_core::ScanProgress> {
+) -> Result<argos_core::ScanProgress> {
     // Start with a spinner; upgrade to a real progress bar once we know total blocks.
     let bar = ProgressBar::new_spinner();
     bar.set_style(
@@ -537,7 +537,7 @@ async fn wait_for_scan(
     }
 }
 
-fn phase_label(progress: &zeck_core::ScanProgress) -> String {
+fn phase_label(progress: &argos_core::ScanProgress) -> String {
     match progress.phase {
         ScanPhase::Idle => "Starting".to_string(),
         ScanPhase::ValidatingSeed => "Validating seed".to_string(),
@@ -671,7 +671,7 @@ fn era_hint(height: u64) -> Option<String> {
     Some(year.to_string())
 }
 
-fn format_sleep_event(event: &zeck_core::SleepEvent) -> String {
+fn format_sleep_event(event: &argos_core::SleepEvent) -> String {
     let slept = format_local_hhmm(event.slept_at_unix);
     let resumed = format_local_hhmm(event.resumed_at_unix);
     let count_note = if event.event_count > 1 {
@@ -686,7 +686,7 @@ fn format_sleep_event(event: &zeck_core::SleepEvent) -> String {
     format!(
         "⏸  Detected that this machine slept from {slept}, restarted at {resumed}. \
          Time spent not syncing: {}{count_note}. \
-         For faster sync, adjust your system settings to keep the computer awake while ZECK runs.",
+         For faster sync, adjust your system settings to keep the computer awake while Argos runs.",
         format_duration_secs(event.last_sleep_seconds),
     )
 }
@@ -725,7 +725,7 @@ fn format_discovery(discovery: &ScanDiscovery) -> String {
     )
 }
 
-fn print_scan_result(progress: &zeck_core::ScanProgress) {
+fn print_scan_result(progress: &argos_core::ScanProgress) {
     println!("Phase: {:?}", progress.phase);
 
     if let Some(error) = &progress.error {
@@ -830,11 +830,11 @@ fn print_sweep_preview(proposal: &SweepProposal) {
 /// effort: terminal bell always; OS-level notification on macOS/Linux when the
 /// usual platform tools are present. Errors are silently swallowed because the
 /// scan succeeded — failing to notify is not a scan failure.
-fn notify_scan_complete(progress: &zeck_core::ScanProgress) {
+fn notify_scan_complete(progress: &argos_core::ScanProgress) {
     let title = match progress.phase {
-        ScanPhase::Complete => "ZECK scan complete",
-        ScanPhase::Cancelled => "ZECK scan cancelled",
-        ScanPhase::Error => "ZECK scan failed",
+        ScanPhase::Complete => "Argos scan complete",
+        ScanPhase::Cancelled => "Argos scan cancelled",
+        ScanPhase::Error => "Argos scan failed",
         _ => return,
     };
 
@@ -882,7 +882,7 @@ fn notify_scan_complete(progress: &zeck_core::ScanProgress) {
     }
 }
 
-fn scan_completion_summary(progress: &zeck_core::ScanProgress) -> String {
+fn scan_completion_summary(progress: &argos_core::ScanProgress) -> String {
     if let Some(error) = &progress.error {
         return error.clone();
     }
@@ -1110,10 +1110,10 @@ mod tests {
     fn make_progress(
         phase: ScanPhase,
         funded: &[(u32, u64)],
-    ) -> zeck_core::ScanProgress {
+    ) -> argos_core::ScanProgress {
         let accounts = funded
             .iter()
-            .map(|(idx, amount)| zeck_core::AccountBalancePreview {
+            .map(|(idx, amount)| argos_core::AccountBalancePreview {
                 account_index: *idx,
                 sapling_address: String::new(),
                 unified_address: String::new(),
@@ -1128,8 +1128,8 @@ mod tests {
                 status: String::new(),
             })
             .collect();
-        zeck_core::ScanProgress {
-            handle: zeck_core::ScanHandle::new(),
+        argos_core::ScanProgress {
+            handle: argos_core::ScanHandle::new(),
             phase,
             blocks_scanned: 0,
             blocks_total: 0,

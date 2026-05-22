@@ -1,15 +1,15 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ZECK",
+  "productName": "Argos",
   "version": "0.1.0",
-  "identifier": "org.zeck.app",
+  "identifier": "org.argos.app",
   "build": {
     "frontendDist": "../src"
   },
   "app": {
     "windows": [
       {
-        "title": "ZECK",
+        "title": "Argos",
         "width": 1320,
         "height": 880,
         "minWidth": 780,

@@ -5,7 +5,7 @@
 
 ## Problem
 
-ZECK's scan can run for a long time and may be interrupted (app close, crash, OS sleep, network drop beyond retry budget). Today, resuming requires the user to remember the exact seed, birthday, and account/gap settings used previously and re-enter them; auto-resume happens silently inside the existing workspace path keying. There is no surface in the GUI that tells the user "you have unfinished scans on this machine — pick one to continue."
+Argos's scan can run for a long time and may be interrupted (app close, crash, OS sleep, network drop beyond retry budget). Today, resuming requires the user to remember the exact seed, birthday, and account/gap settings used previously and re-enter them; auto-resume happens silently inside the existing workspace path keying. There is no surface in the GUI that tells the user "you have unfinished scans on this machine — pick one to continue."
 
 This spec adds a launch-time UI in the GUI that lists incomplete scan sessions found on disk and lets the user resume one after providing the matching seed.
 

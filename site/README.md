@@ -1,6 +1,6 @@
-# ZECK Static Site
+# Argos Static Site
 
-This folder contains the static product splash page and user guide for the ZECK
+This folder contains the static product splash page and user guide for the Argos
 rescue wallet subdomain.
 
 ## Files

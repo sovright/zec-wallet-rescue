@@ -1,4 +1,4 @@
-# ZECK: ZecWallet Light Recovery Tool
+# Argos: ZecWallet Light Recovery Tool
 
 ## Implementation Specification v0.1
 
@@ -31,7 +31,7 @@ When a user imports their seed into Zashi, only ZIP 32 account index 0 is scanne
 | uzw-parser (james_katz) | Converts ZWL seed to YWallet SQLite DB | Outputs YWallet-specific format; no direct sweep to Unified Address |
 | ZecWallet Lite fork (Nu6+ZIP 317) | Patched legacy client | Outdated dependencies; maintenance burden |
 
-**ZECK fills the gap:** a standalone, seed-phrase-only recovery tool that derives ZecWallet Lite's full key tree, scans all pools, and sweeps to an Orchard-capable Unified Address — with no dependency on `.dat` files or third-party wallet formats.
+**Argos fills the gap:** a standalone, seed-phrase-only recovery tool that derives ZecWallet Lite's full key tree, scans all pools, and sweeps to an Orchard-capable Unified Address — with no dependency on `.dat` files or third-party wallet formats.
 
 ---
 
@@ -39,11 +39,11 @@ When a user imports their seed into Zashi, only ZIP 32 account index 0 is scanne
 
 ### Layered design: Core Library → CLI / GUI
 
-ZECK is structured as a Rust library (`zeck-core`) consumed by two frontends. This ensures the CLI and GUI always share identical recovery logic.
+Argos is structured as a Rust library (`argos-core`) consumed by two frontends. This ensures the CLI and GUI always share identical recovery logic.
 
 ```
 ┌─────────────────────┐    ┌──────────────────────────┐
-│      ZECK CLI        │    │      ZECK GUI (Tauri v2)  │
+│      Argos CLI        │    │      Argos GUI (Tauri v2)  │
 │  (clap, indicatif)   │    │  ┌──────────────────────┐ │
 │                      │    │  │ Web Frontend          │ │
 │  Terminal-based      │    │  │ (HTML/CSS/JS)         │ │
@@ -57,7 +57,7 @@ ZECK is structured as a Rust library (`zeck-core`) consumed by two frontends. Th
            │                              │
            ▼                              ▼
 ┌──────────────────────────────────────────────────────┐
-│                    zeck-core (Rust lib)               │
+│                    argos-core (Rust lib)               │
 │                                                      │
 │  ┌─────────────┐   ┌──────────────┐   ┌───────────┐ │
 │  │ Key Deriver  │──▶│  Scanner     │──▶│  Sweeper  │ │
@@ -79,17 +79,17 @@ ZECK is structured as a Rust library (`zeck-core`) consumed by two frontends. Th
 zeck/
 ├── Cargo.toml              (workspace root)
 ├── crates/
-│   ├── zeck-core/          Rust library: derivation, scanning, sweeping
+│   ├── argos-core/          Rust library: derivation, scanning, sweeping
 │   │   ├── src/lib.rs
 │   │   └── Cargo.toml
-│   └── zeck-cli/           CLI binary: clap + indicatif + zeck-core
+│   └── argos-cli/           CLI binary: clap + indicatif + argos-core
 │       ├── src/main.rs
 │       └── Cargo.toml
 ├── gui/                    Tauri v2 desktop app
-│   ├── src-tauri/          Rust Tauri host: thin wrapper calling zeck-core
+│   ├── src-tauri/          Rust Tauri host: thin wrapper calling argos-core
 │   │   ├── src/main.rs
 │   │   ├── src/commands.rs (Tauri IPC commands)
-│   │   ├── Cargo.toml      (depends on zeck-core)
+│   │   ├── Cargo.toml      (depends on argos-core)
 │   │   └── tauri.conf.json
 │   └── src/                Web frontend (Vanilla JS or lightweight framework)
 │       ├── index.html
@@ -147,7 +147,7 @@ For each account index `i` in `0..num_accounts`:
 | **Sapling** | ZIP 32 extended spending key at `m_Sapling / 32' / 133' / i'` | `sapling-crypto`, `zip32` |
 | **Transparent** | BIP 44 path `m / 44' / 133' / i' / 0 / 0` (external chain, address 0). Also scan `/ 0 / 1..20` for additional receive addresses and `/ 1 / 0..20` for change addresses. | `zcash_transparent`, `hdwallet` |
 | **Orchard** | ZIP 32 Orchard spending key at `m_Orchard / 32' / 133' / i'` | `orchard` |
-| **Sprout** | Not HD-derived in ZecWallet Lite. Sprout keys were generated independently. ZECK should attempt Sprout scanning using the Sapling IVK for trial decryption if the lightwalletd server supports Sprout blocks. If the user has standalone Sprout keys, they can be imported separately (stretch goal). | N/A |
+| **Sprout** | Not HD-derived in ZecWallet Lite. Sprout keys were generated independently. Argos should attempt Sprout scanning using the Sapling IVK for trial decryption if the lightwalletd server supports Sprout blocks. If the user has standalone Sprout keys, they can be imported separately (stretch goal). | N/A |
 
 ### 3.4 Configurable account scan depth
 
@@ -177,7 +177,7 @@ Implementors MUST audit these files to confirm derivation path correctness befor
 
 ### 4.1 lightwalletd connection
 
-ZECK connects to a `lightwalletd` instance via gRPC using the compact block protocol defined in `zcash_client_backend::proto`.
+Argos connects to a `lightwalletd` instance via gRPC using the compact block protocol defined in `zcash_client_backend::proto`.
 
 ```
 --lightwalletd-url <URL>    (default: https://mainnet.lightwalletd.com:9067)
@@ -214,7 +214,7 @@ Multiple lightwalletd servers should be configurable for fallback. The tool shou
 
 #### Sprout (best-effort)
 - Sprout notes cannot be derived from the HD seed in ZecWallet Lite.
-- If the user provides a `.dat` file alongside their seed, ZECK should attempt to extract Sprout spending keys from it (defer to ZExCavator/ZeWIF for this).
+- If the user provides a `.dat` file alongside their seed, Argos should attempt to extract Sprout spending keys from it (defer to ZExCavator/ZeWIF for this).
 - For seed-only recovery, log a warning that Sprout funds (if any) cannot be recovered without the wallet file.
 
 ### 4.4 Scanning implementation
@@ -246,7 +246,7 @@ for account_index in 0..num_accounts {
 
 ### 4.5 Progress reporting
 
-The scan phase is the longest-running operation. ZECK MUST provide:
+The scan phase is the longest-running operation. Argos MUST provide:
 
 - Progress bar showing blocks scanned vs. total
 - Per-account balance discovery notifications (e.g., "Account 3: found 1.5 ZEC in Sapling")
@@ -265,7 +265,7 @@ The scan phase is the longest-running operation. ZECK MUST provide:
 
 The destination MUST be a Zcash Unified Address (as defined in ZIP 316). The tool should validate that the address contains at least an Orchard receiver (preferred) or Sapling receiver.
 
-Recommended workflow: The user generates a fresh Unified Address in their target wallet (e.g., Zashi) and provides it to ZECK.
+Recommended workflow: The user generates a fresh Unified Address in their target wallet (e.g., Zashi) and provides it to Argos.
 
 ### 5.2 Sweep transaction construction
 
@@ -294,7 +294,7 @@ let proposal = propose_transfer(
         Payment {
             recipient_address: destination_ua,
             amount: full_balance_minus_fee,
-            memo: Some("ZECK recovery sweep".into()),
+            memo: Some("Argos recovery sweep".into()),
             ..
         }
     ]),
@@ -314,7 +314,7 @@ let txids = create_proposed_transactions(
 ```
 --dry-run              Show discovered balances without broadcasting
 --sweep                Actually broadcast sweep transactions (requires explicit opt-in)
---memo <TEXT>          Attach memo to sweep transactions (default: "ZECK recovery")
+--memo <TEXT>          Attach memo to sweep transactions (default: "Argos recovery")
 --max-fee <ZEC>       Abort if total fees exceed this amount (safety valve)
 ```
 
@@ -380,7 +380,7 @@ EXAMPLES:
 |---|---|
 | Mac + Windows + Linux | Native builds per platform using OS webview |
 | Simple UI (wizard flow) | HTML/CSS/JS frontend — fast to develop, easy for Claude Code |
-| Rust backend | Tauri commands call directly into `zeck-core` with no FFI overhead |
+| Rust backend | Tauri commands call directly into `argos-core` with no FFI overhead |
 | Small binary size | ~5–10 MB installers (no bundled Chromium, unlike Electron) |
 | Security | Command allowlisting, CSP enforcement, no Node.js in production |
 
@@ -392,7 +392,7 @@ EXAMPLES:
 ┌─────────────┐     ┌──────────────┐     ┌──────────────┐
 │  1. Welcome  │────▶│ 2. Seed Entry │────▶│ 3. Configure │
 │  Explain what│     │  24-word input│     │  Birthday,   │
-│  ZECK does   │     │  masked field │     │  accounts,   │
+│  Argos does   │     │  masked field │     │  accounts,   │
 │              │     │  paste support│     │  server URL  │
 └─────────────┘     └──────────────┘     └──────┬───────┘
                                                  │
@@ -423,7 +423,7 @@ EXAMPLES:
 - BIP-39 word validation with autocomplete (word list is static, no network call)
 - Inputs masked by default with "show" toggle (eye icon)
 - Validation: green checkmark when all 24 words are valid BIP-39 and checksum passes
-- Seed phrase NEVER logged, NEVER sent over IPC as plaintext — Tauri command receives it, passes to `zeck-core` which holds it in `secrecy::Secret`
+- Seed phrase NEVER logged, NEVER sent over IPC as plaintext — Tauri command receives it, passes to `argos-core` which holds it in `secrecy::Secret`
 
 **Screen 3 — Configuration**
 - Wallet birthday height input (with a date-picker helper that estimates block height from a calendar date)
@@ -566,7 +566,7 @@ cargo tauri build --target <target>
 
 ## 8. Crate Dependencies
 
-### Core (from `librustzcash`) — used by `zeck-core`
+### Core (from `librustzcash`) — used by `argos-core`
 
 | Crate | Purpose |
 |---|---|
@@ -635,7 +635,7 @@ Frontend (npm, in `gui/`):
 
 - The lightwalletd server learns which blocks the client is interested in (but not which specific notes are being decrypted).
 - Users concerned about metadata leakage should run their own lightwalletd instance or connect via Tor.
-- Custom lightwalletd endpoints MUST use HTTPS unless they target localhost/loopback for local testing, and the reported chain metadata MUST match the selected ZECK network before scanning or sweeping.
+- Custom lightwalletd endpoints MUST use HTTPS unless they target localhost/loopback for local testing, and the reported chain metadata MUST match the selected Argos network before scanning or sweeping.
 - Document this in the tool's help text and README.
 
 ### 9.3 Transaction safety
@@ -657,14 +657,14 @@ Frontend (npm, in `gui/`):
 
 ### 10.1 Key derivation verification
 
-- **Unit test:** Given a known 24-word mnemonic, verify that ZECK produces the exact same Sapling, transparent, and Orchard addresses as ZecWallet Lite for accounts 0–9.
+- **Unit test:** Given a known 24-word mnemonic, verify that Argos produces the exact same Sapling, transparent, and Orchard addresses as ZecWallet Lite for accounts 0–9.
 - **Reference data:** Generate addresses from a local `zecwallet-light-cli` seed fixture and hard-code expected outputs.
 - **Cross-reference:** Also verify against `uzw-parser` (james_katz) output.
 
 ### 10.2 Integration testing
 
 - Use `lightwalletd` in `darksidewalletd` mode to simulate a controlled blockchain with known transactions.
-- Send test funds to derived addresses, then verify ZECK discovers them.
+- Send test funds to derived addresses, then verify Argos discovers them.
 - Test sweep transaction construction and broadcast in regtest mode.
 
 ### 10.3 Edge cases to test
@@ -683,37 +683,37 @@ Frontend (npm, in `gui/`):
 ## 11. Relationship to Existing Ecosystem
 
 ### ZExCavator / ZeWIF
-ZECK is complementary. ZExCavator handles `.dat` file ingestion and ZeWIF export. ZECK handles the seed-phrase-only recovery path that ZExCavator's "key sweeper" was planned to address but hasn't been funded. A future version could export ZeWIF as an output format.
+Argos is complementary. ZExCavator handles `.dat` file ingestion and ZeWIF export. Argos handles the seed-phrase-only recovery path that ZExCavator's "key sweeper" was planned to address but hasn't been funded. A future version could export ZeWIF as an output format.
 
 ### uzw-parser
-james_katz's `uzw-parser` solves the same key derivation problem but outputs a YWallet SQLite database. ZECK uses the same derivation logic but targets direct on-chain sweep to any Unified Address, making it wallet-agnostic.
+james_katz's `uzw-parser` solves the same key derivation problem but outputs a YWallet SQLite database. Argos uses the same derivation logic but targets direct on-chain sweep to any Unified Address, making it wallet-agnostic.
 
 ### Zashi / librustzcash
-ZECK builds directly on the `zcash_client_backend` / `zcash_client_sqlite` stack that Zashi uses, benefiting from the same actively-maintained scanning and transaction construction infrastructure. The primary addition is the ZecWallet Lite-compatible multi-account derivation loop.
+Argos builds directly on the `zcash_client_backend` / `zcash_client_sqlite` stack that Zashi uses, benefiting from the same actively-maintained scanning and transaction construction infrastructure. The primary addition is the ZecWallet Lite-compatible multi-account derivation loop.
 
 ---
 
 ## 12. Implementation Milestones
 
 ### Milestone 1: Core Library — Key Derivation & Display
-- Set up Cargo workspace: `zeck-core`, `zeck-cli`
+- Set up Cargo workspace: `argos-core`, `argos-cli`
 - Parse BIP-39 mnemonic
 - Derive Sapling, transparent, and Orchard keys for N accounts
-- `zeck-cli show-keys` command outputs all derived addresses
+- `argos-cli show-keys` command outputs all derived addresses
 - Unit tests against known ZecWallet Lite outputs
 
 ### Milestone 2: Core Library — Chain Scanning
 - Connect to lightwalletd via gRPC
 - Import derived accounts into `zcash_client_sqlite`
 - Sync compact blocks and discover balances
-- `zeck-cli scan` command with progress reporting
+- `argos-cli scan` command with progress reporting
 - Gap-limit auto-detection
 
 ### Milestone 3: Core Library — Sweep Transactions
 - Transaction proposal construction via `zcash_client_backend`
 - Shielding of transparent UTXOs
 - Sweep to destination UA
-- `zeck-cli sweep` command with dry-run and confirm modes
+- `argos-cli sweep` command with dry-run and confirm modes
 - Fee estimation and safety checks
 
 ### Milestone 4: CLI Polish & Release
@@ -726,7 +726,7 @@ ZECK builds directly on the `zcash_client_backend` / `zcash_client_sqlite` stack
 
 ### Milestone 5: GUI — Scaffold & Seed Entry
 - Initialize Tauri v2 project in `gui/`
-- Wire up `zeck-core` as dependency in `src-tauri/Cargo.toml`
+- Wire up `argos-core` as dependency in `src-tauri/Cargo.toml`
 - Implement Screens 1–2 (Welcome, Seed Entry)
 - Tauri commands: `validate_seed`, `estimate_birthday_from_date`
 - Cross-platform build verification (Mac, Windows, Linux)
@@ -756,15 +756,15 @@ ZECK builds directly on the `zcash_client_backend` / `zcash_client_sqlite` stack
 
 1. **Sprout key extraction:** Can we derive any Sprout-related keys from the ZecWallet Lite seed, or were Sprout keys always independently generated? (Likely the latter — needs verification against source.)
 
-2. **ZecWallet Lite versioning:** Did the key derivation scheme change between versions? (v1.7.x Sapling-only vs. v1.8.x with Orchard support.) ZECK should handle both by always attempting all pools.
+2. **ZecWallet Lite versioning:** Did the key derivation scheme change between versions? (v1.7.x Sapling-only vs. v1.8.x with Orchard support.) Argos should handle both by always attempting all pools.
 
 3. **BIP-39 passphrase:** Did ZecWallet Lite support an optional BIP-39 passphrase? If so, add `--passphrase` option. (Believed to be unsupported / empty string by default.)
 
 4. **Transparent address depth:** How many transparent addresses per account did ZecWallet Lite use? Standard BIP-44 uses gap limit of 20 on external chain, but ZecWallet Lite's behavior should be verified. Consider `--transparent-gap-limit` option.
 
-5. **lightwalletd compatibility:** Ensure ZECK works with both ECC's lightwalletd and Zebra-backed instances. The compact block format should be the same, but test against both.
+5. **lightwalletd compatibility:** Ensure Argos works with both ECC's lightwalletd and Zebra-backed instances. The compact block format should be the same, but test against both.
 
-6. **ZeWIF export:** Should ZECK optionally export discovered wallet state as a ZeWIF file for import into other wallets? (Nice-to-have for Milestone 4+.)
+6. **ZeWIF export:** Should Argos optionally export discovered wallet state as a ZeWIF file for import into other wallets? (Nice-to-have for Milestone 4+.)
 
 7. **GUI frontend framework:** Spec currently calls for Vanilla JS to minimize dependencies. If the scanning screen's live-updating table proves complex to manage, consider Preact (~3KB) or Solid.js. Decision deferred until Milestone 5 scaffolding.
 

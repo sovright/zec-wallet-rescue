@@ -46,7 +46,7 @@ use crate::{
     workspace::{consensus_network, RecoveryWorkspace},
 };
 
-const RECOVERY_MEMO_DEFAULT: &str = "ZECK recovery";
+const RECOVERY_MEMO_DEFAULT: &str = "Argos recovery";
 const SESSION_RETENTION_SECS: u64 = 300;
 const CONFIRMATION_POLL_INTERVAL_SECS: u64 = 5;
 const CONFIRMATION_POLL_ATTEMPTS: u32 = 24;
@@ -131,9 +131,9 @@ impl RecoveryService {
             let _awake = match keepawake::Builder::default()
                 .idle(true)
                 .sleep(true)
-                .reason("ZECK recovery scan")
-                .app_name("ZECK")
-                .app_reverse_domain("org.zeck.app")
+                .reason("Argos recovery scan")
+                .app_name("Argos")
+                .app_reverse_domain("org.argos.app")
                 .create()
             {
                 Ok(guard) => Some(guard),
@@ -419,7 +419,7 @@ fn build_sweep_proposal(
     }
 
     let warning = if net_received_zatoshis > 0 {
-        "This dry-run proposal uses the authoritative scan balances from the persisted wallet workspace. ZECK estimates any required shielding first, then a final sweep to the destination Unified Address."
+        "This dry-run proposal uses the authoritative scan balances from the persisted wallet workspace. Argos estimates any required shielding first, then a final sweep to the destination Unified Address."
             .to_owned()
     } else if !skipped_accounts.is_empty() {
         "Balances were detected, but every discovered account was skipped because the ZIP 317 fee floor would consume the recoverable value."
@@ -1189,7 +1189,7 @@ mod tests {
     #[test]
     fn memo_with_ascii_is_accepted() {
         use super::normalized_memo_text;
-        let result = normalized_memo_text(Some("ZECK recovery"));
+        let result = normalized_memo_text(Some("Argos recovery"));
         assert!(result.is_ok());
     }
 

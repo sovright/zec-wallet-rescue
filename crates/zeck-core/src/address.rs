@@ -44,7 +44,7 @@ mod tests {
     use super::*;
 
     // A real mainnet unified address with Orchard + Sapling receivers derived from the
-    // BIP-39 all-"abandon" test vector (account 0, produced by zeck-cli show-keys).
+    // BIP-39 all-"abandon" test vector (account 0, produced by argos show-keys).
     const UA_ORCHARD_SAPLING: &str =
         "u1nvgt6yr35mhc9wdf4wckvl38476vqy96dx3cwkfdwy4jet9300l5v8l2yg27ql7w9qwm0lf8kncnj9nus4mgete06j3cu3mhrqvstg6swvdya6xgzwhh6a9xxdhxkavvvmztqeuaurjtqfk3dzetuzgnu0zjvmdpe8ehvj53sy6yhzxj";
 

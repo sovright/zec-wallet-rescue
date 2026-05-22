@@ -119,6 +119,70 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "argos-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argos-core",
+ "clap",
+ "dialoguer",
+ "indicatif",
+ "secrecy",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "argos-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bip0039",
+ "keepawake",
+ "orchard",
+ "prost",
+ "rand_core 0.6.4",
+ "rusqlite",
+ "rustls",
+ "secp256k1",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tonic",
+ "tracing",
+ "url",
+ "uuid",
+ "zcash_address",
+ "zcash_client_backend",
+ "zcash_client_sqlite",
+ "zcash_keys",
+ "zcash_primitives",
+ "zcash_proofs",
+ "zcash_protocol",
+ "zcash_transparent",
+ "zip32",
+]
+
+[[package]]
+name = "argos-gui"
+version = "0.1.0"
+dependencies = [
+ "argos-core",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tokio",
+]
+
+[[package]]
 name = "arrayref"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7490,70 +7554,6 @@ dependencies = [
  "zcash_script",
  "zcash_spec",
  "zip32",
-]
-
-[[package]]
-name = "zeck-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "dialoguer",
- "indicatif",
- "secrecy",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zeck-core",
-]
-
-[[package]]
-name = "zeck-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "bip0039",
- "keepawake",
- "orchard",
- "prost",
- "rand_core 0.6.4",
- "rusqlite",
- "rustls",
- "secp256k1",
- "secrecy",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tonic",
- "tracing",
- "url",
- "uuid",
- "zcash_address",
- "zcash_client_backend",
- "zcash_client_sqlite",
- "zcash_keys",
- "zcash_primitives",
- "zcash_proofs",
- "zcash_protocol",
- "zcash_transparent",
- "zip32",
-]
-
-[[package]]
-name = "zeck-gui"
-version = "0.1.0"
-dependencies = [
- "secrecy",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tokio",
- "zeck-core",
 ]
 
 [[package]]
