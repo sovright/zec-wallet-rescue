@@ -175,7 +175,7 @@ These are intentionally listed in one place so the document drives a backlog rat
 
 ## 10. Reporting a security issue
 
-Please **do not** open a public GitHub issue for a security vulnerability. Email `security@sovright.com` with a description and reproduction steps; we will respond within five business days. A PGP key for confidential reports will be published on the GitHub repository once provisioned (**TODO: add link before v0.1.0 release**).
+Please **do not** open a public GitHub issue for a security vulnerability. Email `security@sovright.com` with a description and reproduction steps; we will respond within five business days. No PGP key is available at this time. Plain email is sufficient for v0.1.0-rc.
 
 ## 11. Revision history
 
