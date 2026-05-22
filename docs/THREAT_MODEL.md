@@ -134,7 +134,7 @@ Severity: **C**ritical / **H**igh / **M**edium / **L**ow. Status: ✅ mitigated,
 |---|---|---|---|---|
 | T-L1 | Other local users / processes read the workspace DB | M | ✅ | Workspace directories are created `0o700` and database files `0o600` at creation time (`workspace.rs:set_private_file_permissions`, implemented in PR #43). Workspace contains FVKs/IVKs (privacy leak) and witnesses, not the seed. `session.json` (label, network, birthday, timestamps — no keys) inherits the OS umask. |
 | T-L2 | Recovery report contains sensitive metadata | L | ✅ | Report is user-initiated, written to a user-chosen path. Contents are documented in the UI before save (network, birthday, accounts, mode, workspace path, txids, net amounts). |
-| T-L3 | Workspace persists indefinitely after recovery | L | ⚠️ | Workspace is not auto-deleted. Documented in the README/help; the user is responsible for removing it after recovery is complete. We should consider an explicit "delete workspace" action in a future release. |
+| T-L3 | Workspace persists indefinitely after recovery | L | ✅ | The GUI's Recovery-complete screen now exposes a "Delete workspace" action (`RecoveryService::delete_workspace` → `fs::remove_dir_all`). The UI explicitly surfaces that this is not a cryptographic wipe on SSDs — block-level remnants may persist until cells are overwritten or TRIM'd. For high-value seeds, users are directed to encrypt the volume containing the workspace. CLI users can `rm -rf` the workspace path printed at the end of a scan. |
 | T-L4 | Resume-session metadata identifies prior recoveries | L | ✅ | The resume panel only shows workspaces under the configured data-dir; dismissed sessions stay dismissed via localStorage (PR #53). Sessions can be excluded without deleting on-disk state. |
 
 ### 6.5 Build, release, distribution
@@ -160,7 +160,7 @@ These are intentionally listed in one place so the document drives a backlog rat
 - [ ] **T-S2** — strip the seed from `state.scanConfig` in the GUI (PR #53 follow-up).
 - [ ] **T-N2** — pin the certificate of `zec.rocks` / `na.zec.rocks` for the default endpoints.
 - [ ] **T-N5** — surface the auto-detect privacy implication more loudly in the UI.
-- [ ] **T-L3** — add a "Delete workspace" action that securely wipes a session post-recovery.
+- [x] **T-L3** — add a "Delete workspace" action that securely wipes a session post-recovery.
 - [ ] **T-B1** — add `cargo audit` (or `cargo deny check advisories`) to CI on every push.
 - [ ] **T-B3** — provision a Windows code-signing certificate and gate it behind the same protected-environment mechanism as macOS.
 

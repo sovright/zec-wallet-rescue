@@ -285,6 +285,23 @@ pub async fn save_recovery_report(
     Ok(path.display().to_string())
 }
 
+/// Recursive-delete the on-disk recovery workspace for a completed scan.
+/// Backs the "Delete workspace" affordance described in T-L3 of the threat
+/// model. Not a cryptographic wipe — see RecoveryService::delete_workspace
+/// for the caveat. The UI is responsible for surfacing that honestly.
+#[tauri::command]
+pub async fn delete_workspace(
+    state: State<'_, AppState>,
+    handle: ScanHandle,
+) -> Result<String, String> {
+    let deleted = state
+        .service
+        .delete_workspace(&handle)
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(deleted.display().to_string())
+}
+
 fn resolve_report_path(workspace_dir: &Path, requested: &str) -> Result<PathBuf, String> {
     if requested.is_empty() {
         return Err("report path cannot be empty".to_owned());

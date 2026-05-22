@@ -22,6 +22,7 @@ fn main() {
             commands::estimate_birthday_from_date,
             commands::detect_birthday,
             commands::save_recovery_report,
+            commands::delete_workspace,
             commands::default_data_dir,
             commands::notify_user,
             commands::list_incomplete_sessions,

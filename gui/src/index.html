@@ -463,6 +463,26 @@
             <button class="ghost" id="copy-report-path" style="display:none">Copy path</button>
             <p id="save-report-status" class="status-line"></p>
           </div>
+          <div class="danger-zone" id="delete-workspace-zone">
+            <h3>Delete workspace</h3>
+            <p class="hint">
+              Once you have verified the swept funds in your destination wallet and saved the
+              recovery report somewhere safe, you can delete the on-disk recovery workspace.
+              It contains the full viewing keys and decrypted note cache for the scanned seed
+              — anyone with read access to your account can reconstruct your transaction
+              history from it. Spending still requires the seed phrase.
+            </p>
+            <p class="hint">
+              <strong>Note:</strong> on modern SSDs, file deletion is not a cryptographic
+              wipe. The OS marks the blocks free but the data may persist on the drive
+              until the cells are overwritten or TRIM'd. For high-value seeds, consider
+              encrypting the volume Argos writes to.
+            </p>
+            <div class="inline-actions">
+              <button class="danger" id="delete-workspace">Delete workspace…</button>
+              <p id="delete-workspace-status" class="status-line"></p>
+            </div>
+          </div>
           <div class="actions">
             <button class="primary" data-next="welcome" id="restart-flow">Start over</button>
           </div>
