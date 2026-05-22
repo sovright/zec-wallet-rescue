@@ -441,10 +441,33 @@ button.ghost,
   border: 1px solid var(--line);
 }
 
+button.danger {
+  color: white;
+  background: linear-gradient(135deg, #a73b2a, #7a2718);
+}
+
 button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
   transform: none;
+}
+
+.danger-zone {
+  margin-top: 28px;
+  padding: 18px 20px;
+  border: 1px solid rgba(167, 59, 42, 0.35);
+  border-radius: 10px;
+  background: rgba(167, 59, 42, 0.06);
+}
+
+.danger-zone h3 {
+  margin: 0 0 8px;
+  color: var(--danger);
+  font-size: 1.05rem;
+}
+
+.danger-zone .hint {
+  margin: 0 0 10px;
 }
 
 .secondary-link {

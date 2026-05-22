@@ -1033,6 +1033,39 @@ $("copy-report-path").addEventListener("click", () => {
   });
 });
 
+$("delete-workspace").addEventListener("click", async () => {
+  if (!state.scanHandle) {
+    setStatus("delete-workspace-status", "No workspace to delete.", "error");
+    return;
+  }
+  const confirmed = window.confirm(
+    "Delete the recovery workspace?\n\n" +
+      "This permanently removes the viewing keys and note cache for this seed from disk. " +
+      "Make sure you have verified the swept funds in your destination wallet first.\n\n" +
+      "Note: on SSDs this is not a cryptographic wipe — the data may persist at the " +
+      "block-device level until the cells are overwritten.",
+  );
+  if (!confirmed) return;
+
+  const btn = $("delete-workspace");
+  btn.disabled = true;
+  setStatus("delete-workspace-status", "Deleting…", "");
+  try {
+    const deletedPath = await invoke("delete_workspace", { handle: state.scanHandle });
+    setStatus("delete-workspace-status", `✓ Deleted ${deletedPath}`, "success");
+    // The session is gone server-side; further per-handle commands would fail.
+    state.scanHandle = null;
+    state.savedReportPath = null;
+    // The recovery report is inside the workspace we just deleted; the
+    // "Copy path" affordance now points at nothing.
+    $("copy-report-path").style.display = "none";
+    $("save-report").disabled = true;
+  } catch (err) {
+    setStatus("delete-workspace-status", `✗ ${err}`, "error");
+    btn.disabled = false;
+  }
+});
+
 $("restart-flow").addEventListener("click", () => {
   cleanupListeners();
   furthestStep = 0;
@@ -1047,6 +1080,9 @@ $("restart-flow").addEventListener("click", () => {
     savedReportPath: null,
   });
   $("copy-report-path").style.display = "none";
+  $("delete-workspace").disabled = false;
+  $("save-report").disabled = false;
+  setStatus("delete-workspace-status", "", "");
 
   seedInput.value = "";
   seedVisibility.checked = false;

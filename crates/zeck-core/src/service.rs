@@ -237,6 +237,59 @@ impl RecoveryService {
         execute_sweep_for_session(session, request).await
     }
 
+    /// Recursively delete the on-disk recovery workspace for a completed scan
+    /// and drop the session. Used by the GUI's post-recovery "Delete workspace"
+    /// action (threat-model T-L3).
+    ///
+    /// Returns the path that was deleted. Refuses to act on an in-flight scan
+    /// — call `cancel_scan` first if the user truly wants to discard mid-run.
+    ///
+    /// Caveat: on modern SSDs `remove_dir_all` is not a cryptographic wipe;
+    /// the filesystem and SSD controller may retain blocks until the cells
+    /// are overwritten or TRIM'd. UI callers should surface this honestly.
+    pub async fn delete_workspace(&self, handle: &ScanHandle) -> ZeckResult<std::path::PathBuf> {
+        let session = self.session(handle).await?;
+
+        // Refuse mid-scan to avoid tearing the SQLite write-ahead state out
+        // from under the running task. Callers can cancel first if they really
+        // mean it.
+        {
+            let state = session.state.lock().await;
+            let phase = state.progress.phase;
+            if !matches!(
+                phase,
+                ScanPhase::Complete | ScanPhase::Cancelled | ScanPhase::Error
+            ) {
+                return Err(ZeckError::ScanNotReady(format!(
+                    "cannot delete workspace while scan is {phase:?}; cancel first",
+                )));
+            }
+        }
+
+        // Drop any lingering task handle so the SQLite files aren't held open.
+        if let Some(task) = session.task.lock().await.take() {
+            task.abort();
+            let _ = task.await;
+        }
+
+        let workspace_root = session.workspace_root.clone();
+
+        // Remove the session from the registry before touching disk so a
+        // concurrent caller cannot operate on the now-doomed workspace.
+        self.sessions.write().await.remove(&handle.id);
+
+        if workspace_root.exists() {
+            std::fs::remove_dir_all(&workspace_root).map_err(|err| {
+                ZeckError::Storage(format!(
+                    "deleting workspace {}: {err}",
+                    workspace_root.display()
+                ))
+            })?;
+        }
+
+        Ok(workspace_root)
+    }
+
     async fn session(&self, handle: &ScanHandle) -> ZeckResult<SharedScanSession> {
         self.sessions
             .read()
