@@ -519,7 +519,11 @@ $("start-scan").addEventListener("click", async () => {
     network: $("network-select").value,
     label: labelRaw || defaultScanLabel(),
   };
-  state.scanConfig = config;
+  // Store a seed-less copy. The seed is passed to `start_scan` below, but
+  // must not persist in JS state for the lifetime of the scan→sweep→complete
+  // flow (threat model T-S2).
+  const { seed: _seed, ...configForState } = config;
+  state.scanConfig = configForState;
 
   setStatus("config-status", "Starting scan…", "");
   $("start-scan").disabled = true;

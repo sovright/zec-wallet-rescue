@@ -103,7 +103,7 @@ Severity: **C**ritical / **H**igh / **M**edium / **L**ow. Status: ✅ mitigated,
 | ID | Threat | Severity | Status | Mitigation |
 |---|---|---|---|---|
 | T-S1 | Seed phrase remains in process memory after use; swapped to disk | H | ✅ | Seed is wrapped in `secrecy::SecretString` and the BIP-39-derived 64-byte seed in `Secret<[u8;64]>` (PR #47). `Drop` zeroizes underlying memory. We do **not** call `mlock`/`VirtualLock` — swap remains a residual risk on the host. |
-| T-S2 | Seed phrase ends up in JS state and outlives the scan | H | ⚠️ | Pending fix from PR #53 review: `state.scanConfig` currently retains the full config including `seed` for the duration of the scan→sweep→complete flow. Tracked separately. |
+| T-S2 | Seed phrase ends up in JS state and outlives the scan | H | ✅ | `state.scanConfig` stores a seed-less copy of the config (network/birthday/account params only). The seed is passed to the `start_scan` Tauri command and the textarea is cleared on submit; no JS reference outlives the call. |
 | T-S3 | Seed phrase leaks via logs / tracing / `Debug` impl | H | ✅ | `secrecy` wrappers do not implement `Debug`/`Display` for their inner value. No `println!`/`tracing` calls on seed-bearing variables. |
 | T-S4 | Seed phrase leaks via clipboard | M | ⚠️ | Argos never writes the seed to the clipboard. The recovery-report "Copy path" button (PR #53) only copies the file path. Users pasting their own seed in is bounded by the OS clipboard's lifetime. |
 | T-S5 | Seed visible on screen during entry | L | ✅ | Seed textarea is blurred by default; user must explicitly toggle "Show words on screen". |
@@ -141,7 +141,7 @@ Severity: **C**ritical / **H**igh / **M**edium / **L**ow. Status: ✅ mitigated,
 
 | ID | Threat | Severity | Status | Mitigation |
 |---|---|---|---|---|
-| T-B1 | Compromised cargo dependency injects code at build time | H | ⚠️ | We pin via `Cargo.lock`. CI runs `cargo check` + `clippy` + tests on every push. We do not currently run `cargo audit` or `cargo deny` in CI — tracked as a follow-up. |
+| T-B1 | Compromised cargo dependency injects code at build time | H | ✅ | We pin via `Cargo.lock`. CI runs `cargo check` + `clippy` + tests + `cargo audit` (via `rustsec/audit-check`) on every push and PR. Advisories surface as a failed job. |
 | T-B2 | Compromised GitHub Actions secret signs a malicious release | C | ✅ | Signing and publish jobs are gated on protected environments (PR #48); only tagged release workflows can access signing keys. macOS signing is in place. |
 | T-B3 | Windows installer is unsigned | H | ❌ | No Windows code-signing certificate has been provisioned (acknowledged in PR #54). Users currently must verify SHA256 checksums manually. Tracked. |
 | T-B4 | Installer tampered with after publish | M | ✅ | SHA256 checksums are published alongside each artifact (deduplicated via PR #47/#48). README directs Windows users to verify the checksum before running the installer. |
@@ -149,7 +149,7 @@ Severity: **C**ritical / **H**igh / **M**edium / **L**ow. Status: ✅ mitigated,
 
 ## 7. Dependency posture
 
-Cargo dependencies are pinned via `Cargo.lock`. The high-value crates are the librustzcash family (`zcash_client_backend`, `zcash_client_sqlite`, `zcash_keys`, `zcash_protocol`, `zcash_primitives`, `sapling-crypto`, `orchard`), maintained by ECC; `secrecy` and `secp256k1` for key handling; `rustls` (with the `ring` provider and no `aws-lc-sys`, per PR #54) for TLS; and Tauri for the GUI shell. We do not currently run automated supply-chain scanning in CI.
+Cargo dependencies are pinned via `Cargo.lock`. The high-value crates are the librustzcash family (`zcash_client_backend`, `zcash_client_sqlite`, `zcash_keys`, `zcash_protocol`, `zcash_primitives`, `zcash_transparent`, `sapling-crypto`, `orchard`), maintained by ZODL (formerly the ECC mobile team); `secrecy` and `secp256k1` for key handling; `rustls` (with the `ring` provider and no `aws-lc-sys`, per PR #54) for TLS; and Tauri for the GUI shell. CI runs `cargo audit` against the RustSec advisory database on every push and PR (T-B1); the documented advisory carve-outs live in `.cargo/audit.toml`.
 
 JavaScript dependencies: **none at runtime**. The Tauri GUI ships zero npm packages in the browser bundle (PR #50).
 
@@ -157,11 +157,11 @@ JavaScript dependencies: **none at runtime**. The Tauri GUI ships zero npm packa
 
 These are intentionally listed in one place so the document drives a backlog rather than just describing the world:
 
-- [ ] **T-S2** — strip the seed from `state.scanConfig` in the GUI (PR #53 follow-up).
+- [x] **T-S2** — strip the seed from `state.scanConfig` in the GUI (PR #53 follow-up).
 - [ ] **T-N2** — pin the certificate of `zec.rocks` / `na.zec.rocks` for the default endpoints.
 - [ ] **T-N5** — surface the auto-detect privacy implication more loudly in the UI.
 - [x] **T-L3** — add a "Delete workspace" action that securely wipes a session post-recovery.
-- [ ] **T-B1** — add `cargo audit` (or `cargo deny check advisories`) to CI on every push.
+- [x] **T-B1** — add `cargo audit` (or `cargo deny check advisories`) to CI on every push.
 - [ ] **T-B3** — provision a Windows code-signing certificate and gate it behind the same protected-environment mechanism as macOS.
 
 ## 9. Out of scope
