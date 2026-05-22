@@ -4,7 +4,7 @@ mod commands;
 
 use commands::AppState;
 use tauri::Manager;
-use zeck_core::RecoveryService;
+use argos_core::RecoveryService;
 
 fn main() {
     tauri::Builder::default()
@@ -32,5 +32,5 @@ fn main() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running ZECK GUI");
+        .expect("error while running Argos GUI");
 }

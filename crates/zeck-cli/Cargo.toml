@@ -1,5 +1,5 @@
 [package]
-name = "zeck-cli"
+name = "argos-cli"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -15,4 +15,8 @@ secrecy.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-zeck-core = { path = "../zeck-core" }
+argos-core = { path = "../zeck-core" }
+
+[[bin]]
+name = "argos"
+path = "src/main.rs"

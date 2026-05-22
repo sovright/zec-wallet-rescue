@@ -833,7 +833,7 @@ async fn import_accounts(
                     &SecretVec::new(seed.to_vec()),
                     zip32_index,
                     birthday,
-                    Some("ZECK ZecWallet Lite recovery"),
+                    Some("Argos ZecWallet Lite recovery"),
                 )
                 .map_err(|err| {
                     ZeckError::Wallet(format!("importing account {}: {err}", account.index))

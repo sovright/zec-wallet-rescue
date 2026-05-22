@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ZECK</title>
+    <title>Argos</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -14,7 +14,7 @@
             <p class="eyebrow">ZecWallet Lite Recovery</p>
             <div class="sidebar-brand">
               <img src="./zeck-icon.svg" alt="" width="72" height="72" />
-              <h1>ZECK</h1>
+              <h1>Argos</h1>
             </div>
             <p class="sidebar-copy">
               Recover your Zcash from ZecWallet Lite and send it safely to your new wallet.
@@ -55,8 +55,8 @@
           <div class="guide-body">
 
             <div class="guide-section">
-              <h3>What is ZECK?</h3>
-              <p>ZECK recovers your Zcash from a ZecWallet Lite seed phrase and sweeps it to a modern wallet like Zashi or YWallet. You need your 24-word BIP-39 seed phrase and the Unified Address of your destination wallet. Nothing else.</p>
+              <h3>What is Argos?</h3>
+              <p>Argos recovers your Zcash from a ZecWallet Lite seed phrase and sweeps it to a modern wallet like Zashi or YWallet. You need your 24-word BIP-39 seed phrase and the Unified Address of your destination wallet. Nothing else.</p>
             </div>
 
             <div class="guide-section">
@@ -70,12 +70,12 @@
 
             <div class="guide-section">
               <h3>Step 1 — Welcome</h3>
-              <p>The welcome screen explains what ZECK does. If you have a <code>.dat</code> file rather than a seed phrase, follow the link to Zexcavator instead. Otherwise click <em>I have my 24-word seed phrase</em>.</p>
+              <p>The welcome screen explains what Argos does. If you have a <code>.dat</code> file rather than a seed phrase, follow the link to Zexcavator instead. Otherwise click <em>I have my 24-word seed phrase</em>.</p>
             </div>
 
             <div class="guide-section">
               <h3>Step 2 — Seed Entry</h3>
-              <p>Paste your full 24-word seed phrase (separated by spaces). Click <em>Validate seed</em> or press Enter — ZECK checks the BIP-39 checksum locally. The phrase is blurred by default; toggle <em>Show words on screen</em> if you need to proofread it. Your seed is never transmitted anywhere.</p>
+              <p>Paste your full 24-word seed phrase (separated by spaces). Click <em>Validate seed</em> or press Enter — Argos checks the BIP-39 checksum locally. The phrase is blurred by default; toggle <em>Show words on screen</em> if you need to proofread it. Your seed is never transmitted anywhere.</p>
             </div>
 
             <div class="guide-section">
@@ -92,9 +92,9 @@
 
             <div class="guide-section">
               <h3>Step 4 — Scan</h3>
-              <p>ZECK first probes transparent UTXOs (results appear within seconds), then syncs all shielded compact blocks. Progress, phase, and estimated time remaining are shown in real time. Funded accounts appear in the table as they're discovered.</p>
+              <p>Argos first probes transparent UTXOs (results appear within seconds), then syncs all shielded compact blocks. Progress, phase, and estimated time remaining are shown in real time. Funded accounts appear in the table as they're discovered.</p>
               <p class="guide-tip">Scans can take anywhere from a few minutes (recent birthday) to several hours (birthday near Sapling activation in 2018). The ETA warms up after about 15 seconds.</p>
-              <p>You can cancel and resume at any time. Re-run ZECK with the same seed, network, birthday, and account settings to pick up from the last saved block.</p>
+              <p>You can cancel and resume at any time. Re-run Argos with the same seed, network, birthday, and account settings to pick up from the last saved block.</p>
             </div>
 
             <div class="guide-section">
@@ -105,7 +105,7 @@
 
             <div class="guide-section">
               <h3>Step 6 — Complete</h3>
-              <p>ZECK shows the txid for each transaction. Save a recovery report to a text file for your records.</p>
+              <p>Argos shows the txid for each transaction. Save a recovery report to a text file for your records.</p>
             </div>
 
             <div class="guide-section">
@@ -114,7 +114,7 @@
                 <li><strong>Seed validation fails:</strong> Check for typos, extra spaces, or missing words. All 24 words must be valid BIP-39 words in the correct order.</li>
                 <li><strong>Auto-detect finds no birthday:</strong> Your wallet may have no transparent history. Use the date picker to estimate the birthday manually instead.</li>
                 <li><strong>Scan seems stuck:</strong> Long pauses during the shielded sync are normal — the server may be catching up. Watch the block counter; as long as it's moving, the scan is working.</li>
-                <li><strong>Connection drops:</strong> ZECK reconnects automatically up to 10 times. If it keeps failing, try switching the server preset to use a different public node.</li>
+                <li><strong>Connection drops:</strong> Argos reconnects automatically up to 10 times. If it keeps failing, try switching the server preset to use a different public node.</li>
                 <li><strong>No funds found:</strong> Confirm you used the correct network (Mainnet vs Testnet) and that the birthday is early enough to cover when you first received ZEC.</li>
                 <li><strong>Sweep fails:</strong> The workspace may be out of date. Go back to config and re-run the scan with the same settings to refresh it, then try sweeping again.</li>
               </ul>
@@ -122,7 +122,7 @@
 
             <div class="guide-section">
               <h3>Security</h3>
-              <p>ZECK is built to keep the JavaScript surface as small as possible:</p>
+              <p>Argos is built to keep the JavaScript surface as small as possible:</p>
               <ul>
                 <li><strong>No npm packages run in the browser.</strong> <code>window.__TAURI__</code> is injected by the Rust host via <code>withGlobalTauri</code> — <code>main.js</code> imports nothing from node_modules.</li>
                 <li><strong>No frontend framework.</strong> No React, Vue, Svelte, router, state library, UI kit, or analytics.</li>
@@ -134,11 +134,11 @@
             <div class="guide-section">
               <h3>Frequently asked questions</h3>
               <ul>
-                <li><strong>Is my seed phrase safe?</strong> Yes. ZECK never transmits your seed. All key derivation happens locally. Only compact block data is downloaded from lightwalletd servers.</li>
-                <li><strong>Can I use a transparent or Sapling address as my destination?</strong> No. ZECK requires a Unified Address with an Orchard or Sapling receiver (starts with <code>u1</code>). Get one from Zashi or YWallet.</li>
-                <li><strong>What if I had more than one ZecWallet Lite account?</strong> ZECK scans up to 500 accounts automatically. If you enabled the gap-limit scan mode, it stops after 20 consecutive empty accounts by default — enough for almost all wallets.</li>
-                <li><strong>What happens to my data after ZECK finishes?</strong> The local wallet workspace (compact block cache and derived keys) stays in the data directory you chose. You can delete it once you've confirmed your funds arrived safely.</li>
-                <li><strong>Can I run ZECK offline?</strong> The scan phase requires a lightwalletd connection to download block data. Seed validation and key derivation are fully offline.</li>
+                <li><strong>Is my seed phrase safe?</strong> Yes. Argos never transmits your seed. All key derivation happens locally. Only compact block data is downloaded from lightwalletd servers.</li>
+                <li><strong>Can I use a transparent or Sapling address as my destination?</strong> No. Argos requires a Unified Address with an Orchard or Sapling receiver (starts with <code>u1</code>). Get one from Zashi or YWallet.</li>
+                <li><strong>What if I had more than one ZecWallet Lite account?</strong> Argos scans up to 500 accounts automatically. If you enabled the gap-limit scan mode, it stops after 20 consecutive empty accounts by default — enough for almost all wallets.</li>
+                <li><strong>What happens to my data after Argos finishes?</strong> The local wallet workspace (compact block cache and derived keys) stays in the data directory you chose. You can delete it once you've confirmed your funds arrived safely.</li>
+                <li><strong>Can I run Argos offline?</strong> The scan phase requires a lightwalletd connection to download block data. Seed validation and key derivation are fully offline.</li>
               </ul>
             </div>
 
@@ -151,7 +151,7 @@
           <p class="eyebrow">Step 1</p>
           <h2>Recover your wallet in a few steps</h2>
           <p class="lead">
-            Enter your 24-word seed phrase and ZECK will find your funds and walk you through sending them to your new wallet.
+            Enter your 24-word seed phrase and Argos will find your funds and walk you through sending them to your new wallet.
           </p>
           <div class="card-grid">
             <article class="info-card">
@@ -164,7 +164,7 @@
             </article>
             <article class="info-card">
               <h3>Pick up where you left off</h3>
-              <p>If the scan is interrupted, ZECK saves your progress so you don't have to start over.</p>
+              <p>If the scan is interrupted, Argos saves your progress so you don't have to start over.</p>
             </article>
           </div>
           <div class="actions">
@@ -177,7 +177,7 @@
           <div id="resume-panel" class="report-card" hidden>
             <h3>Resume an unfinished scan</h3>
             <p class="lead">
-              ZECK found scans on this computer that didn't finish. Pick one to continue, or start a
+              Argos found scans on this computer that didn't finish. Pick one to continue, or start a
               brand-new scan above.
             </p>
             <ul id="resume-sessions" class="session-list"></ul>
@@ -254,7 +254,7 @@
                 <button class="ghost" id="birthday-autodetect">Auto-detect from blockchain</button>
               </div>
               <small id="birthday-probe-status" class="status-line"></small>
-              <small>Pick roughly when you first created your ZecWallet Lite — ZECK will fill in the block height for you. <strong>Auto-detect</strong> probes the blockchain using your seed phrase (requires a server connection).</small>
+              <small>Pick roughly when you first created your ZecWallet Lite — Argos will fill in the block height for you. <strong>Auto-detect</strong> probes the blockchain using your seed phrase (requires a server connection).</small>
             </label>
 
             <p class="form-section-heading span-two">Accounts to scan</p>
@@ -263,7 +263,7 @@
               <span>Starting number of accounts</span>
               <input id="accounts-range" type="range" min="1" max="500" value="20" />
               <strong id="accounts-range-value">20</strong>
-              <small>Most users only ever had 1 account. Leave at 20 to be safe. With gap scanning enabled, ZECK may check additional accounts beyond this number.</small>
+              <small>Most users only ever had 1 account. Leave at 20 to be safe. With gap scanning enabled, Argos may check additional accounts beyond this number.</small>
             </label>
             <label class="checkline field">
               <input id="auto-gap-limit" type="checkbox" checked />
@@ -296,12 +296,12 @@
                 type="text"
                 value="https://zec.rocks:443,https://na.zec.rocks:443"
               />
-              <small>The server ZECK connects to for blockchain data. Auto-filled by the preset above. You can add backup servers separated by commas.</small>
+              <small>The server Argos connects to for blockchain data. Auto-filled by the preset above. You can add backup servers separated by commas.</small>
             </label>
             <label class="field span-two">
               <span>Where to save scan data on this computer</span>
               <input id="data-dir" type="text" placeholder="platform default populated on load" />
-              <small>ZECK saves its progress here so a scan can be resumed if interrupted. Change this to a permanent folder if you want to keep the data after a reboot.</small>
+              <small>Argos saves its progress here so a scan can be resumed if interrupted. Change this to a permanent folder if you want to keep the data after a reboot.</small>
             </label>
 
             <p class="form-section-heading span-two">Destination &amp; sweep options</p>
@@ -313,7 +313,7 @@
             </label>
             <label class="field span-two">
               <span>Recovery memo (optional)</span>
-              <input id="sweep-memo" type="text" placeholder="ZECK recovery" />
+              <input id="sweep-memo" type="text" placeholder="Argos recovery" />
               <small>A short note attached to the recovery transaction. Visible only to the sender and recipient. <span id="memo-byte-count"></span></small>
             </label>
             <label class="field">
@@ -336,12 +336,12 @@
           <p class="eyebrow">Step 4</p>
           <h2>Recovery scan</h2>
           <div class="banner warning" id="scan-warning">
-            Transparent funds are detected within seconds. ZECK must still finish the full
+            Transparent funds are detected within seconds. Argos must still finish the full
             shielded block sync before sweeping — <strong>Review &amp; Sweep unlocks when the
             phase reads "Complete".</strong>
           </div>
           <div class="banner info" id="scan-resume-info">
-            <strong>Safe to interrupt.</strong> Progress is saved automatically — quit ZECK or
+            <strong>Safe to interrupt.</strong> Progress is saved automatically — quit Argos or
             cancel the scan at any time, then re-run with the same data directory, network,
             birthday, and account-scan settings (the same gap limit, or the same explicit
             account count) to resume from the last persisted block. Changing any of those
@@ -350,8 +350,8 @@
           <div class="banner warning" id="scan-sleep-banner" style="display:none">
             <strong>This machine went to sleep during the scan.</strong>
             <span id="scan-sleep-detail"></span>
-            ZECK reconnected automatically and your scan progress was preserved on disk.
-            For faster sync, adjust your system settings to keep the computer awake while ZECK is running.
+            Argos reconnected automatically and your scan progress was preserved on disk.
+            For faster sync, adjust your system settings to keep the computer awake while Argos is running.
           </div>
           <div class="banner info" id="scan-sandblasting-banner" style="display:none">
             <strong>🐢 Slow zone — sandblasting era (mid-2022 → late&nbsp;2023, mainnet).</strong>
@@ -414,7 +414,7 @@
           <p class="eyebrow">Step 5</p>
           <h2>Review the sweep proposal</h2>
           <div class="banner warning">
-            ZECK will broadcast real transactions from the persisted recovery workspace. Any
+            Argos will broadcast real transactions from the persisted recovery workspace. Any
             transparent funds are shielded first, then the account's spendable shielded value is
             swept to your destination Unified Address.
           </div>
@@ -455,7 +455,7 @@
           <div class="report-card" id="complete-report" style="display:none"></div>
           <label class="field">
             <span>Recovery report path</span>
-            <input id="report-path" type="text" value="zeck-recovery-report.txt" />
+            <input id="report-path" type="text" value="argos-recovery-report.txt" />
             <small class="hint">Saved inside the recovery workspace. Subdirectories are created if needed.</small>
           </label>
           <div class="inline-actions">
@@ -475,7 +475,7 @@
         <p class="eyebrow">Resume scan</p>
         <h2 id="resume-modal-title">Resume scan</h2>
         <p class="lead">
-          Enter the 24-word seed phrase that this scan was started with. ZECK verifies it matches
+          Enter the 24-word seed phrase that this scan was started with. Argos verifies it matches
           before unlocking the saved scan data.
         </p>
         <label class="field">

@@ -9,7 +9,7 @@ use std::process::Command;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
-use zeck_core::{
+use argos_core::{
     detect_birthday as zeck_detect_birthday, estimate_birthday_from_date as estimate_birthday,
     list_incomplete_sessions as zeck_list_incomplete_sessions, parse_workspace_keying,
     validate_destination_address, validate_mnemonic_words, verify_seed_for_workspace,
@@ -47,7 +47,7 @@ pub async fn validate_seed(words: Vec<String>) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub async fn validate_address(address: String) -> Result<zeck_core::AddressInfo, String> {
+pub async fn validate_address(address: String) -> Result<argos_core::AddressInfo, String> {
     validate_destination_address(&address).map_err(|err| err.to_string())
 }
 
@@ -104,9 +104,9 @@ fn spawn_scan_progress_pump(app: AppHandle, service: RecoveryService, handle: Sc
 
             if matches!(
                 progress.phase,
-                zeck_core::ScanPhase::Complete
-                    | zeck_core::ScanPhase::Cancelled
-                    | zeck_core::ScanPhase::Error
+                argos_core::ScanPhase::Complete
+                    | argos_core::ScanPhase::Cancelled
+                    | argos_core::ScanPhase::Error
             ) {
                 let _ = app.emit("scan-complete", &progress);
                 break;
@@ -121,7 +121,7 @@ fn spawn_scan_progress_pump(app: AppHandle, service: RecoveryService, handle: Sc
 pub async fn get_scan_progress(
     state: State<'_, AppState>,
     handle: ScanHandle,
-) -> Result<zeck_core::ScanProgress, String> {
+) -> Result<argos_core::ScanProgress, String> {
     state
         .service
         .get_scan_progress(&handle)
@@ -586,7 +586,7 @@ mod tests {
             .expect("clock should be after epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "zeck-report-path-test-{}-{suffix}",
+            "argos-report-path-test-{}-{suffix}",
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("temp workspace should be created");
@@ -596,13 +596,13 @@ mod tests {
     #[test]
     fn report_path_resolves_inside_workspace() {
         let workspace = temp_workspace();
-        let path = resolve_report_path(&workspace, "zeck-recovery-report.txt")
+        let path = resolve_report_path(&workspace, "argos-recovery-report.txt")
             .expect("report path should resolve");
 
         assert!(path.starts_with(fs::canonicalize(&workspace).expect("canonical workspace")));
         assert_eq!(
             path.file_name().and_then(|name| name.to_str()),
-            Some("zeck-recovery-report.txt")
+            Some("argos-recovery-report.txt")
         );
 
         fs::remove_dir_all(workspace).expect("temp workspace should be removed");
@@ -622,7 +622,7 @@ mod tests {
     #[test]
     fn report_path_auto_creates_subdir_inside_workspace() {
         let workspace = temp_workspace();
-        let path = resolve_report_path(&workspace, "reports/zeck-recovery-report.txt")
+        let path = resolve_report_path(&workspace, "reports/argos-recovery-report.txt")
             .expect("subdir should be auto-created");
 
         let canonical_workspace = fs::canonicalize(&workspace).expect("canonical workspace");
@@ -636,7 +636,7 @@ mod tests {
     fn report_path_accepts_absolute_path_inside_workspace() {
         let workspace = temp_workspace();
         let canonical_workspace = fs::canonicalize(&workspace).expect("canonical workspace");
-        let absolute = canonical_workspace.join("zeck-recovery-report.txt");
+        let absolute = canonical_workspace.join("argos-recovery-report.txt");
 
         let path = resolve_report_path(
             &workspace,
@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn report_path_rejects_absolute_path_outside_workspace() {
         let workspace = temp_workspace();
-        let outside = std::env::temp_dir().join("zeck-outside-report.txt");
+        let outside = std::env::temp_dir().join("argos-outside-report.txt");
 
         let err = resolve_report_path(
             &workspace,

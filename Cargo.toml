@@ -6,7 +6,7 @@ resolver = "2"
 edition = "2021"
 version = "0.1.0"
 license = "MIT"
-authors = ["ZECK contributors"]
+authors = ["Argos contributors"]
 rust-version = "1.87"
 repository = "https://github.com/example/zeck"
 
