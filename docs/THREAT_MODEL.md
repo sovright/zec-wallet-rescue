@@ -103,7 +103,7 @@ Severity: **C**ritical / **H**igh / **M**edium / **L**ow. Status: ✅ mitigated,
 | ID | Threat | Severity | Status | Mitigation |
 |---|---|---|---|---|
 | T-S1 | Seed phrase remains in process memory after use; swapped to disk | H | ✅ | Seed is wrapped in `secrecy::SecretString` and the BIP-39-derived 64-byte seed in `Secret<[u8;64]>` (PR #47). `Drop` zeroizes underlying memory. We do **not** call `mlock`/`VirtualLock` — swap remains a residual risk on the host. |
-| T-S2 | Seed phrase ends up in JS state and outlives the scan | H | ⚠️ | Pending fix from PR #53 review: `state.scanConfig` currently retains the full config including `seed` for the duration of the scan→sweep→complete flow. Tracked separately. |
+| T-S2 | Seed phrase ends up in JS state and outlives the scan | H | ✅ | `state.scanConfig` stores a seed-less copy of the config (network/birthday/account params only). The seed is passed to the `start_scan` Tauri command and the textarea is cleared on submit; no JS reference outlives the call. |
 | T-S3 | Seed phrase leaks via logs / tracing / `Debug` impl | H | ✅ | `secrecy` wrappers do not implement `Debug`/`Display` for their inner value. No `println!`/`tracing` calls on seed-bearing variables. |
 | T-S4 | Seed phrase leaks via clipboard | M | ⚠️ | Argos never writes the seed to the clipboard. The recovery-report "Copy path" button (PR #53) only copies the file path. Users pasting their own seed in is bounded by the OS clipboard's lifetime. |
 | T-S5 | Seed visible on screen during entry | L | ✅ | Seed textarea is blurred by default; user must explicitly toggle "Show words on screen". |
@@ -157,7 +157,7 @@ JavaScript dependencies: **none at runtime**. The Tauri GUI ships zero npm packa
 
 These are intentionally listed in one place so the document drives a backlog rather than just describing the world:
 
-- [ ] **T-S2** — strip the seed from `state.scanConfig` in the GUI (PR #53 follow-up).
+- [x] **T-S2** — strip the seed from `state.scanConfig` in the GUI (PR #53 follow-up).
 - [ ] **T-N2** — pin the certificate of `zec.rocks` / `na.zec.rocks` for the default endpoints.
 - [ ] **T-N5** — surface the auto-detect privacy implication more loudly in the UI.
 - [ ] **T-L3** — add a "Delete workspace" action that securely wipes a session post-recovery.
