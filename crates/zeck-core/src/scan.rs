@@ -21,7 +21,8 @@ use zcash_client_backend::{
         chain::{error::Error as ChainError, BlockCache, BlockSource},
         scanning::ScanRange,
         wallet::ConfirmationsPolicy,
-        Account as _, AccountBirthday, InputSource, WalletRead, WalletWrite, Zip32Derivation,
+        Account as _, AccountBirthday, InputSource, TransparentOutputFilter, WalletRead,
+        WalletWrite, Zip32Derivation,
     },
     proto::{
         compact_formats::CompactBlock,
@@ -1074,6 +1075,7 @@ pub(crate) async fn refresh_scan_progress(
                             address,
                             target_height,
                             ConfirmationsPolicy::MIN,
+                            TransparentOutputFilter::All,
                         )
                         .map_err(|err| {
                             ZeckError::Wallet(format!(
