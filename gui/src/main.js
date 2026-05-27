@@ -1163,13 +1163,16 @@ $("restart-flow").addEventListener("click", () => {
 
 // ─── Donate ───────────────────────────────────────────────────────────────────
 
-// Set this when the donation address is ready; leave empty to show "coming soon"
-const DONATE_ZEC_ADDRESS = "";
-
-(function initDonate() {
-  if (DONATE_ZEC_ADDRESS) {
-    $("donate-address").textContent = DONATE_ZEC_ADDRESS;
-    $("copy-donate-address").disabled = false;
+(async function initDonate() {
+  try {
+    const addr = await invoke("donation_address");
+    if (addr) {
+      $("donate-address").textContent = addr;
+      $("copy-donate-address").disabled = false;
+    }
+    // empty address → keep the existing "Address coming soon" text + disabled copy button
+  } catch (err) {
+    // leave the placeholder/disabled state on failure
   }
 })();
 
@@ -1193,7 +1196,7 @@ $("donate-overlay").addEventListener("click", (e) => {
 });
 
 $("copy-donate-address").addEventListener("click", () => {
-  navigator.clipboard.writeText(DONATE_ZEC_ADDRESS).then(() => {
+  navigator.clipboard.writeText($("donate-address").textContent).then(() => {
     setStatus("donate-copy-status", "✓ Address copied", "success");
     setTimeout(() => setStatus("donate-copy-status", "", ""), 2500);
   });
