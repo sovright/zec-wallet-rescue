@@ -32,6 +32,7 @@
         </div>
 
         <div class="sidebar-bottom-actions">
+          <button class="guide-btn donate-btn" id="open-donate" aria-label="Donate to support Argos">♥ Donate</button>
           <button class="guide-btn" id="open-guide" aria-label="Open user guide">? Help</button>
           <a class="sidebar-credit" href="https://sovright.com" target="_blank" rel="noreferrer" aria-label="Built by Sovright">
             <span class="sidebar-credit-prefix">Built by</span>
@@ -41,6 +42,40 @@
       </aside>
 
       <div class="sidebar-resize-handle" id="sidebar-resize-handle" title="Drag to resize"></div>
+
+      <!-- Donate Overlay -->
+      <div class="guide-overlay" id="donate-overlay" aria-modal="true" role="dialog" aria-label="Donate to support Argos" style="display:none">
+        <div class="guide-panel">
+          <div class="guide-header">
+            <div>
+              <p class="eyebrow">Support the project</p>
+              <h2>Donate</h2>
+            </div>
+            <button class="guide-close" id="close-donate" aria-label="Close donate panel">✕</button>
+          </div>
+          <div class="guide-body">
+            <div class="guide-section">
+              <h3>Support Argos development</h3>
+              <p>Argos is free and open source. If it helped you recover your ZEC, a donation supports ongoing development and maintenance.</p>
+            </div>
+            <div class="guide-section">
+              <h3>Send ZEC</h3>
+              <div class="donate-address-block">
+                <code id="donate-address" class="donate-address">Address coming soon</code>
+                <button class="ghost" id="copy-donate-address" disabled>Copy</button>
+              </div>
+              <p id="donate-copy-status" class="status-line" style="margin-top:8px"></p>
+            </div>
+            <div class="guide-section">
+              <h3>Other ways to help</h3>
+              <ul>
+                <li><a href="https://github.com/sovright/zec-wallet-rescue" target="_blank" rel="noreferrer">Star us on GitHub</a></li>
+                <li>Share Argos with others who may need to recover a ZecWallet Lite seed</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <!-- User Guide Overlay -->
       <div class="guide-overlay" id="guide-overlay" aria-modal="true" role="dialog" aria-label="User Guide" style="display:none">
@@ -453,6 +488,11 @@
           <p class="lead" id="complete-summary">Transactions broadcast successfully.</p>
           <div id="complete-txids" class="complete-txids"></div>
           <div class="report-card" id="complete-report" style="display:none"></div>
+          <div class="donate-card report-card">
+            <h3>Support Argos</h3>
+            <p>Argos is free and open source. If it helped you recover your ZEC, consider making a donation to support ongoing development.</p>
+            <button class="ghost" id="complete-open-donate">Donate</button>
+          </div>
           <label class="field">
             <span>Recovery report path</span>
             <input id="report-path" type="text" value="argos-recovery-report.txt" />

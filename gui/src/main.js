@@ -1115,6 +1115,44 @@ $("restart-flow").addEventListener("click", () => {
   goTo("welcome");
 });
 
+// ─── Donate ───────────────────────────────────────────────────────────────────
+
+// Set this when the donation address is ready; leave empty to show "coming soon"
+const DONATE_ZEC_ADDRESS = "";
+
+(function initDonate() {
+  if (DONATE_ZEC_ADDRESS) {
+    $("donate-address").textContent = DONATE_ZEC_ADDRESS;
+    $("copy-donate-address").disabled = false;
+  }
+})();
+
+function openDonate() {
+  $("donate-overlay").style.display = "";
+  document.body.style.overflow = "hidden";
+  $("close-donate").focus();
+}
+
+function closeDonate() {
+  $("donate-overlay").style.display = "none";
+  document.body.style.overflow = "";
+}
+
+$("open-donate").addEventListener("click", openDonate);
+$("complete-open-donate").addEventListener("click", openDonate);
+$("close-donate").addEventListener("click", closeDonate);
+
+$("donate-overlay").addEventListener("click", (e) => {
+  if (e.target === $("donate-overlay")) closeDonate();
+});
+
+$("copy-donate-address").addEventListener("click", () => {
+  navigator.clipboard.writeText(DONATE_ZEC_ADDRESS).then(() => {
+    setStatus("donate-copy-status", "✓ Address copied", "success");
+    setTimeout(() => setStatus("donate-copy-status", "", ""), 2500);
+  });
+});
+
 // ─── User Guide ───────────────────────────────────────────────────────────────
 
 $("open-guide").addEventListener("click", () => {
@@ -1136,9 +1174,12 @@ $("guide-overlay").addEventListener("click", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && $("guide-overlay").style.display !== "none") {
-    $("guide-overlay").style.display = "none";
-    document.body.style.overflow = "";
+  if (e.key === "Escape") {
+    if ($("donate-overlay").style.display !== "none") closeDonate();
+    else if ($("guide-overlay").style.display !== "none") {
+      $("guide-overlay").style.display = "none";
+      document.body.style.overflow = "";
+    }
   }
 });
 
