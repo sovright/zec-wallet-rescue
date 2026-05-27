@@ -759,19 +759,43 @@ $("cancel-scan").addEventListener("click", async () => {
   }
 });
 
+function donationParamsFromForm() {
+  const enabled = $("donate-enabled").checked;
+  const pct = parseFloat($("donate-rate").value);
+  const donationRate = enabled && Number.isFinite(pct) && pct > 0 ? pct / 100 : null;
+  const donorEmail = enabled ? ($("donate-email").value.trim() || null) : null;
+  return { donationRate, donorEmail };
+}
+
+async function refreshSweepProposal() {
+  const { donationRate, donorEmail } = donationParamsFromForm();
+  const proposal = await invoke("propose_sweep", {
+    handle: state.scanHandle,
+    destination: state.destination,
+    memo: state.memo,
+    maxFeeZec: state.maxFeeZec,
+    donationRate,
+    donorEmail,
+  });
+  state.sweepProposal = proposal;
+  renderSweepProposal(proposal);
+}
+
+async function maybeRefreshProposal() {
+  if (!state.sweepProposal) return;
+  try {
+    await refreshSweepProposal();
+  } catch (err) {
+    setStatus("sweep-execute-status", `✗ ${err}`, "error");
+  }
+}
+
 $("review-sweep").addEventListener("click", async () => {
   setStatus("scan-message", "Fetching sweep proposal…", "");
   $("review-sweep").disabled = true;
 
   try {
-    const proposal = await invoke("propose_sweep", {
-      handle: state.scanHandle,
-      destination: state.destination,
-      memo: state.memo,
-      maxFeeZec: state.maxFeeZec,
-    });
-    state.sweepProposal = proposal;
-    renderSweepProposal(proposal);
+    await refreshSweepProposal();
     goTo("sweep");
   } catch (err) {
     setStatus("scan-message", `✗ ${err}`, "error");
@@ -787,6 +811,13 @@ $("sweep-back").addEventListener("click", () => {
   }
   goTo("scan");
 });
+
+$("donate-enabled").addEventListener("change", () => {
+  $("donate-fields").hidden = !$("donate-enabled").checked;
+  maybeRefreshProposal();
+});
+$("donate-rate").addEventListener("change", maybeRefreshProposal);
+// email does not affect amounts; it's read fresh at propose/execute time, no re-propose needed
 
 // ─── Step 5: Sweep Review ─────────────────────────────────────────────────────
 
@@ -844,6 +875,18 @@ function renderSweepProposal(proposal) {
     skippedEl.appendChild(list);
   }
 
+  $("donate-form").hidden = state.scanConfig?.network === "testnet";
+  const donated = proposal.total_donation_zatoshis || 0;
+  const preview = $("donate-amount-preview");
+  if (donated > 0) {
+    const net = (proposal.net_received_zatoshis || 0) - donated;
+    preview.textContent = `Donation: ${fmt(donated)} · Net to you: ${fmt(net)}`;
+  } else if ($("donate-enabled").checked && state.scanConfig?.network !== "testnet") {
+    preview.textContent = "Donation is below the minimum threshold — it will be skipped.";
+  } else {
+    preview.textContent = "";
+  }
+
   $("irreversible-check").checked = false;
   $("execute-sweep").disabled = true;
 }
@@ -872,11 +915,14 @@ $("execute-sweep").addEventListener("click", async () => {
   setStatus("sweep-execute-status", "Broadcasting transactions to the Zcash network… this may take up to 2 minutes.", "");
 
   try {
+    const { donationRate, donorEmail } = donationParamsFromForm();
     const results = await invoke("execute_sweep", {
       handle: state.scanHandle,
       destination: state.destination,
       memo: state.memo,
       maxFeeZec: state.maxFeeZec,
+      donationRate,
+      donorEmail,
     });
     setStatus("sweep-execute-status", "", "");
     renderCompleteScreen(results);
