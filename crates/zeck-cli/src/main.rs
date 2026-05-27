@@ -107,6 +107,14 @@ enum Commands {
         #[arg(long)]
         memo: Option<String>,
 
+        /// Fraction of recovered funds to donate to the project (e.g. 0.10 for 10%). Omit to skip.
+        #[arg(long)]
+        donation_rate: Option<f64>,
+
+        /// Email placed in the donation memo for an off-chain receipt (optional).
+        #[arg(long)]
+        donor_email: Option<String>,
+
         /// Maximum fee in ZEC (e.g. 0.001). Sweep is skipped if estimated fee exceeds this.
         #[arg(long, value_parser = parse_zec_to_zatoshis)]
         max_fee: Option<u64>,
@@ -214,6 +222,8 @@ async fn main() -> Result<()> {
         Commands::Sweep {
             destination,
             memo,
+            donation_rate,
+            donor_email,
             max_fee,
             dry_run,
             confirm_sweep,
@@ -262,8 +272,8 @@ async fn main() -> Result<()> {
                 destination: destination.clone(),
                 memo: memo.clone(),
                 max_fee_zatoshis: max_fee,
-                donation_rate: None,
-                donor_email: None,
+                donation_rate,
+                donor_email,
             };
             let proposal = service.propose_sweep(&handle, request.clone()).await?;
             print_sweep_preview(&proposal);
