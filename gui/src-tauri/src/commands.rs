@@ -145,6 +145,8 @@ pub async fn propose_sweep(
     destination: String,
     memo: Option<String>,
     max_fee_zec: Option<String>,
+    donation_rate: Option<f64>,
+    donor_email: Option<String>,
 ) -> Result<SweepProposal, String> {
     let max_fee_zatoshis = max_fee_zec
         .as_deref()
@@ -161,8 +163,8 @@ pub async fn propose_sweep(
                 destination,
                 memo,
                 max_fee_zatoshis,
-                donation_rate: None,
-                donor_email: None,
+                donation_rate,
+                donor_email,
             },
         )
         .await
@@ -170,6 +172,7 @@ pub async fn propose_sweep(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_sweep(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -177,6 +180,8 @@ pub async fn execute_sweep(
     destination: String,
     memo: Option<String>,
     max_fee_zec: Option<String>,
+    donation_rate: Option<f64>,
+    donor_email: Option<String>,
 ) -> Result<Vec<TxBroadcastResult>, String> {
     let max_fee_zatoshis = max_fee_zec
         .as_deref()
@@ -193,8 +198,8 @@ pub async fn execute_sweep(
                 destination,
                 memo,
                 max_fee_zatoshis,
-                donation_rate: None,
-                donor_email: None,
+                donation_rate,
+                donor_email,
             },
         )
         .await
@@ -217,6 +222,11 @@ pub fn default_data_dir(app: AppHandle) -> Result<String, String> {
         .app_data_dir()
         .map_err(|err| format!("resolving app data dir: {err}"))?;
     Ok(base.join("workspace").display().to_string())
+}
+
+#[tauri::command]
+pub fn donation_address() -> String {
+    argos_core::DONATION_ADDRESS.to_owned()
 }
 
 #[tauri::command]

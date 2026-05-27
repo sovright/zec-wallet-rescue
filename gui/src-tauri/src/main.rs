@@ -26,7 +26,8 @@ fn main() {
             commands::default_data_dir,
             commands::notify_user,
             commands::list_incomplete_sessions,
-            commands::resume_session
+            commands::resume_session,
+            commands::donation_address
         ])
         .setup(|app| {
             let _window = app.get_webview_window("main");
