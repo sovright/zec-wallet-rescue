@@ -124,12 +124,13 @@ donation figure has a defined data source rather than recomputing client-side.
 
 ### Relationship to PR #66
 
-PR #66 (`feat/donate-flow`) is **not merged** into the current branch and no
-donation UI yet exists in `gui/`. The plan must decide explicitly: either rebase
-/ build on top of #66 and then simplify its overlay into the QR popup below, or
-implement the donation UI fresh and close #66. Either way, the "retain and
-simplify the overlay" instructions below describe the desired end state, not an
-edit to already-merged code.
+**Decision: implementation lands on the `feat/donate-flow` branch (PR #66),
+building on its existing overlay.** PR #66's passive copy-address overlay is the
+starting point; this work extends that branch by (a) baking the shielded
+`DONATION_ADDRESS` into `zeck-core`, (b) adding the in-sweep donation flow, and
+(c) simplifying the overlay into the QR popup described below. The current spec
+is authored on `chore/bump-zcash-deps`; the implementer should bring it onto
+`feat/donate-flow` (cherry-pick or re-commit) so the spec travels with the work.
 
 ### Primary path — in the sweep
 
