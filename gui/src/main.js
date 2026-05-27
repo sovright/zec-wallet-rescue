@@ -21,6 +21,7 @@ const state = {
   unlistenDiscovered: null,
   scanConfig: null,
   savedReportPath: null,
+  donationEnabled: false,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -760,6 +761,7 @@ $("cancel-scan").addEventListener("click", async () => {
 });
 
 function donationParamsFromForm() {
+  if (!state.donationEnabled) return { donationRate: null, donorEmail: null };
   const enabled = $("donate-enabled").checked;
   const pct = parseFloat($("donate-rate").value);
   const donationRate = enabled && Number.isFinite(pct) && pct > 0 ? pct / 100 : null;
@@ -847,6 +849,7 @@ function renderSweepProposal(proposal) {
     appendCell(tr, fmt(tx.gross_zatoshis));
     appendCell(tr, fmt(tx.fee_zatoshis));
     appendCell(tr, fmt(tx.net_zatoshis));
+    appendCell(tr, fmt(tx.donation_zatoshis || 0));
     appendCell(tr, String(tx.memo ?? "—"));
     tbody.appendChild(tr);
   });
@@ -875,13 +878,13 @@ function renderSweepProposal(proposal) {
     skippedEl.appendChild(list);
   }
 
-  $("donate-form").hidden = state.scanConfig?.network === "testnet";
+  $("donate-form").hidden = !state.donationEnabled || state.scanConfig?.network === "testnet";
   const donated = proposal.total_donation_zatoshis || 0;
   const preview = $("donate-amount-preview");
   if (donated > 0) {
     const net = (proposal.net_received_zatoshis || 0) - donated;
     preview.textContent = `Donation: ${fmt(donated)} · Net to you: ${fmt(net)}`;
-  } else if ($("donate-enabled").checked && state.scanConfig?.network !== "testnet") {
+  } else if (state.donationEnabled && $("donate-enabled").checked && state.scanConfig?.network !== "testnet") {
     preview.textContent = "Donation is below the minimum threshold — it will be skipped.";
   } else {
     preview.textContent = "";
@@ -1166,6 +1169,7 @@ $("restart-flow").addEventListener("click", () => {
 (async function initDonate() {
   try {
     const addr = await invoke("donation_address");
+    state.donationEnabled = !!addr;
     if (addr) {
       $("donate-address").textContent = addr;
       $("copy-donate-address").disabled = false;
