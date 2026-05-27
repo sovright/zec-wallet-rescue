@@ -23,10 +23,11 @@ themselves, not a follow-up action.
 
 ## On-chain mechanism
 
-The sweep already uses `zcash_client_backend` proposal machinery
-(`propose_shielding` for transparent→shielded, `propose_transfer` send-max for
-the shielded send to the destination, ZIP-317 fees) in
-`crates/zeck-core/src/service.rs`.
+The sweep uses `zcash_client_backend` proposal machinery in
+`crates/zeck-core/src/service.rs`: `propose_shielding` for transparent→shielded,
+and — critically — `propose_send_max_transfer` with `MaxSpendMode::MaxSpendable`
+to a **single** destination for the shielded send (`execute_send_max_step`,
+`service.rs:688`). ZIP-317 fees throughout.
 
 The donation is carried as an **extra output on each per-account send
 transaction**, not as a separate transaction. Adding one shielded output to a
@@ -34,17 +35,41 @@ transaction that is already being built costs roughly one marginal ZIP-317
 action (~5,000 zats), far less than a dedicated transaction with its own inputs
 and fee.
 
-Per account, in the send step:
+### Why this is not a one-line change
 
-1. Compute `donation = round(rate * send_amount)` where `send_amount` is the
-   amount that account would otherwise send to the user's destination.
-2. **If `donation >= MIN_DONATION_ZATOSHIS`**: build a two-payment
-   `propose_transfer`:
-   - donation → `DONATION_ADDRESS`, with the donation memo (see below)
-   - remainder → user's destination (existing memo behavior unchanged)
-3. **Else**: fall back to the current send-max-to-destination with no donation
-   output and no extra fee. The threshold gates out dust donations
-   automatically, per-transaction.
+`propose_send_max_transfer` takes a single destination and lets the proposer
+compute "spend everything minus fee" — there is no `send_amount` known ahead of
+time, and it cannot express a two-recipient split. Splitting out a donation
+therefore requires replacing the single send-max call, for accounts that donate,
+with a **two-pass** build:
+
+**Pass 1 — measure.** Run the existing send-max proposal as a dry run (build the
+proposal only; do not create/broadcast). Read from it the exact amount that
+would go to the destination (`send_amount`) and its fee. This is the spendable
+total for the account.
+
+**Pass 2 — split (only if donating).** Compute
+`donation = round(rate * send_amount)`.
+- **If `donation < MIN_DONATION_ZATOSHIS`** (or `donation_rate` is `None`, or
+  network is testnet): keep Pass 1's send-max proposal unchanged — no donation
+  output, no extra fee. This is byte-for-byte today's behavior.
+- **Otherwise**: build a fixed-amount two-payment `propose_transfer`:
+  - donation → `DONATION_ADDRESS` with the donation memo (see below)
+  - `remainder` → user's destination (existing destination-memo behavior)
+
+  The second output raises the ZIP-317 fee by one marginal action, so the
+  remainder must absorb that delta:
+  `remainder = send_amount - donation - (fee_two_output - fee_send_max)`.
+  Because both payments are now fixed amounts that sum to the spendable total
+  minus the new fee, the proposal spends the account fully with no change
+  output (matching the send-max invariant). The plan must confirm the exact fee
+  delta from `propose_transfer`'s own computed fee rather than assuming 5,000;
+  if rounding leaves a sub-dust remainder discrepancy, prefer adjusting the
+  donation down so the destination receives the intended remainder.
+
+This per-account two-pass logic applies in both `build_sweep_proposal` (for the
+displayed proposal) and `execute_send_max_step` (for the broadcast), which must
+agree.
 
 ### Memo format
 
@@ -90,9 +115,21 @@ the GUI.
   (non-empty, contains `@`); empty/None omits the email line from the memo.
 
 `build_sweep_proposal` reflects the donation split so the proposal/summary shows
-accurate net-to-user vs. donation amounts before the user executes.
+accurate net-to-user vs. donation amounts before the user executes. The
+`SweepProposal`/per-transaction model gains a `donation_zatoshis` field
+(0 when no donation output was created for that transaction) so the GUI's live
+donation figure has a defined data source rather than recomputing client-side.
 
 ## GUI flow
+
+### Relationship to PR #66
+
+PR #66 (`feat/donate-flow`) is **not merged** into the current branch and no
+donation UI yet exists in `gui/`. The plan must decide explicitly: either rebase
+/ build on top of #66 and then simplify its overlay into the QR popup below, or
+implement the donation UI fresh and close #66. Either way, the "retain and
+simplify the overlay" instructions below describe the desired end state, not an
+edit to already-merged code.
 
 ### Primary path — in the sweep
 
@@ -141,7 +178,10 @@ any wallet to send a manual donation; this path does not move recovered funds.
 
 Core (`service.rs` unit tests, following existing memo/proposal tests):
 - Donation output added when `rate * send_amount >= threshold`; amounts split
-  correctly (donation + remainder + fee == account total).
+  correctly: for the shielded send leg, `donation + remainder + send_fee ==
+  send_amount` (the spendable total measured in Pass 1). Accounts that first run
+  the transparent→shielded shielding step incur a separate shielding fee earlier
+  in the pipeline; that fee is outside this equation.
 - No donation output when below threshold; behavior identical to today.
 - `donation_rate = None` → no donation output.
 - Memo body equals tag alone when no email, tag + email line when present.
