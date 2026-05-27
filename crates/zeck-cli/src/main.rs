@@ -262,6 +262,8 @@ async fn main() -> Result<()> {
                 destination: destination.clone(),
                 memo: memo.clone(),
                 max_fee_zatoshis: max_fee,
+                donation_rate: None,
+                donor_email: None,
             };
             let proposal = service.propose_sweep(&handle, request.clone()).await?;
             print_sweep_preview(&proposal);

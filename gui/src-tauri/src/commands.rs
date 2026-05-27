@@ -161,6 +161,8 @@ pub async fn propose_sweep(
                 destination,
                 memo,
                 max_fee_zatoshis,
+                donation_rate: None,
+                donor_email: None,
             },
         )
         .await
@@ -191,6 +193,8 @@ pub async fn execute_sweep(
                 destination,
                 memo,
                 max_fee_zatoshis,
+                donation_rate: None,
+                donor_email: None,
             },
         )
         .await

@@ -401,6 +401,7 @@ fn build_sweep_proposal(
                     gross_zatoshis: account.transparent_zatoshis,
                     fee_zatoshis: shielding_fee_zatoshis,
                     net_zatoshis: shielded_after_step_one,
+                    donation_zatoshis: 0,
                     note: format!(
                         "Estimated shielding step for {} transparent UTXOs before the external sweep.",
                         account.transparent_utxo_count
@@ -449,6 +450,7 @@ fn build_sweep_proposal(
             gross_zatoshis: shielded_available,
             fee_zatoshis: sweep_fee_zatoshis,
             net_zatoshis: net_received_for_account,
+            donation_zatoshis: 0,
             note: if shielded_existing > 0 && account.transparent_zatoshis > 0 {
                 "Estimated external recovery sweep after shielding the transparent portion and combining it with existing shielded funds."
                     .to_owned()
@@ -487,6 +489,7 @@ fn build_sweep_proposal(
         total_send_zatoshis,
         total_fee_zatoshis,
         net_received_zatoshis,
+        total_donation_zatoshis: 0,
         dry_run_default: true,
         warning: Some(warning),
     })
@@ -1153,6 +1156,8 @@ mod tests {
                 destination: derived_destination(),
                 memo: Some("recovery".to_owned()),
                 max_fee_zatoshis: None,
+                donation_rate: None,
+                donor_email: None,
             },
         )
         .expect("proposal should build");
@@ -1187,6 +1192,8 @@ mod tests {
                 destination: derived_destination(),
                 memo: None,
                 max_fee_zatoshis: Some(15_000),
+                donation_rate: None,
+                donor_email: None,
             },
         )
         .expect_err("proposal should fail");
@@ -1232,6 +1239,8 @@ mod tests {
                 destination: derived_destination(),
                 memo: None,
                 max_fee_zatoshis: None,
+                donation_rate: None,
+                donor_email: None,
             },
         )
         .expect("proposal should build");
