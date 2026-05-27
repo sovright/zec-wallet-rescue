@@ -11,7 +11,8 @@ use zcash_client_backend::{
     data_api::{
         wallet::{
             create_proposed_transactions, input_selection::GreedyInputSelector,
-            propose_send_max_transfer, propose_shielding, ConfirmationsPolicy, SpendingKeys,
+            propose_send_max_transfer, propose_shielding, propose_transfer, ConfirmationsPolicy,
+            SpendingKeys,
         },
         MaxSpendMode, TransactionStatus, TransparentOutputFilter, WalletRead, WalletWrite,
     },
@@ -21,7 +22,15 @@ use zcash_client_backend::{
     },
     wallet::OvkPolicy,
 };
-use zcash_client_sqlite::{util::SystemClock, WalletDb};
+// The crate re-export is deprecated in favor of the standalone `zip321` crate,
+// but that crate is not a direct dependency; the re-export resolves to the
+// identical `zip321` 0.6.0 already in the dependency tree. If the re-export is
+// removed upstream, or if zip321 is needed in more than this one site, add
+// `zip321` as a direct dependency — currently reused transitively to avoid
+// growing the dependency tree.
+#[allow(deprecated)]
+use zcash_client_backend::zip321;
+use zcash_client_sqlite::{util::SystemClock, AccountUuid, ReceivedNoteId, WalletDb};
 use zcash_keys::keys::UnifiedSpendingKey;
 use zcash_primitives::transaction::{fees::zip317::MINIMUM_FEE, TxId};
 use zcash_proofs::prover::LocalTxProver;
@@ -48,6 +57,18 @@ use crate::{
 
 const RECOVERY_MEMO_DEFAULT: &str = "Argos recovery";
 const SESSION_RETENTION_SECS: u64 = 300;
+/// Maximum iterations for the donation-split fee-convergence loop. The extra
+/// donation output adds at most one ZIP-317 marginal action, so convergence is
+/// expected within 2 iterations; 4 leaves headroom.
+const MAX_FEE_CONVERGENCE_ITERS: usize = 4;
+
+/// The concrete wallet database type used throughout the execution path.
+type SweepWalletDb = WalletDb<
+    rusqlite::Connection,
+    zcash_protocol::consensus::Network,
+    SystemClock,
+    rand_core::OsRng,
+>;
 const CONFIRMATION_POLL_INTERVAL_SECS: u64 = 5;
 const CONFIRMATION_POLL_ATTEMPTS: u32 = 24;
 
@@ -541,6 +562,9 @@ async fn execute_sweep_for_session(
             .map_err(|err| ZeckError::InvalidMemo(err.to_string()))?,
     );
 
+    crate::donation::validate_donation_rate(request.donation_rate)?;
+    crate::donation::validate_donor_email(request.donor_email.as_deref())?;
+
     let (runtime, workspace, tracked_accounts, progress) = {
         let guard = session.state.lock().await;
         let workspace = guard
@@ -568,6 +592,20 @@ async fn execute_sweep_for_session(
     let prover = LocalTxProver::bundled();
     let mut total_fee_zatoshis = 0u64;
     let mut results = Vec::new();
+
+    // Testnet kill-switch: forces the donation feature off.
+    let effective_donation_address =
+        if matches!(runtime.network, crate::models::ZeckNetwork::Testnet) {
+            ""
+        } else {
+            crate::donation::DONATION_ADDRESS
+        };
+    let donation_memo = Some(
+        MemoBytes::from_bytes(
+            crate::donation::donation_memo_body(request.donor_email.as_deref()).as_bytes(),
+        )
+        .map_err(|err| ZeckError::InvalidMemo(err.to_string()))?,
+    );
 
     let preferred_endpoint = progress
         .server
@@ -627,6 +665,9 @@ async fn execute_sweep_for_session(
                     results: &mut results,
                     prior_fee_zatoshis: total_fee_zatoshis,
                     max_fee_zatoshis: request.max_fee_zatoshis,
+                    donation_address: effective_donation_address,
+                    donation_rate: request.donation_rate,
+                    donation_memo: donation_memo.clone(),
                 };
                 execute_shielding_step(
                     &mut ctx,
@@ -663,6 +704,9 @@ async fn execute_sweep_for_session(
                 results: &mut results,
                 prior_fee_zatoshis: total_fee_zatoshis,
                 max_fee_zatoshis: request.max_fee_zatoshis,
+                donation_address: effective_donation_address,
+                donation_rate: request.donation_rate,
+                donation_memo: donation_memo.clone(),
             };
             execute_send_max_step(
                 &mut ctx,
@@ -689,6 +733,21 @@ struct SweepStepCtx<'a> {
     results: &'a mut Vec<TxBroadcastResult>,
     prior_fee_zatoshis: u64,
     max_fee_zatoshis: Option<u64>,
+    donation_address: &'a str,
+    donation_rate: Option<f64>,
+    donation_memo: Option<MemoBytes>,
+}
+
+/// The change strategy used for every Argos proposal: ZIP-317 fees, no change
+/// memo, Orchard as the fallback change pool, default dust handling. Extracted
+/// so the shielding step and the donation-split step cannot drift apart.
+fn standard_zip317_change_strategy<I>() -> SingleOutputChangeStrategy<I> {
+    SingleOutputChangeStrategy::<I>::new(
+        StandardFeeRule::Zip317,
+        None,
+        ShieldedProtocol::Orchard,
+        DustOutputPolicy::default(),
+    )
 }
 
 async fn execute_shielding_step(
@@ -710,12 +769,7 @@ async fn execute_shielding_step(
         ))
     })?;
     let input_selector = GreedyInputSelector::<_>::new();
-    let change_strategy = SingleOutputChangeStrategy::<_>::new(
-        StandardFeeRule::Zip317,
-        None,
-        ShieldedProtocol::Orchard,
-        DustOutputPolicy::default(),
-    );
+    let change_strategy = standard_zip317_change_strategy();
 
     let proposal = propose_shielding::<_, _, _, _, Infallible>(
         &mut wallet_db,
@@ -776,6 +830,98 @@ async fn execute_shielding_step(
     Ok(fee_zatoshis)
 }
 
+/// Build a two-output proposal that splits the full account balance between a
+/// donation output and the user's destination, converging on the ZIP-317 fee so
+/// that no change output remains.
+///
+/// Returns `Some(proposal)` once the candidate fee matches the proposal's
+/// computed fee, or `None` if convergence (or a positive user remainder) could
+/// not be achieved — in which case the caller falls back to the donation-free
+/// send-max sweep. This is a pure extraction of the inline two-pass logic; the
+/// checked arithmetic, convergence loop, and fallback semantics are unchanged.
+#[allow(clippy::too_many_arguments)]
+fn build_donation_split_proposal(
+    wallet_db: &mut SweepWalletDb,
+    network: crate::models::ZeckNetwork,
+    account_id: AccountUuid,
+    destination_address: &ZcashAddress,
+    memo_bytes: Option<MemoBytes>,
+    donation_zcash_address: &ZcashAddress,
+    donation_memo: Option<MemoBytes>,
+    send_amount: u64,
+    send_max_fee: u64,
+    donation: u64,
+) -> ZeckResult<Option<zcash_client_backend::proposal::Proposal<StandardFeeRule, ReceivedNoteId>>> {
+    let total_spendable = send_amount + send_max_fee;
+    // Iterative fee convergence: two fixed payments summing to
+    // (total_spendable - fee) drive change to zero once the candidate fee
+    // matches the proposal's computed fee. The extra output adds at most one
+    // ZIP-317 marginal action, so this converges in <=2 iterations.
+    let mut candidate_fee = send_max_fee;
+    for _ in 0..MAX_FEE_CONVERGENCE_ITERS {
+        let remainder = total_spendable
+            .checked_sub(donation)
+            .and_then(|v| v.checked_sub(candidate_fee));
+        let remainder = match remainder {
+            Some(r) if r > 0 => r,
+            _ => break,
+        };
+        let request = zip321::TransactionRequest::new(vec![
+            zip321::Payment::new(
+                donation_zcash_address.clone(),
+                Zatoshis::from_u64(donation).map_err(|err| {
+                    ZeckError::TransactionBuild(format!("donation amount out of range: {err}"))
+                })?,
+                donation_memo.clone(),
+                None,
+                None,
+                vec![],
+            )
+            .ok_or_else(|| {
+                ZeckError::TransactionBuild("donation address cannot receive a memo".to_owned())
+            })?,
+            zip321::Payment::new(
+                destination_address.clone(),
+                Zatoshis::from_u64(remainder).map_err(|err| {
+                    ZeckError::TransactionBuild(format!("destination amount out of range: {err}"))
+                })?,
+                memo_bytes.clone(),
+                None,
+                None,
+                vec![],
+            )
+            .ok_or_else(|| {
+                ZeckError::TransactionBuild(
+                    "destination cannot receive the recovery memo".to_owned(),
+                )
+            })?,
+        ])
+        .map_err(|err| {
+            ZeckError::TransactionBuild(format!("building donation transfer request: {err}"))
+        })?;
+        let input_selector = GreedyInputSelector::<_>::new();
+        let change_strategy = standard_zip317_change_strategy();
+        let proposal = propose_transfer::<_, _, _, _, Infallible>(
+            wallet_db,
+            &consensus_network(network),
+            account_id,
+            &input_selector,
+            &change_strategy,
+            request,
+            ConfirmationsPolicy::MIN,
+        )
+        .map_err(|err| {
+            ZeckError::TransactionBuild(format!("building donation sweep proposal: {err}"))
+        })?;
+        let fee = proposal_fee_zatoshis(&proposal)?;
+        if fee == candidate_fee {
+            return Ok(Some(proposal));
+        }
+        candidate_fee = fee;
+    }
+    Ok(None)
+}
+
 async fn execute_send_max_step(
     ctx: &mut SweepStepCtx<'_>,
     tracked_account: &TrackedAccount,
@@ -796,18 +942,64 @@ async fn execute_send_max_step(
         ))
     })?;
 
-    let proposal = propose_send_max_transfer::<_, _, _, Infallible>(
+    // Pass 1 — measure the full-account send-max proposal (build only, no broadcast).
+    let max_proposal = propose_send_max_transfer::<_, _, _, Infallible>(
         &mut wallet_db,
         &consensus_network(ctx.network),
         tracked_account.wallet_account_id,
         &[ShieldedProtocol::Sapling, ShieldedProtocol::Orchard],
         &StandardFeeRule::Zip317,
         destination_address.clone(),
-        memo_bytes,
+        memo_bytes.clone(),
         MaxSpendMode::MaxSpendable,
         ConfirmationsPolicy::MIN,
     )
     .map_err(|err| ZeckError::TransactionBuild(format!("building sweep proposal: {err}")))?;
+    let send_max_fee = proposal_fee_zatoshis(&max_proposal)?;
+    // Send-max is single-step with exactly one payment; read the amount destined
+    // for the user (the full account spendable equals send_amount + send_max_fee).
+    let send_amount: u64 = max_proposal
+        .steps()
+        .first()
+        .transaction_request()
+        .payments()
+        .values()
+        .next()
+        .map(|payment| u64::from(payment.amount()))
+        .ok_or_else(|| {
+            ZeckError::TransactionBuild(
+                "send-max proposal contained no payment output".to_owned(),
+            )
+        })?;
+
+    let donation =
+        crate::donation::donation_for_send_amount(ctx.donation_address, ctx.donation_rate, send_amount);
+
+    let proposal = if donation == 0 {
+        // No donation output: behavior is unchanged from the single-pass sweep.
+        max_proposal
+    } else {
+        let donation_zcash_address = ZcashAddress::try_from_encoded(ctx.donation_address)
+            .map_err(|err| {
+                ZeckError::InvalidAddress(format!("failed to decode donation address: {err}"))
+            })?;
+        // On non-convergence (or a non-positive user remainder) fall back to the
+        // donation-free send-max sweep.
+        build_donation_split_proposal(
+            &mut wallet_db,
+            ctx.network,
+            tracked_account.wallet_account_id,
+            destination_address,
+            memo_bytes.clone(),
+            &donation_zcash_address,
+            ctx.donation_memo.clone(),
+            send_amount,
+            send_max_fee,
+            donation,
+        )?
+        .unwrap_or(max_proposal)
+    };
+
     let fee_zatoshis = proposal_fee_zatoshis(&proposal)?;
     enforce_max_fee(
         checked_fee_total(ctx.prior_fee_zatoshis, fee_zatoshis)?,
