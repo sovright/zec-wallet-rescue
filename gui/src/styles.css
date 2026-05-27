@@ -939,3 +939,9 @@ select {
   width: 100%;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
 }
+
+.donate-form { border-left: 3px solid var(--accent); }
+.donate-form[hidden] { display: none; }
+.checkbox-row { display: flex; align-items: center; gap: 8px; }
+.donate-fields { margin-top: 10px; }
+.donate-fields[hidden] { display: none; }

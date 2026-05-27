@@ -471,6 +471,23 @@
           </div>
           <p id="sweep-summary" class="status-line"></p>
           <div class="report-card" id="sweep-skipped"></div>
+          <div class="donate-form report-card" id="donate-form">
+            <label class="checkbox-row">
+              <input type="checkbox" id="donate-enabled" checked />
+              <span>Donate a share of recovered funds to support Argos</span>
+            </label>
+            <div class="donate-fields" id="donate-fields">
+              <label class="field">
+                <span>Donation percentage</span>
+                <input id="donate-rate" type="number" min="0" max="99" step="1" value="10" />
+              </label>
+              <label class="field">
+                <span>Email for receipt (optional)</span>
+                <input id="donate-email" type="email" placeholder="you@example.com" />
+              </label>
+              <p class="status-line" id="donate-amount-preview"></p>
+            </div>
+          </div>
           <label class="checkline">
             <input type="checkbox" id="irreversible-check" />
             <span>I understand that broadcasting this recovery sweep is irreversible.</span>
