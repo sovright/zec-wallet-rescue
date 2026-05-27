@@ -148,21 +148,18 @@ Form contents:
 
 Hidden entirely when the active network is testnet.
 
-### Secondary path — donate anytime (QR popup)
+### Secondary path — donate anytime (address block)
 
-The standalone sidebar **♥ Donate** trigger (and the Complete-screen donation
-card) from PR #66 are retained, but the overlay is simplified to **pop up a
-payment QR code** for the baked-in `DONATION_ADDRESS`. The user scans it with
-any wallet to send a manual donation; this path does not move recovered funds.
+The standalone sidebar **♥ Donate** overlay and the Complete-screen donation
+card from PR #66 are retained as-is in structure: a panel showing the baked-in
+`DONATION_ADDRESS` with a copy button and project links. The user copies the
+address and sends a manual donation from any wallet; this path does not move
+recovered funds.
 
-- The QR encodes a Zcash payment URI (ZIP-321, `zcash:<DONATION_ADDRESS>`) so
-  scanning wallets prefill the recipient; the address text + copy button remain
-  beneath the QR as a fallback.
-- QR generation must work in the no-bundler static frontend. **Open decision:**
-  generate the QR (a) client-side via a small vendored QR library, or (b) in
-  Rust via a Tauri command (e.g. the `qrcode` crate) returning an SVG/data-URI.
-  Option (b) keeps the dependency in Rust and off the frontend; either needs
-  explicit dependency approval before adding.
+The only change from PR #66 is the address source: it comes from the baked-in
+`DONATION_ADDRESS` constant (a shielded UA) instead of the empty frontend
+placeholder. No QR code — a QR generator would add a frontend or Rust
+dependency, which is not worth it for this path.
 
 ## Error handling
 
