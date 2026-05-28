@@ -19,7 +19,7 @@ fund-recovery invariant.
 | Category | Where it runs | How to invoke |
 |---|---|---|
 | **C1** Unit tests, no network | CI on every push/PR | `cargo test --workspace` |
-| **C2** Integration tests against a local regtest node | Local only, opt-in | `cargo test --workspace -- --ignored` after starting a regtest node — see `tests/regtest_integration.rs` for the setup script |
+| **C2** Integration tests against a local regtest node | Local only, opt-in | `cargo test --workspace --features argos-network -- --ignored` after booting `tests/regtest/`. The `argos-network` feature relaxes `validate_lightwalletd_network` for the local chain; without it Argos refuses to talk to a regtest server. |
 | **C3** Testnet smoke flow | Local, manual; required before a release tag | Documented checklist in this file |
 | **C4** Mainnet small-amount gate | Manual, one-off pre-release | Section below |
 
@@ -156,7 +156,7 @@ mark their preconditions explicitly with `#[ignore]` and require:
 When all three are present, run:
 
 ```bash
-cargo test --workspace -- --ignored
+cargo test --workspace --features argos-network -- --ignored
 ```
 
 CI deliberately does not run these — boot cost is too high for per-PR turnaround.

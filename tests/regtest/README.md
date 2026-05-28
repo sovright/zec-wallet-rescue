@@ -68,11 +68,22 @@ export ARGOS_REGTEST_TEST_T_ADDR=t1...   # printed by setup.sh
 From the **repository root**:
 
 ```bash
-cargo test --workspace -- --ignored
+cargo test --workspace --features argos-network -- --ignored
 ```
 
-Default `cargo test` (without `--ignored`) still skips them. CI runs the
-default form only.
+Both flags are required:
+
+- `--features argos-network` enables the `argos-core` feature that teaches
+  `validate_lightwalletd_network` to accept the regtest chain name and
+  skip the testnet Sapling-activation-height check. Production builds
+  compile this out so a hostile mainnet lightwalletd cannot claim to be
+  regtest to bypass network validation in a released Argos binary.
+- `--ignored` runs the `#[ignore]`-tagged C2 tests; default `cargo test`
+  still skips them.
+
+Without `--features argos-network`, the integration test file is gated out
+by `#![cfg(feature = "argos-network")]` and compiles to an empty test
+binary. CI runs the default form only.
 
 Each integration test prints a `[regtest]` header noting the harness URL it
 connected to, so a mid-test failure is easy to attribute to the stack vs to
@@ -113,7 +124,7 @@ zebra contributors), you can skip docker entirely. The integration tests
 only care about `ARGOS_REGTEST_LIGHTWALLETD_URL` and a funded test seed.
 Configure your local zcashd with the equivalent of `zcashd-regtest.conf`,
 boot lightwalletd against it, mine + fund manually, then export the URL and
-run `cargo test --workspace -- --ignored`.
+run `cargo test --workspace --features argos-network -- --ignored`.
 
 ## Status of the tests
 

@@ -7,6 +7,19 @@ authors.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+# `argos-network` — opt-in support for talking to a private "Argos network"
+# (a local zcashd-regtest + lightwalletd stack booted from tests/regtest/).
+# When enabled, `validate_lightwalletd_network` accepts the `regtest` chain
+# name as a synonym for testnet and skips the Sapling-activation-height
+# check, so the C2 integration tests in tests/regtest_integration.rs can
+# scan a deterministic local chain instead of public testnet.
+#
+# Deliberately a dev/test-only escape hatch: production builds compile this
+# out, so a hostile mainnet lightwalletd cannot claim to be `regtest` to
+# bypass network validation in a released Argos binary.
+argos-network = []
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
