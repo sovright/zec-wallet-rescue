@@ -24,7 +24,7 @@ use zcash_client_backend::{
 };
 // The crate re-export is deprecated in favor of the standalone `zip321` crate,
 // but that crate is not a direct dependency; the re-export resolves to the
-// identical `zip321` 0.6.0 already in the dependency tree. If the re-export is
+// identical `zip321` 0.7.0 already in the dependency tree. If the re-export is
 // removed upstream, or if zip321 is needed in more than this one site, add
 // `zip321` as a direct dependency — currently reused transitively to avoid
 // growing the dependency tree.
@@ -869,31 +869,31 @@ fn build_donation_split_proposal(
         let request = zip321::TransactionRequest::new(vec![
             zip321::Payment::new(
                 donation_zcash_address.clone(),
-                Zatoshis::from_u64(donation).map_err(|err| {
+                Some(Zatoshis::from_u64(donation).map_err(|err| {
                     ZeckError::TransactionBuild(format!("donation amount out of range: {err}"))
-                })?,
+                })?),
                 donation_memo.clone(),
                 None,
                 None,
                 vec![],
             )
-            .ok_or_else(|| {
-                ZeckError::TransactionBuild("donation address cannot receive a memo".to_owned())
+            .map_err(|err| {
+                ZeckError::TransactionBuild(format!("invalid donation payment: {err}"))
             })?,
             zip321::Payment::new(
                 destination_address.clone(),
-                Zatoshis::from_u64(remainder).map_err(|err| {
+                Some(Zatoshis::from_u64(remainder).map_err(|err| {
                     ZeckError::TransactionBuild(format!("destination amount out of range: {err}"))
-                })?,
+                })?),
                 memo_bytes.clone(),
                 None,
                 None,
                 vec![],
             )
-            .ok_or_else(|| {
-                ZeckError::TransactionBuild(
-                    "destination cannot receive the recovery memo".to_owned(),
-                )
+            .map_err(|err| {
+                ZeckError::TransactionBuild(format!(
+                    "invalid destination payment in donation split: {err}"
+                ))
             })?,
         ])
         .map_err(|err| {
@@ -965,10 +965,11 @@ async fn execute_send_max_step(
         .payments()
         .values()
         .next()
-        .map(|payment| u64::from(payment.amount()))
+        .and_then(|payment| payment.amount())
+        .map(u64::from)
         .ok_or_else(|| {
             ZeckError::TransactionBuild(
-                "send-max proposal contained no payment output".to_owned(),
+                "send-max proposal contained no payment output amount".to_owned(),
             )
         })?;
 
