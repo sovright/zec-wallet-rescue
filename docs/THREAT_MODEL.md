@@ -164,6 +164,28 @@ The dependency tree is large (~700 transitive crates, dominated by the librustzc
 
 The combined effect: we have strong reproducibility of *what we build today* (lockfile + pinned toolchain + pinned-by-tag actions), modest visibility into the integrity of *what those inputs are* (audit advisories only), and no independent verification of *what we publish* (no reproducible builds / provenance). Closing T-SC1, T-SC3, and T-SC6 is the priority. A practical next step is adopting `cargo-deny` (covers advisory + license + bans + sources in one tool, with a checked-in config) and SHA-pinning every action in `.github/workflows/`.
 
+#### 6.6.1 Comparison with zebrad and Zodl
+
+Argos shares the librustzcash dependency core with two other production Zcash projects, but with different distribution models and supply-chain postures. Honest comparison:
+
+| Practice | Argos (this repo) | zebrad (ZcashFoundation/zebra) | Zodl iOS / Android (zodl-inc) |
+|---|---|---|---|
+| Rust dependency gate in CI | `cargo audit` (advisories only) | `cargo-deny` covering advisories, licenses, multiple-versions, wildcards, bans, and sources | n/a — Rust enters as a built artifact via the Zcash mobile SDKs, not compiled directly |
+| Yanked-crate policy | Audit emits a warning; tracked per-occurrence (T-SC5). Currently `core2 0.3.3`. | `yanked = "deny"` in `deny.toml` — CI **fails** on any yanked dep | n/a |
+| Third-party Action pinning | Most pinned to major-version tag (`@v4`, `@v2`); `dtolnay/rust-toolchain@master` floats on a branch (T-SC3) | `EmbarkStudios/cargo-deny-action` pinned to a 40-char commit SHA with the tag in a trailing comment | Mobile builds use Fastlane + platform CI; out of this comparison |
+| Dependency-update bot | Intentionally **none**; bumps are human-driven and reviewable as a diff (T-SC8 ✅) | Dependabot present (`.github/dependabot.yml`) — auto-PRs are filed and gated through review + the `cargo-deny` job | Gradle lockfile on Android (`buildscript-gradle.lockfile`); SwiftPM on iOS |
+| Lockfile commitment | `Cargo.lock` committed | `Cargo.lock` committed | `buildscript-gradle.lockfile` (Android); `Package.resolved` (iOS) |
+| Release binary integrity | SHA256 checksums + macOS code-signing; Windows unsigned (T-B3); no provenance attestations (T-SC6) | Docker images on GitHub Packages + binary releases; relies on GitHub release artifact hosting + Docker pull verification | **App Store / Play Store** distribution — binary integrity is delegated to Apple/Google platform signing; users do not run unsigned binaries |
+| Security disclosure | `security@sovright.com`, plain email (PGP intentionally not offered for v0.1.0-rc) | `security@zfnd.org` with a published PGP key; follows the RD-Crypto-Spec responsible-disclosure standard | `responsible_disclosure.md` published in repo with their process |
+
+**What we should copy from zebrad.** The single highest-leverage change is **adopting `cargo-deny`** with a checked-in `deny.toml` that sets `yanked = "deny"`, restricts licenses to a known-good set, and bans wildcards / multiple-versions where feasible. zebrad's `deny.toml` is a good template. This subsumes our current `cargo audit` job (covered as `cargo-deny check advisories`) while also catching the yanked-crate case that today only produces a warning. SHA-pinning every third-party Action — as zebrad does for `cargo-deny-action` — is the second item.
+
+**What does not transfer from Zodl.** Zodl mobile delegates binary-integrity to App Store / Play Store signing and review. Argos ships standalone binaries directly from GitHub Releases on three platforms, so we cannot offload that step the way Zodl can. The integrity guarantees in §6.5 (T-B2/T-B3/T-B4) and the provenance gap in T-SC6 exist because we are not in the mobile-store model. This is a structural difference, not a posture gap.
+
+**Where we currently match or exceed.** No JavaScript runtime dependencies (§7) is a stronger position than either project: zebrad has no JS, Zodl has the full native-mobile dependency surface, and we sit between by deliberately not shipping an npm bundle. The conservative dependency-bump policy in `CLAUDE.md` is a process control zebrad does not document; we should keep it but recognize it is review discipline, not a hard gate (T-SC2).
+
+**Where we are behind.** No `cargo-deny`, no SHA-pinned Actions, no SLSA provenance, no PGP disclosure key, and one Action (`dtolnay/rust-toolchain@master`) tracks a branch. Items addressable inside this repo are listed in §8 (T-SC1, T-SC3, T-SC6); PGP is a project-level v0.1.0-rc decision.
+
 ## 7. Dependency posture
 
 Cargo dependencies are pinned via `Cargo.lock`. The high-value crates are the librustzcash family (`zcash_client_backend`, `zcash_client_sqlite`, `zcash_keys`, `zcash_protocol`, `zcash_primitives`, `zcash_transparent`, `sapling-crypto`, `orchard`), maintained by ZODL (formerly the ECC mobile team); `secrecy` and `secp256k1` for key handling; `rustls` (with the `ring` provider and no `aws-lc-sys`, per PR #54) for TLS; and Tauri for the GUI shell. CI runs `cargo audit` against the RustSec advisory database on every push and PR (T-B1); the documented advisory carve-outs live in `.cargo/audit.toml`.
@@ -206,4 +228,5 @@ Please **do not** open a public GitHub issue for a security vulnerability. Email
 |---|---|---|
 | 2026-05-19 | Zaki | Initial draft. Covers v0.1.0-rc. Open items listed in §8. |
 | 2026-05-27 | Zaki | Added §6.6 Supply chain integrity (T-SC1..T-SC8) covering build scripts, maintainer takeover, third-party Actions, toolchain, yanked crates, reproducible builds, typosquatting, and `cargo update` discipline. Cross-referenced from §7 and §8. |
+| 2026-05-27 | Zaki | Added §6.6.1 comparing supply-chain posture to zebrad (ZcashFoundation/zebra) and Zodl (zodl-inc/zodl-{ios,android}). Highest-leverage gap identified: adopt `cargo-deny` with `yanked = "deny"` and SHA-pin all GitHub Actions (zebrad's pattern). |
 | 2026-05-13 | Kristi | Correct T-L1 status (permissions implemented); fix CSP quote; clarify T-N4 address count; PGP note. |
