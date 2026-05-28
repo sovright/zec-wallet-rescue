@@ -273,17 +273,94 @@ async fn all_endpoints_unreachable_surfaces_clean_error() {
 }
 
 // ─── R-N11: TLS handshake failure ───────────────────────────────────────────
-#[ignore = "requires an https endpoint with an expired or self-signed cert"]
-#[test]
-fn tls_handshake_failure_does_not_fall_back_to_plaintext() {
+#[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
+#[tokio::test]
+async fn tls_handshake_failure_does_not_fall_back_to_plaintext() {
+    // Verifies that an `https://` endpoint whose TLS handshake fails is
+    // surfaced as Err rather than silently falling back to plaintext.
+    //
+    // Three properties exercised:
+    //   1. The result is Err. `connect_lightwalletd_endpoints` does not
+    //      have any implicit plaintext-fallback code path; this test
+    //      pins that fact against future regressions.
+    //   2. The Err is delivered within a bounded timeout (15s wrapper).
+    //      No silent indefinite retry.
+    //   3. The failure mode is distinguishable from a TCP-level
+    //      "connection refused" (which would indicate the listener
+    //      crashed before the client connected — a different bug class).
+    //      The assertion is structural: the error string must NOT
+    //      contain "connection refused".
+    //
+    // The cert-validation-cause property from the original stub (the error
+    // names "expired" / "unknown CA" / "hostname mismatch") is deferred:
+    // it requires a server that actually performs a TLS handshake with a
+    // specific bad cert, which means generating + spinning up a TLS
+    // listener with a self-signed identity. That belongs in a follow-up
+    // PR once we have a cert-fixture helper; this PR uses the simpler
+    // "TCP accepts but no TLS frames" simulator below.
+
     let _harness = RegtestHarness::require();
-    // Verify:
-    //   - The TLS error is surfaced immediately.
-    //   - There is no implicit fall-back to http:// or to a different
-    //     trust root.
-    //   - The error message names the cert validation failure cause
-    //     (expired / unknown CA / hostname mismatch) so the user can act.
-    unimplemented!("regtest harness PR will implement");
+
+    // Spawn a TCP listener that accepts connections but never sends any
+    // TLS frames. tonic's TLS client times out / errors when no
+    // ServerHello arrives. tokio's "net" feature is enabled transitively
+    // via tonic's transport stack, so `TcpListener` is reachable from
+    // this integration test without us adding tokio features explicitly.
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("[regtest] bind random loopback port for TLS-failure simulation");
+    let port = listener
+        .local_addr()
+        .expect("[regtest] read local_addr of TLS-failure listener")
+        .port();
+
+    // Background accept loop. Each connection is drained for a short read
+    // (the client's ClientHello) and then dropped without any response,
+    // which surfaces to tonic as a TLS handshake failure.
+    let _accept_task = tokio::spawn(async move {
+        loop {
+            let (mut sock, _) = match listener.accept().await {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                // sock drops at end of scope → connection closes →
+                // client's TLS handshake fails with unexpected EOF.
+            });
+        }
+    });
+
+    let url = format!("https://localhost:{port}");
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(15),
+        argos_core::lightwalletd::connect_lightwalletd_endpoints(&url, None),
+    )
+    .await
+    .expect(
+        "[regtest] connect_lightwalletd_endpoints must return within 15s; \
+         no silent indefinite TLS retry permitted",
+    );
+
+    let err = outcome.expect_err(
+        "[regtest] https endpoint with a non-TLS listener must surface Err, \
+         not Ok (no plaintext fallback)",
+    );
+
+    let msg_lower = err.to_string().to_ascii_lowercase();
+    assert!(
+        !msg_lower.contains("connection refused"),
+        "[regtest] expected a TLS-handshake / transport error, not \
+         'connection refused' (which would indicate the listener died \
+         before the client connected): {err}"
+    );
+
+    eprintln!("[regtest] TLS handshake failure as expected: {err}");
 }
 
 // ─── R-N12: Multi-endpoint fallback ─────────────────────────────────────────
