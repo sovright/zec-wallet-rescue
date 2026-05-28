@@ -232,6 +232,39 @@ Concrete, in priority order. These map onto the §8 backlog entries and replace 
 
 **Sequencing.** A reasonable order of adoption that an afternoon-per-item engineer can execute: (5) `cargo-deny` → (3) SHA-pin Actions → (2) `zizmor` → (4) least-privilege workflows → (1) `cargo-vet` with librustzcash imports → (6) flip yanked to deny when upstream resolves. (7) is a separate project-level decision; (8) is structural and out of scope.
 
+#### 6.6.4 How much of our dependency surface actually diverges?
+
+The §6.6.1–6.6.3 comparisons argue that we should adopt upstream practices; this subsection quantifies the *opportunity*, because the value of inheriting an upstream's audit posture depends on how much of our tree they actually cover.
+
+Comparing `Cargo.lock` crate sets (verified 2026-05-27 against `ZcashFoundation/zebra` and `zcash/librustzcash` `main`):
+
+| Set | Crates |
+|---|---|
+| Argos total | 618 |
+| Shared with librustzcash | 364 (59%) |
+| Shared with zebra | 423 (68%) |
+| Shared with **either** upstream | **452 (73%)** |
+| Unique to Argos (in neither) | **166 (27%)** |
+
+So **73% of Argos's dependency surface is already exercised — and in librustzcash's case, audited — by an upstream Zcash project**. Adopting `cargo-vet` with `[imports.zcash]` (T-SC1, §6.6.3) captures that majority for free.
+
+The 27% that diverges is overwhelmingly **the Tauri desktop-GUI stack**, broken down roughly as:
+
+- **~52+ crates** in the Tauri / WebView / GTK3 stack: `tauri`, `wry`, the full `gtk-rs` family (`gtk`/`gdk`/`atk`/`gio`/`glib`/`gobject-sys`/`gtk3-macros`/`gdkwayland-sys`/`gdkx11`), `cairo-rs` + `cairo-sys-rs`, `webkit2gtk-*`, `javascriptcore-rs`, `core-graphics`, `cocoa`/`objc` (macOS), `libappindicator`, `embed_plist` (macOS bundling), `embed-resource` (Windows), `kuchikiki` + `html5ever` + `cssparser` + `selectors` (HTML/CSS Tauri uses internally), `keyboard-types`, `dpi`, `cookie`, `ico`, `infer`, `json-patch`.
+- **~15 crates** in the `smol`/`async-std` runtime adjacent to Tauri's internal IPC — `async-broadcast`, `async-channel`, `async-executor`, `async-io`, `async-lock`, `async-process`, `async-signal`, `async-task`, `blocking`, `event-listener-strategy`, `futures-lite`, etc. — pulled by Tauri even though our application code uses `tokio`.
+- **A handful of CLI helpers** unique to us: `dialoguer`, `keepawake`.
+- **The remainder** (~95 crates): compression (`brotli`, `brotli-decompressor`, `fdeflate`), HTML/text helpers (`dom_query`, `futf`, `cesu8`), build-tooling adjacent (`cargo_toml`, `cfg-expr`, `cfb`, `ctor`, `ico`, `infer`), Unicode/i18n (`icu_locale_core`), and miscellaneous utility crates.
+
+This overlaps almost perfectly with the unmaintained-crate ignores already documented in `.cargo/audit.toml` (RUSTSEC-2024-0411..0420, 2024-0429, 2025-0080, 2025-0081, 2025-0100) — those are exactly the gtk-rs GTK3 transitive set Tauri pulls in.
+
+**Practical implications:**
+
+1. The 73% we share is well-trodden ground. Bumps to that part of the tree carry low novel risk because both upstreams exercise it and librustzcash audits it.
+2. The 27% that's ours alone is where new supply-chain risk concentrates. Future first-party `cargo-vet` audits should focus here first; importing more federated audit sets (Mozilla / Google / Embark already in §6.6.3's plan) covers some of the async-runtime tail but is light on the gtk-rs family.
+3. Shrinking the divergence meaningfully requires one of: (a) Tauri upstream migrating to GTK4 (out of our hands; an upstream-scale change), (b) finding an audit source that targets the desktop-GUI stack specifically (none in our current import set does), or (c) first-party audits of the Tauri tree, which is real effort.
+
+The honest framing: T-SC1's `cargo-vet` adoption gives us large coverage cheaply; the remaining work to drive exemptions toward zero is concentrated in a single, structurally hard-to-audit subsystem.
+
 ## 7. Dependency posture
 
 Cargo dependencies are pinned via `Cargo.lock`. The high-value crates are the librustzcash family (`zcash_client_backend`, `zcash_client_sqlite`, `zcash_keys`, `zcash_protocol`, `zcash_primitives`, `zcash_transparent`, `sapling-crypto`, `orchard`), maintained by ZODL (formerly the ECC mobile team); `secrecy` and `secp256k1` for key handling; `rustls` (with the `ring` provider and no `aws-lc-sys`, per PR #54) for TLS; and Tauri for the GUI shell. CI runs `cargo audit` against the RustSec advisory database on every push and PR (T-B1); the documented advisory carve-outs live in `.cargo/audit.toml`.
@@ -277,4 +310,5 @@ Please **do not** open a public GitHub issue for a security vulnerability. Email
 | 2026-05-27 | Zaki | Added §6.6 Supply chain integrity (T-SC1..T-SC8) covering build scripts, maintainer takeover, third-party Actions, toolchain, yanked crates, reproducible builds, typosquatting, and `cargo update` discipline. Cross-referenced from §7 and §8. |
 | 2026-05-27 | Zaki | Added §6.6.1 comparing supply-chain posture to zebrad (ZcashFoundation/zebra) and Zodl (zodl-inc/zodl-{ios,android}). Highest-leverage gap identified: adopt `cargo-deny` with `yanked = "deny"` and SHA-pin all GitHub Actions (zebrad's pattern). |
 | 2026-05-27 | Zaki | Added §6.6.2 extending the comparison to librustzcash and the Zcash mobile Rust SDKs (zcash-android-wallet-sdk, zcash-swift-wallet-sdk). Documented librustzcash's `cargo-vet` posture with federated audit imports from Bytecode Alliance / Embark / Fermyon / Google / ISRG / Mozilla, `zizmor` on workflows, and uniformly SHA-pinned Actions. Added §6.6.3 listing what Argos should adopt from each project, in sequence: `cargo-deny` → SHA-pin Actions → `zizmor` → least-privilege workflows → `cargo-vet` with `[imports.zcash]` → flip `yanked` to deny. T-SC1 split into T-SC1 (cargo-deny + cargo-vet) and T-SC1b (zizmor). |
+| 2026-05-27 | Zaki | Added §6.6.4 quantifying dependency-surface divergence: of Argos's 618 transitive crates, 452 (73%) are shared with zebra or librustzcash and 166 (27%) are unique to Argos. The unique surface is essentially the Tauri desktop-GUI stack (~52 gtk-rs / WebKit / Cairo / WebView crates, ~15 smol-runtime crates, plus CLI helpers and misc utilities) — overlapping the unmaintained advisory ignores in `.cargo/audit.toml`. Implication: `cargo-vet` with `[imports.zcash]` captures the majority cheaply; shrinking the rest requires either Tauri upstream migration or first-party audits of the GUI tree. |
 | 2026-05-13 | Kristi | Correct T-L1 status (permissions implemented); fix CSP quote; clarify T-N4 address count; PGP note. |
