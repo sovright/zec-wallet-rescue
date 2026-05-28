@@ -1,0 +1,118 @@
+# Argos cargo-deny configuration.
+#
+# Replaces the previous `cargo audit` job. CI runs `cargo deny check
+# advisories bans licenses sources` on every push and PR (T-B1 in
+# docs/THREAT_MODEL.md, modelled on the cargo-deny-based posture used by
+# zebrad — see THREAT_MODEL.md §6.6.1). Anything failing here is a hard CI
+# failure; warnings still surface in the action log.
+
+# ── Advisories ───────────────────────────────────────────────────────────────
+# Replaces .cargo/audit.toml's advisory ignore list. Each entry below names a
+# RUSTSEC ID we have evaluated and chosen to track rather than fail CI on.
+# Revisit on every dependency bump.
+[advisories]
+version = 2
+
+# Matches zebrad's posture: any yanked dependency fails CI. This is feasible
+# because the librustzcash 2026-04 release wave (PR #69, T-SC5) replaced the
+# yanked `core2 0.3.3` with `corez 0.1.1` throughout the tree.
+yanked = "deny"
+
+ignore = [
+    # `time` 0.3.x DoS via stack exhaustion when parsing untrusted input.
+    # Pinned transitively by `zcash_client_backend` (rusqlite + tauri/cookie).
+    # Argos is a single-use desktop recovery tool; time values come from
+    # lightwalletd (TLS-pinned) and the local SQLite DB, not arbitrary
+    # attacker-controlled input. Upgrading requires bumping zcash deps; track
+    # for the next zcash_client_backend bump.
+    "RUSTSEC-2026-0009",
+
+    # Unmaintained crates pulled in transitively through Tauri's GTK3 stack
+    # on Linux. No fixes available upstream; would require Tauri itself to
+    # migrate to GTK4. Track upstream rather than block CI on them.
+    "RUSTSEC-2024-0411", # gdkwayland-sys (gtk-rs GTK3)
+    "RUSTSEC-2024-0412", # gdk (gtk-rs GTK3)
+    "RUSTSEC-2024-0413", # atk
+    "RUSTSEC-2024-0414", # gtk-rs GTK3
+    "RUSTSEC-2024-0415", # gtk-rs GTK3
+    "RUSTSEC-2024-0416", # atk-sys
+    "RUSTSEC-2024-0417", # gdkx11
+    "RUSTSEC-2024-0418", # gdk-sys
+    "RUSTSEC-2024-0419", # gtk-rs GTK3
+    "RUSTSEC-2024-0420", # gtk-rs GTK3
+    "RUSTSEC-2025-0080", # gtk-rs GTK3
+    "RUSTSEC-2025-0081", # gtk-rs GTK3
+
+    # Other unmaintained / yanked transitive dependencies with no upstream fix.
+    "RUSTSEC-2024-0370", # proc-macro-error unmaintained (via syn macros)
+    "RUSTSEC-2025-0057", # fxhash unmaintained (transitive)
+    "RUSTSEC-2025-0075", # unic-char-property et al. unmaintained
+    "RUSTSEC-2025-0098", # unic-* unmaintained
+    "RUSTSEC-2025-0100", # glib VariantStrIter unsoundness (Tauri stack)
+]
+
+# ── Licenses ─────────────────────────────────────────────────────────────────
+# Allow-list of SPDX identifiers. Anything outside this list fails CI so we
+# never silently incorporate a copyleft/unknown-licensed crate. Modelled on
+# zebrad's allow-list, trimmed to identifiers actually present in our tree.
+# Extend deliberately, with a justification comment, when a new dep is added.
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "0BSD",
+    "CDLA-Permissive-2.0",
+]
+
+# Crate-specific license clarifications for crates whose LICENSE file does not
+# carry an unambiguous SPDX header. Match zebrad's clarification for the
+# webpki/rustls family.
+[[licenses.clarify]]
+name = "rustls-webpki"
+expression = "ISC"
+license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
+
+# ── Bans ─────────────────────────────────────────────────────────────────────
+# Soft today, deliberately. The librustzcash + Tauri stack pulls several
+# semver-incompatible duplicate versions; we surface the duplicates rather
+# than fail on them, so we can chip away at them over time. Wildcards are
+# denied outright because we do not currently use any and they break the
+# lockfile-pinning guarantee.
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+# Crate-version highlighting in the (optional) dotgraph output.
+highlight = "all"
+
+# Crates we never want to depend on, even transitively. The list is short on
+# purpose — extending it is a hard CI failure and forces a real review.
+deny = [
+    # `openssl-sys` brings the system OpenSSL ABI into the build; we have
+    # standardised on `rustls` (with the `ring` provider per PR #54). A new
+    # transitive `openssl-sys` would indicate a dep regression worth catching.
+    { name = "openssl-sys" },
+]
+
+# ── Sources ──────────────────────────────────────────────────────────────────
+# We resolve every dependency from crates.io. No git, no alternate registries.
+# This is enforced because the project has no git or alternate-registry deps
+# today (verified by inspection of Cargo.toml).
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
