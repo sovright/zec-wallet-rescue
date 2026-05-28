@@ -208,17 +208,68 @@ fn hostile_compact_block_rejected_cleanly() {
 }
 
 // ─── R-N10: All endpoints unreachable ───────────────────────────────────────
-#[ignore = "requires the harness to block/firewall the configured endpoints"]
-#[test]
-fn all_endpoints_unreachable_surfaces_clean_error() {
+#[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
+#[tokio::test]
+async fn all_endpoints_unreachable_surfaces_clean_error() {
+    // Verifies the failure mode when every configured lightwalletd endpoint
+    // refuses the connection. Three properties:
+    //
+    //   1. `connect_lightwalletd_endpoints` exhausts the list within a
+    //      bounded timeout — no silent infinite retry. Enforced via a
+    //      `tokio::time::timeout` wrapper as a defensive check on top of
+    //      the function's own per-endpoint connect semantics.
+    //
+    //   2. The returned error is the aggregated "all endpoints failed"
+    //      variant, not a single endpoint's transport error. Users with
+    //      multi-endpoint configurations need to know that *every* fallback
+    //      was tried before giving up, not just the first one.
+    //
+    //   3. The error names each failing endpoint so it's actionable. The
+    //      error string contains both endpoint URLs (the validator accepts
+    //      them; only the TCP connect refuses), enabling the GUI/CLI to
+    //      surface "tried these N, none worked" rather than a vague
+    //      "couldn't connect."
+    //
+    // Does not actually use the harness URL — but the harness env var
+    // gate via `RegtestHarness::require()` ensures the test only runs as
+    // part of the C2 integration suite (when someone explicitly booted the
+    // setup), not as an accidental unit test.
+
     let _harness = RegtestHarness::require();
-    // Verify:
-    //   - connect_lightwalletd_endpoints exhausts the list within a
-    //     bounded number of attempts.
-    //   - The error message names "all configured endpoints failed" or
-    //     equivalent — not a single endpoint's transport error.
-    //   - No silent infinite retry.
-    unimplemented!("regtest harness PR will implement");
+
+    // Two unreachable URLs on different ports. Both pass the loopback +
+    // valid-port URL validator; both will fail TCP connect with
+    // ECONNREFUSED in well under a second.
+    let combined = "http://127.0.0.1:1,http://127.0.0.1:2";
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(10),
+        argos_core::lightwalletd::connect_lightwalletd_endpoints(combined, None),
+    )
+    .await
+    .expect(
+        "[regtest] connect_lightwalletd_endpoints must return within 10s; \
+         no silent infinite retry permitted",
+    );
+
+    let err = outcome.expect_err(
+        "[regtest] all-unreachable list must surface Err, not Ok",
+    );
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("failed to connect to any"),
+        "[regtest] expected aggregated 'failed to connect to any' wording so \
+         the GUI can render 'every endpoint failed' rather than a single \
+         transport error; got: {msg}"
+    );
+    assert!(
+        msg.contains("127.0.0.1:1") && msg.contains("127.0.0.1:2"),
+        "[regtest] expected the error message to name both attempted endpoints \
+         (so the user can see what was tried); got: {msg}"
+    );
+
+    eprintln!("[regtest] all-unreachable failed as expected: {err}");
 }
 
 // ─── R-N11: TLS handshake failure ───────────────────────────────────────────
