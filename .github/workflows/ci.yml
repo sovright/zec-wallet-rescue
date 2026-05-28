@@ -88,6 +88,12 @@ jobs:
   audit:
     name: Cargo audit (advisories)
     runs-on: ubuntu-latest
+    # rustsec/audit-check posts results as a check-run; without checks:write the
+    # GITHUB_TOKEN is read-only on push events and the action fails with
+    # "Resource not accessible by integration" even when no vulnerabilities exist.
+    permissions:
+      checks: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
