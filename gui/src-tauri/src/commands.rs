@@ -607,17 +607,14 @@ fn parse_zec_to_zatoshis(input: &str) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     use super::*;
 
     fn temp_workspace() -> PathBuf {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "argos-report-path-test-{}-{suffix}",
+            "argos-report-path-test-{}-{n}",
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("temp workspace should be created");
