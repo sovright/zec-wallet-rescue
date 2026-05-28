@@ -2,6 +2,39 @@
 
 > **Status:** Initial draft, v0.1.0-rc. This document describes the security posture of Argos as of the v0.1.0 release candidate. It is a living document; revisit on every release and whenever a new attack surface is added.
 
+## 0. At a glance
+
+This section summarises the document for readers who don't have time for the full text. The detail lives in §1–§11 and is the source of truth.
+
+### If you're in a hurry
+
+Argos is a single-use recovery tool. You give it a 24-word seed phrase, it scans the chain, it sweeps your funds into a modern wallet. The seed never leaves your machine, never touches disk, and only lives in memory for the length of the session. Everything else in this document is about *what could go wrong around that core promise* and how we bound the damage.
+
+The five things most worth knowing:
+
+| What | Severity | Where we stand |
+|---|---|---|
+| Seed phrase in memory or on disk | Critical | ✅ Wrapped in `secrecy::SecretString`, zeroized on drop, never written to disk. Residual: OS swap (we do not `mlock`). |
+| Dependency / supply-chain compromise | High | ✅ ~73% of our Rust tree is shared with the upstream Zcash ecosystem (`librustzcash`, Tauri); the rest is covered by `cargo-deny` + `cargo-vet` audits and SLSA Level 3 build provenance. |
+| Hostile lightwalletd | Medium–High | ✅ Crafted compact blocks are rejected by `librustzcash` sync; the server learns *that* you're scanning but no scanning-side keys are sent. |
+| Windows installer authenticity | Medium | ⚠️ macOS signing landed; Windows code-signing is in progress (T-B3). SLSA provenance (T-SC6) gives a third-party-verifiable source-to-binary chain in the interim. |
+| Clipboard residue after paste | Medium | ⚠️ Argos itself never writes the seed to the clipboard. If the user pastes their seed in, that exposure is theirs to manage. The GUI offers a "Clear clipboard" button — see T-S4. |
+
+Where this puts us relative to neighbours: we ship the same `librustzcash` family that Zodl, Zashi, and zebrad rely on, the same Tauri version Zashi-Desktop ships, and a CI posture (`cargo-deny`, `cargo-vet`, zizmor, SLSA Level 3) that is at or above what those projects have today. The detailed comparison is in §6.6 and §7.
+
+### If you're not deep in security
+
+Your seed phrase is the master key to your money. If anyone else gets it, they can move your funds. Argos handles your seed for a specific job: it reads the chain, finds your funds, and helps you sweep them somewhere safer. It doesn't store the seed, doesn't send it anywhere, and doesn't keep it after the app closes.
+
+The honest version of "is this safe?" is: **all software has risk, and Argos is no exception.** Our review shows the risks are bounded if you set up your environment well. Specifically:
+
+- **Match your effort to the amount you're recovering.** For small recoveries (under ~25 ZEC), running Argos on your everyday machine is reasonable as long as you trust it — modern operating systems isolate apps well enough for that. For larger amounts, the operational cost of a clean, dedicated machine starts being worth it: a spare laptop, a fresh OS install, or a live-USB system (Tails, a clean Ubuntu) limits the surface for problems we can't reach from inside Argos.
+- Don't run Argos on a machine you suspect is already compromised, regardless of the amount. We can't protect a seed from malware that's already on your computer — no recovery tool can.
+- Only download Argos from our official release page. Verify the signature on macOS; verify the SLSA provenance on Windows until code-signing lands. We document how in the release notes.
+- Sweep to a wallet you control and have backed up. The point of Argos is to move funds *out* of an old wallet you're not going to use again.
+
+The risks we *can't* address from inside Argos — a compromised host, a coerced user ("$5 wrench attack"), a future cryptanalytic break of Sapling/Orchard — are listed honestly in §9 (Out of scope) so you can decide what to do about them.
+
 ## 1. Purpose and scope
 
 Argos is a single-use Zcash wallet **recovery** tool for ZecWallet Lite seeds. Its purpose is to take a 24-word BIP-39 seed phrase, scan the Zcash chain for funds derived under ZecWallet Lite's account layout, and sweep them to a modern wallet (Zashi/Zodl, YWallet) in a single session. It is not an everyday wallet.
@@ -105,7 +138,7 @@ Severity: **C**ritical / **H**igh / **M**edium / **L**ow. Status: ✅ mitigated,
 | T-S1 | Seed phrase remains in process memory after use; swapped to disk | H | ✅ | Seed is wrapped in `secrecy::SecretString` and the BIP-39-derived 64-byte seed in `Secret<[u8;64]>` (PR #47). `Drop` zeroizes underlying memory. We do **not** call `mlock`/`VirtualLock` — swap remains a residual risk on the host. |
 | T-S2 | Seed phrase ends up in JS state and outlives the scan | H | ✅ | `state.scanConfig` stores a seed-less copy of the config (network/birthday/account params only). The seed is passed to the `start_scan` Tauri command and the textarea is cleared on submit; no JS reference outlives the call. |
 | T-S3 | Seed phrase leaks via logs / tracing / `Debug` impl | H | ✅ | `secrecy` wrappers do not implement `Debug`/`Display` for their inner value. No `println!`/`tracing` calls on seed-bearing variables. |
-| T-S4 | Seed phrase leaks via clipboard | M | ⚠️ | Argos never writes the seed to the clipboard. The recovery-report "Copy path" button (PR #53) only copies the file path. Users pasting their own seed in is bounded by the OS clipboard's lifetime. |
+| T-S4 | Seed phrase leaks via clipboard | M | ⚠️ | **What Argos does:** never calls `writeText(seed)`. The only `writeText` callsites in the GUI are the recovery-report "Copy path" button (PR #53, copies a file path) and the donate-overlay address button (copies a public unified address). There is no "Copy seed" affordance anywhere. **What users can do:** the seed-entry screen and the resume-scan modal both expose a "Clear clipboard" button that calls `navigator.clipboard.writeText("")` to overwrite the bare OS clipboard once the user has finished pasting. **What stays bounded by the user's environment:** clipboard-history managers (e.g. Maccy, ClipboardFusion, the iOS handoff clipboard) may have snapshotted the seed at paste time; our `writeText("")` does not retroactively scrub those. We deliberately do *not* block paste — a password manager → paste flow is safer than retyping a 24-word seed under a keylogger or shoulder-surfer, and "block copy" via `oncopy="return false"` is bypassable theatre on a textarea, not a real control. |
 | T-S5 | Seed visible on screen during entry | L | ✅ | Seed textarea is blurred by default; user must explicitly toggle "Show words on screen". |
 
 ### 6.2 Frontend (Tauri + WebView)
