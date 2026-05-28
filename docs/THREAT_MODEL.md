@@ -147,11 +147,30 @@ Severity: **C**ritical / **H**igh / **M**edium / **L**ow. Status: ✅ mitigated,
 | T-B4 | Installer tampered with after publish | M | ✅ | SHA256 checksums are published alongside each artifact (deduplicated via PR #47/#48). README directs Windows users to verify the checksum before running the installer. |
 | T-B5 | Marketing site (sovright.com / Vercel preview) ships a different binary than the release page | L | ✅ | The site does not host binaries; download links point at `github.com/sovright/zec-wallet-rescue/releases`. |
 
+### 6.6 Supply chain integrity
+
+The dependency tree is large (~700 transitive crates, dominated by the librustzcash stack and Tauri's GTK/WebKit shell on Linux) and almost all of the executable code in a released Argos binary comes from third-party crates. A compromise anywhere in that tree, in the build toolchain, or in CI is the single highest-impact attack class against this project. The threats below are listed separately from §6.5 because the mitigations differ: §6.5 is about *our* build and release pipeline, while §6.6 is about the integrity of the inputs that flow into it.
+
+| ID | Threat | Severity | Status | Mitigation |
+|---|---|---|---|---|
+| T-SC1 | Malicious `build.rs` script or procedural macro in a transitive crate runs arbitrary code at compile time (dev machine and CI). | H | ❌ | Not currently audited. `Cargo.lock` pins the exact crate version we compile, so a published fix to upstream cannot regress us silently, but it does not prevent compromise of the version we already trust. Tracked as an open item. |
+| T-SC2 | Maintainer-account takeover on a critical crate (librustzcash family, `rustls`, `tauri`, `secrecy`, `secp256k1`, `bip0039`) ships a malicious version that we knowingly bump to. | H | ⚠️ | `cargo audit` (T-B1) cannot detect a zero-day at bump time. Project policy requires conservative dependency review — see `CLAUDE.md` and `~/.claude/approved-dependencies.md` — and the README/threat model document who maintains the high-value crates (§7). Diff review on `cargo update` is currently informal; tightening this is tracked. |
+| T-SC3 | A third-party GitHub Action used in CI gets a tag force-moved (or a branch hijacked) to point at malicious code, which then runs with `GITHUB_TOKEN` or signing-environment access. | H | ⚠️ | Most actions are pinned to a major/minor tag (`actions/checkout@v4`, `Swatinem/rust-cache@v2`, `rustsec/audit-check@v2.0.0`, `softprops/action-gh-release@v2`, etc.). `dtolnay/rust-toolchain@master` tracks a branch and is the weakest link. Signing/publish steps are gated on protected environments (T-B2), so a compromised check-job action cannot directly sign a release, but it could still exfiltrate source or tamper with the build that feeds the signing job. Pinning all actions to commit SHAs is tracked. |
+| T-SC4 | Compromise of the upstream Rust toolchain (rustc / cargo) injects code into produced binaries. | M | ⚠️ | Toolchain version is pinned in CI (Rust 1.87). We rely on rust-lang's release signing and distribution; we do not independently verify toolchain hashes. Out of practical reach for this project; tracked rather than mitigated. |
+| T-SC5 | A transitive crate is yanked from crates.io with no upstream replacement, so the audit job warns indefinitely and a freshly-resolved build cannot reproduce. | L | ⚠️ | `Cargo.lock` keeps existing builds compiling against the yanked version; new builds resolve the same locked version. CI surfaces the warning. Current example: `core2 0.3.3`. Policy: tracked per occurrence; bump the parent crate when an upstream fix lands. |
+| T-SC6 | The published release binary cannot be independently verified to correspond to the source tree at the tagged commit — i.e. no reproducible builds and no SLSA provenance attestation. | M | ❌ | SHA256 checksums (T-B4) and platform code-signing (T-B2) prove the binary was produced by our release pipeline, but not that the pipeline built the source faithfully. A verifier with the source cannot today rebuild bit-for-bit. Tracked. |
+| T-SC7 | A new direct dependency we add is a typosquat or dependency-confusion package masquerading as a legitimate crate. | M | ✅ | Project policy in `CLAUDE.md` requires explicit approval and an `~/.claude/approved-dependencies.md` entry before any new direct dependency is added, with package name, version, adoption signals, maintenance status, and license recorded. This relies on review discipline, not tooling, and is therefore a process control rather than a hard gate. |
+| T-SC8 | `cargo update` silently pulls a malicious patch release within the semver range allowed by `Cargo.toml` between manual review windows. | M | ✅ | `Cargo.lock` is committed and version updates require a commit; CI runs against the lockfile. Auto-update bots (Dependabot/Renovate) are intentionally **not** configured, so dependency bumps are always human-driven and reviewable as a diff. |
+
+The combined effect: we have strong reproducibility of *what we build today* (lockfile + pinned toolchain + pinned-by-tag actions), modest visibility into the integrity of *what those inputs are* (audit advisories only), and no independent verification of *what we publish* (no reproducible builds / provenance). Closing T-SC1, T-SC3, and T-SC6 is the priority. A practical next step is adopting `cargo-deny` (covers advisory + license + bans + sources in one tool, with a checked-in config) and SHA-pinning every action in `.github/workflows/`.
+
 ## 7. Dependency posture
 
 Cargo dependencies are pinned via `Cargo.lock`. The high-value crates are the librustzcash family (`zcash_client_backend`, `zcash_client_sqlite`, `zcash_keys`, `zcash_protocol`, `zcash_primitives`, `zcash_transparent`, `sapling-crypto`, `orchard`), maintained by ZODL (formerly the ECC mobile team); `secrecy` and `secp256k1` for key handling; `rustls` (with the `ring` provider and no `aws-lc-sys`, per PR #54) for TLS; and Tauri for the GUI shell. CI runs `cargo audit` against the RustSec advisory database on every push and PR (T-B1); the documented advisory carve-outs live in `.cargo/audit.toml`.
 
 JavaScript dependencies: **none at runtime**. The Tauri GUI ships zero npm packages in the browser bundle (PR #50).
+
+For threats to the integrity of the dependency tree itself (build scripts, maintainer takeover, GitHub Actions tag-moving, reproducible builds, etc.), see §6.6.
 
 ## 8. Open issues and known gaps
 
@@ -163,6 +182,10 @@ These are intentionally listed in one place so the document drives a backlog rat
 - [x] **T-L3** — add a "Delete workspace" action that securely wipes a session post-recovery.
 - [x] **T-B1** — add `cargo audit` (or `cargo deny check advisories`) to CI on every push.
 - [ ] **T-B3** — provision a Windows code-signing certificate and gate it behind the same protected-environment mechanism as macOS.
+- [ ] **T-SC1** — adopt a tool that surfaces `build.rs` and proc-macro presence across the dependency tree (e.g. `cargo-deny` bans + `cargo geiger`), and consider sandboxing build scripts in CI (`CARGO_BUILD_RUSTFLAGS`/seccomp profiles).
+- [ ] **T-SC2** — formalize a dependency-bump review checklist (diff the changelog, scan for new `build.rs` / network calls / proc macros) and record sign-off in the PR.
+- [ ] **T-SC3** — pin all third-party GitHub Actions to commit SHAs (especially `dtolnay/rust-toolchain@master`), with a comment recording the resolved tag.
+- [ ] **T-SC6** — investigate reproducible builds for release artifacts and publishing SLSA provenance attestations (e.g. via `slsa-github-generator`).
 
 ## 9. Out of scope
 
@@ -182,4 +205,5 @@ Please **do not** open a public GitHub issue for a security vulnerability. Email
 | Date | Author | Notes |
 |---|---|---|
 | 2026-05-19 | Zaki | Initial draft. Covers v0.1.0-rc. Open items listed in §8. |
+| 2026-05-27 | Zaki | Added §6.6 Supply chain integrity (T-SC1..T-SC8) covering build scripts, maintainer takeover, third-party Actions, toolchain, yanked crates, reproducible builds, typosquatting, and `cargo update` discipline. Cross-referenced from §7 and §8. |
 | 2026-05-13 | Kristi | Correct T-L1 status (permissions implemented); fix CSP quote; clarify T-N4 address count; PGP note. |
