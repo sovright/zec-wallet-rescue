@@ -35,6 +35,15 @@
 //!    underlying API surfaces as a build failure on this file rather
 //!    than as silent doc drift.
 
+// Gate the whole file behind the `argos-network` feature. Without it, Argos
+// can't talk to a regtest-style local chain (validate_lightwalletd_network
+// rejects the regtest chain name and Sapling activation height), so the C2
+// tests are guaranteed to fail at scan-start. Compiling them out under the
+// default feature set keeps `cargo test --workspace -- --ignored` clean for
+// contributors who haven't booted the harness; opt in with
+// `cargo test --features argos-network -- --ignored` after running the
+// harness setup in tests/regtest/.
+#![cfg(feature = "argos-network")]
 #![allow(clippy::needless_pass_by_value)]
 
 // Shared harness module — see `tests/common/regtest_harness.rs` for the

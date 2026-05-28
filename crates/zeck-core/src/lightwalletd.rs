@@ -127,7 +127,22 @@ pub fn validate_lightwalletd_network(network: ZeckNetwork, info: &LightdInfo) ->
     let chain_name = info.chain_name.trim().to_ascii_lowercase();
     let chain_matches = match network {
         ZeckNetwork::Mainnet => matches!(chain_name.as_str(), "main" | "mainnet"),
-        ZeckNetwork::Testnet => matches!(chain_name.as_str(), "test" | "testnet"),
+        // When the `argos-network` feature is enabled, accept the regtest
+        // chain name as a synonym for testnet so the C2 integration tests
+        // in tests/regtest_integration.rs can scan a local Argos-network
+        // (zcashd-regtest) stack. Production builds compile this branch
+        // out — a hostile mainnet lightwalletd cannot claim to be regtest
+        // to bypass network validation in a released Argos binary.
+        ZeckNetwork::Testnet => {
+            #[cfg(feature = "argos-network")]
+            {
+                matches!(chain_name.as_str(), "test" | "testnet" | "regtest")
+            }
+            #[cfg(not(feature = "argos-network"))]
+            {
+                matches!(chain_name.as_str(), "test" | "testnet")
+            }
+        }
     };
     if !chain_matches {
         return Err(ZeckError::Lightwalletd(format!(
@@ -137,18 +152,33 @@ pub fn validate_lightwalletd_network(network: ZeckNetwork, info: &LightdInfo) ->
         )));
     }
 
-    let expected_activation = match network {
-        ZeckNetwork::Mainnet => MAINNET_SAPLING_ACTIVATION,
-        ZeckNetwork::Testnet => TESTNET_SAPLING_ACTIVATION,
-    };
-    if info.sapling_activation_height != 0 && info.sapling_activation_height != expected_activation
-    {
-        return Err(ZeckError::Lightwalletd(format!(
-            "server Sapling activation height {} does not match expected {} for {}",
-            info.sapling_activation_height,
-            expected_activation,
-            network.label()
-        )));
+    // Skip the Sapling-activation-height check when the server identifies
+    // itself as regtest: regtest activates Sapling at height 1 (via the
+    // `nuparams=sapling:1` style config in tests/regtest/zcashd-regtest.conf),
+    // which deliberately differs from public testnet's 280 000. Gated on
+    // the feature so a non-argos-network build still enforces the testnet
+    // activation height even if the chain name match relaxed somehow.
+    #[cfg(feature = "argos-network")]
+    let skip_sapling_check =
+        matches!(network, ZeckNetwork::Testnet) && chain_name == "regtest";
+    #[cfg(not(feature = "argos-network"))]
+    let skip_sapling_check = false;
+
+    if !skip_sapling_check {
+        let expected_activation = match network {
+            ZeckNetwork::Mainnet => MAINNET_SAPLING_ACTIVATION,
+            ZeckNetwork::Testnet => TESTNET_SAPLING_ACTIVATION,
+        };
+        if info.sapling_activation_height != 0
+            && info.sapling_activation_height != expected_activation
+        {
+            return Err(ZeckError::Lightwalletd(format!(
+                "server Sapling activation height {} does not match expected {} for {}",
+                info.sapling_activation_height,
+                expected_activation,
+                network.label()
+            )));
+        }
     }
 
     Ok(())
@@ -297,6 +327,84 @@ mod tests {
             .expect_err("wrong chain should be rejected");
 
         assert!(err.to_string().contains("does not match selected mainnet"));
+    }
+
+    // ─── argos-network feature flag ──────────────────────────────────────────
+    //
+    // Production builds (no feature) MUST reject a regtest server. The
+    // C2 integration tests opt in via `cargo test --features argos-network`.
+
+    #[cfg(not(feature = "argos-network"))]
+    #[test]
+    fn network_validation_rejects_regtest_chain_without_feature() {
+        // Without the argos-network feature, a server claiming "regtest"
+        // must be rejected even when the operator selected Testnet.
+        // Defends against a hostile lightwalletd talking a released Argos
+        // binary out of network validation.
+        let info = LightdInfo {
+            chain_name: "regtest".to_owned(),
+            sapling_activation_height: 1,
+            ..LightdInfo::default()
+        };
+        let err = validate_lightwalletd_network(ZeckNetwork::Testnet, &info)
+            .expect_err("regtest chain must be rejected in production builds");
+        assert!(
+            err.to_string().contains("does not match"),
+            "got: {err}"
+        );
+    }
+
+    #[cfg(feature = "argos-network")]
+    #[test]
+    fn network_validation_accepts_regtest_chain_with_feature() {
+        // With the feature enabled, the regtest chain name is accepted as
+        // a synonym for testnet, and the Sapling-activation-height check
+        // is skipped (regtest activates Sapling at height 1, not testnet's
+        // 280 000).
+        let info = LightdInfo {
+            chain_name: "regtest".to_owned(),
+            sapling_activation_height: 1,
+            ..LightdInfo::default()
+        };
+        validate_lightwalletd_network(ZeckNetwork::Testnet, &info)
+            .expect("regtest chain must be accepted under the argos-network feature");
+    }
+
+    #[cfg(feature = "argos-network")]
+    #[test]
+    fn network_validation_still_rejects_regtest_against_mainnet_with_feature() {
+        // Even with the feature on, a regtest server cannot satisfy a
+        // Mainnet selection — the relaxation is scoped to Testnet only.
+        let info = LightdInfo {
+            chain_name: "regtest".to_owned(),
+            sapling_activation_height: 1,
+            ..LightdInfo::default()
+        };
+        let err = validate_lightwalletd_network(ZeckNetwork::Mainnet, &info)
+            .expect_err("regtest chain must still be rejected when Mainnet is selected");
+        assert!(
+            err.to_string().contains("does not match selected mainnet"),
+            "got: {err}"
+        );
+    }
+
+    #[cfg(feature = "argos-network")]
+    #[test]
+    fn network_validation_still_enforces_testnet_height_for_testnet_chain_name() {
+        // The Sapling-height skip applies only when chain_name == "regtest"
+        // under the feature. A real-testnet server still has to report the
+        // canonical activation height even with the feature enabled.
+        let info = LightdInfo {
+            chain_name: "test".to_owned(),
+            sapling_activation_height: 9999,
+            ..LightdInfo::default()
+        };
+        let err = validate_lightwalletd_network(ZeckNetwork::Testnet, &info)
+            .expect_err("testnet sapling height mismatch must still be rejected");
+        assert!(
+            err.to_string().contains("Sapling activation height"),
+            "got: {err}"
+        );
     }
 
     // ─── Endpoint URL resilience (R-N4..R-N7) ─────────────────────────────────
