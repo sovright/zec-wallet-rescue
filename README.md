@@ -73,7 +73,7 @@ slsa-verifier verify-artifact <downloaded-file> \
     --source-tag <tag>
 ```
 
-A passing verification confirms that `<downloaded-file>` was produced by the named tag's release workflow in this repository. This is particularly useful on Windows, where the installer is currently unsigned: even without a code-signing certificate, the provenance attestation gives a third-party-verifiable source-to-binary chain.
+A passing verification confirms that `<downloaded-file>` was produced by the named tag's release workflow in this repository. macOS bundles are also code-signed (Apple Developer ID); Windows code-signing is in progress. Until the Windows certificate is provisioned, the provenance attestation is the third-party-verifiable source-to-binary chain for Windows installers — and once both are in place it complements the platform code-signing by anchoring it to a specific source-tree commit rather than only to a signing identity.
 
 ## Development
 
