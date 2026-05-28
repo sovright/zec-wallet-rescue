@@ -236,18 +236,61 @@ fn tls_handshake_failure_does_not_fall_back_to_plaintext() {
 }
 
 // ─── R-N12: Multi-endpoint fallback ─────────────────────────────────────────
-#[ignore = "requires two endpoints, one slow/unresponsive"]
-#[test]
-fn multi_endpoint_fallback_respects_configured_order() {
-    let _harness = RegtestHarness::require();
-    // Verify:
-    //   - With "slow,fast" as the endpoint list, the connect loop tries
-    //     slow first and falls through to fast within a bounded timeout.
-    //   - The "preferred endpoint" reordering surface (preferred argument
-    //     to connect_lightwalletd_endpoints) actually changes the order.
-    //   - A subsequent reconnect after a GoAway prefers the endpoint that
-    //     was successfully serving before the GoAway.
-    unimplemented!("regtest harness PR will implement");
+#[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
+#[tokio::test]
+async fn multi_endpoint_fallback_respects_configured_order() {
+    // Verifies the comma-separated-endpoints + fallback contract that the
+    // GUI exposes as the "lightwalletd URLs" field. Two properties:
+    //
+    //   1. When the first endpoint in the list is unreachable, the connect
+    //      loop falls through to the second within a bounded timeout and
+    //      returns the second's URL as the established endpoint.
+    //
+    //   2. The `preferred` argument to `connect_lightwalletd_endpoints`
+    //      reorders the list — passing the healthy harness URL as
+    //      `preferred` makes it tried first, even when it's listed second
+    //      in the raw comma-separated input.
+    //
+    // The "subsequent reconnect after a GoAway prefers the previously-
+    // serving endpoint" sub-property from the original stub description is
+    // deferred — it requires server-side GoAway injection (custom
+    // lightwalletd build or sidecar proxy) and belongs in the R-N8 stub
+    // when that lands.
+
+    let harness = RegtestHarness::require();
+    let harness_url = harness.lightwalletd_url().to_owned();
+
+    // `http://127.0.0.1:1` is the canonical "nothing listening" URL on
+    // loopback. The validator accepts it (port 1 is a valid port; loopback
+    // hosts allow plaintext http per Argos's lightwalletd contract), but
+    // the TCP connect attempt will fail with ECONNREFUSED in well under a
+    // second on every supported platform.
+    const UNREACHABLE: &str = "http://127.0.0.1:1";
+
+    // ── Property 1: fallback after the first endpoint fails. ────────────
+    let combined = format!("{UNREACHABLE},{harness_url}");
+    let (_client, established) =
+        argos_core::lightwalletd::connect_lightwalletd_endpoints(&combined, None)
+            .await
+            .expect("connect_lightwalletd_endpoints must fall back to the harness URL");
+    assert_eq!(
+        established, harness_url,
+        "[regtest] expected fallback to {harness_url}, got {established}"
+    );
+
+    // ── Property 2: `preferred` reorders the list. ──────────────────────
+    // Same combined URL — harness still appears second — but the preferred
+    // argument names it explicitly, which must reorder it to the front.
+    let (_client, established) = argos_core::lightwalletd::connect_lightwalletd_endpoints(
+        &combined,
+        Some(&harness_url),
+    )
+    .await
+    .expect("connect with preferred=harness must succeed on the first attempt");
+    assert_eq!(
+        established, harness_url,
+        "[regtest] preferred reordering should have surfaced harness first; got {established}"
+    );
 }
 
 // ─── R-S25: Sprout-only wallet graceful handling ────────────────────────────
