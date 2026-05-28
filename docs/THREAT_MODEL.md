@@ -76,7 +76,7 @@ In rough priority order:
 - **Tauri host process ↔ WebView renderer:** The renderer can only reach the host via explicit `#[tauri::command]` handlers and is constrained by the CSP in `gui/src-tauri/tauri.conf.json` (`default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: asset: http://asset.localhost; font-src 'self'; connect-src ipc: http://ipc.localhost`). No remote script or remote `connect-src` is permitted.
 - **Argos ↔ lightwalletd:** Untrusted server reachable only over TLS. Default endpoints (`zec.rocks`, `na.zec.rocks` for mainnet; `lightwalletd.testnet.electriccoin.co` for testnet) are configurable per scan.
 - **Argos ↔ local disk:** Workspace directories and database files are written to a user-chosen directory (defaulting to the platform `AppDataDir/workspace`). Workspace directories are created with `0o700` and database files with `0o600` (`workspace.rs:set_private_file_permissions`). The `session.json` sidecar contains no keys — only label, network, birthday, and timestamps — and inherits the OS umask.
-- **Build pipeline ↔ release artifact:** Signing keys live in GitHub Actions environments gated to protected branches (PR #48). Windows signing is **not yet implemented** (see §8).
+- **Build pipeline ↔ release artifact:** Signing keys live in GitHub Actions environments gated to protected branches (PR #48). macOS signing is in place; Windows code-signing is **in progress** (see §8, T-B3). In the interim, the SLSA Level 3 provenance attestation (T-SC6, PR #71) gives Windows users a third-party-verifiable source-to-binary chain via `slsa-verifier`.
 
 ## 5. Threat actors
 
@@ -88,7 +88,7 @@ In rough priority order:
 | Network observer on the local segment | Passive sniffing | Yes |
 | Hostile lightwalletd operator | Serve crafted compact blocks, log query patterns | Yes |
 | Hostile DNS / TLS-trust-store attacker | Substitute lightwalletd endpoint | Partially — webpki trust roots only |
-| Compromised upstream Rust/JS dependency | Inject malicious code at build time | Partially — see §7 |
+| Compromised upstream Rust dependency | Inject malicious code at build time | Partially — `cargo-deny` + `cargo-vet` cover the 73% of our tree shared with upstream Zcash projects; the Tauri-side residue (§6.6.4) is tracked. See §6.6, §7. No JS at runtime (§7). |
 | Compromised GitHub Actions / signing key | Sign a malicious installer | Yes — see §8 |
 | Casual shoulder-surfer | Read the screen while seed is visible | Yes |
 | Coerced user ($5 wrench attack) | Forced to run a sweep under duress | Out of scope |
@@ -141,17 +141,156 @@ Severity: **C**ritical / **H**igh / **M**edium / **L**ow. Status: ✅ mitigated,
 
 | ID | Threat | Severity | Status | Mitigation |
 |---|---|---|---|---|
-| T-B1 | Compromised cargo dependency injects code at build time | H | ✅ | We pin via `Cargo.lock`. CI runs `cargo check` + `clippy` + tests + `cargo audit` (via `rustsec/audit-check`) on every push and PR. Advisories surface as a failed job. |
+| T-B1 | Compromised cargo dependency injects code at build time | H | ✅ | We pin via `Cargo.lock`. CI runs `cargo check` + `clippy` + tests + `cargo deny check advisories bans licenses sources` (with `yanked = "deny"`) + `cargo vet --locked` against an audit set imported from librustzcash and the federated Mozilla/Google/Embark/Bytecode Alliance/Fermyon/ISRG databases (T-SC1, PR #70). New `cargo update` resolutions that touch a non-vetted crate surface as a `cargo vet` failure rather than slipping in. |
 | T-B2 | Compromised GitHub Actions secret signs a malicious release | C | ✅ | Signing and publish jobs are gated on protected environments (PR #48); only tagged release workflows can access signing keys. macOS signing is in place. |
-| T-B3 | Windows installer is unsigned | H | ❌ | No Windows code-signing certificate has been provisioned (acknowledged in PR #54). Users currently must verify SHA256 checksums manually. Tracked. |
+| T-B3 | Windows installer is unsigned | H | ⚠️ | Windows code-signing is **in progress** — certificate provisioning underway, will be gated through the same protected `release-sign` environment as macOS once available. Until it lands, users verify the SHA256 checksum (T-B4) and, once PR #71 merges, the SLSA Level 3 provenance attestation (T-SC6) via `slsa-verifier`. Tracked. |
 | T-B4 | Installer tampered with after publish | M | ✅ | SHA256 checksums are published alongside each artifact (deduplicated via PR #47/#48). README directs Windows users to verify the checksum before running the installer. |
 | T-B5 | Marketing site (sovright.com / Vercel preview) ships a different binary than the release page | L | ✅ | The site does not host binaries; download links point at `github.com/sovright/zec-wallet-rescue/releases`. |
 
+### 6.6 Supply chain integrity
+
+Almost all of the executable code in a released Argos binary comes from third-party crates (618 in `Cargo.lock`), and a compromise anywhere in that tree, in the build toolchain, or in CI is the single highest-impact attack class against this project. The threats below are listed separately from §6.5 because the mitigations differ: §6.5 is about *our* build and release pipeline, while §6.6 is about the integrity of the inputs that flow into it.
+
+The high-level posture is: **we adopted the practices the rest of the Zcash Rust ecosystem already follows.** `librustzcash`, `zebrad`, and the Zcash mobile SDKs have collectively converged on `cargo-deny` (advisories + licenses + bans + sources), `cargo-vet` (per-crate third-party audits), `zizmor` (GitHub Actions security analysis), uniformly SHA-pinned Actions, and least-privilege workflow `permissions:`. Argos now does the same — see §6.6.3 for what we took from each upstream and §6.6.4 for how much of our tree those upstream audits actually cover (≈73%). The remaining residue lives in items the comparison shows are inherent to our distribution model (T-SC6 reproducible builds) or to upstream constraints out of our hands (T-SC4 toolchain, T-SC2 maintainer takeover).
+
+| ID | Threat | Severity | Status | Mitigation |
+|---|---|---|---|---|
+| T-SC1 | Malicious `build.rs` script or procedural macro in a transitive crate runs arbitrary code at compile time (dev machine and CI). | H | ⚠️ | `cargo-vet` with imports from the librustzcash + Mozilla + Google + Embark + Bytecode Alliance + Fermyon + ISRG audit sets covers 148 of our 618 transitive crates with first-party / federated audits (PR #70). The remaining 565 crates carry `[[exemptions.*]]` entries in `supply-chain/config.toml` — "trust but not yet audited"; any new resolution that adds a non-exempted, non-vetted crate fails CI. Geiger-style `build.rs` enumeration is not yet adopted; that residue remains. The unaudited surface is concentrated in the Tauri stack (§6.6.4 / §7 category 2). |
+| T-SC2 | Maintainer-account takeover on a critical crate (librustzcash family, `rustls`, `tauri`, `secrecy`, `secp256k1`, `bip0039`) ships a malicious version that we knowingly bump to. | H | ⚠️ | `cargo-deny` (T-B1) cannot detect a zero-day at bump time, but `cargo-vet` (T-SC1) requires every new resolution be either covered by an imported audit set or explicitly exempted, which surfaces an unexpected crate-version change as a CI failure with a named-auditor accountability trail. Project policy in `CLAUDE.md` requires conservative dependency review; the README/threat model document who maintains the high-value crates (§7). Formalising the diff-review checklist for `cargo update` is still open (§8). |
+| T-SC3 | A third-party GitHub Action used in CI gets a tag force-moved (or a branch hijacked) to point at malicious code, which then runs with `GITHUB_TOKEN` or signing-environment access. | H | ✅ | Every third-party Action is now SHA-pinned with a `# vX.Y.Z` trailing comment (see PR #70), and the repository-level **Actions → Require SHA pinning for third-party Actions** setting is enabled (T-SC10), so a workflow that regresses to a tag pin is refused at job-start time. Signing/publish steps remain gated on protected environments (T-B2). |
+| T-SC4 | Compromise of the upstream Rust toolchain (rustc / cargo) injects code into produced binaries. | M | ⚠️ | Toolchain version is pinned in CI (Rust 1.87). We rely on rust-lang's release signing and distribution; we do not independently verify toolchain hashes. Out of practical reach for this project; tracked rather than mitigated. |
+| T-SC5 | A transitive crate is yanked from crates.io with no upstream replacement, so a freshly-resolved build cannot reproduce. | L | ✅ | `deny.toml` sets `yanked = "deny"`, so CI fails on any yanked crate in the lockfile. Made tractable by PR #69, which bumped the librustzcash family to the 2026-04 release wave that replaced the formerly-yanked `core2 0.3.3` with `corez 0.1.1` throughout the tree. Future yanks are now hard CI failures requiring an upstream-or-replace fix. |
+| T-SC6 | The published release binary cannot be independently verified to correspond to the source tree at the tagged commit — i.e. no reproducible builds and no SLSA provenance attestation. | M | ❌ | SHA256 checksums (T-B4) and platform code-signing (T-B2) prove the binary was produced by our release pipeline, but not that the pipeline built the source faithfully. A verifier with the source cannot today rebuild bit-for-bit. Tracked. |
+| T-SC7 | A new direct dependency we add is a typosquat or dependency-confusion package masquerading as a legitimate crate. | M | ✅ | Project policy in `CLAUDE.md` requires explicit approval and an `~/.claude/approved-dependencies.md` entry before any new direct dependency is added, with package name, version, adoption signals, maintenance status, and license recorded. This relies on review discipline, not tooling, and is therefore a process control rather than a hard gate. |
+| T-SC8 | `cargo update` silently pulls a malicious patch release within the semver range allowed by `Cargo.toml` between manual review windows. | M | ✅ | `Cargo.lock` is committed and version updates require a commit; CI runs against the lockfile. Auto-update bots (Dependabot/Renovate) are intentionally **not** configured, so dependency bumps are always human-driven and reviewable as a diff. |
+| T-SC9 | A pull request from a fork (external contributor) triggers our CI workflows, gaining `GITHUB_TOKEN` access and running attacker-controlled code on our runners — used either to exfiltrate via cache writes / artifacts / logs, or to consume CI minutes. | H | ✅ | Repository setting **Actions → Approval for running fork pull request workflows from contributors** set to `all_external_contributors` (verified via `gh api repos/.../actions/permissions/fork-pr-contributor-approval`). Every PR from a fork now requires explicit maintainer approval before any workflow runs. Combined with the protected `release-sign` / `release-publish` environments (T-B2), a fork PR cannot reach signing material even on approval. |
+| T-SC10 | A future workflow change reintroduces a tag- or branch-pinned third-party Action (e.g. `actions/checkout@v4`), regressing the SHA-pin posture (T-SC3) silently between reviews. | M | ✅ | Repository setting **Actions → Require SHA pinning for third-party Actions** is enabled (verified via `gh api repos/.../actions/permissions` → `sha_pinning_required: true`). Workflow runs that reference a non-SHA-pinned third-party Action are refused by GitHub at job-start time, so a regression would surface as a CI failure rather than slipping in. |
+
+**Combined effect after the §6.6.3 adoption.** We have strong reproducibility of *what we build today* (lockfile + pinned toolchain + SHA-pinned + repo-enforced Actions), per-crate audit coverage on the 73% of our tree shared with the rest of the Zcash Rust ecosystem (T-SC1 via `cargo-vet`), and platform-level gates against fork-PR exfiltration (T-SC9) and SHA-pin regression (T-SC10). The two structural gaps that remain are T-SC4 (upstream Rust toolchain compromise — out of practical reach for a project this size) and T-SC6 (no reproducible builds / SLSA provenance attestation — a real gap, tracked). On the dependency-tree integrity side, the 565 `cargo-vet` exemptions are concentrated in the Tauri stack (§6.6.4); shrinking that further is structurally hard and tracked rather than blocked on.
+
+#### 6.6.1 Comparison with zebrad and Zodl
+
+Argos shares the librustzcash dependency core with two other production Zcash projects, but with different distribution models and supply-chain postures. Honest comparison:
+
+| Practice | Argos (after PR #70) | zebrad (ZcashFoundation/zebra) | Zodl iOS / Android (zodl-inc) |
+|---|---|---|---|
+| Rust dependency gate in CI | `cargo-deny check advisories bans licenses sources` **and** `cargo-vet --locked` | `cargo-deny` covering advisories, licenses, multiple-versions, wildcards, bans, and sources | n/a — Rust enters as a built artifact via the Zcash mobile SDKs, not compiled directly |
+| Yanked-crate policy | `yanked = "deny"` in `deny.toml` — CI **fails** on any yanked dep (T-SC5 ✅; enabled by the librustzcash 2026-04 bump in PR #69) | `yanked = "deny"` in `deny.toml` | n/a |
+| Third-party Action pinning | Every Action SHA-pinned with `# vX.Y.Z` trailing comment; repo-level `sha_pinning_required: true` refuses regressions at job-start time (T-SC3 ✅, T-SC10 ✅) | `EmbarkStudios/cargo-deny-action` pinned to a 40-char commit SHA with the tag in a trailing comment (others mostly tag-pinned) | Mobile builds use Fastlane + platform CI; out of this comparison |
+| Dependency-update bot | Intentionally **none**; bumps are human-driven and reviewable as a diff (T-SC8 ✅) | Dependabot present (`.github/dependabot.yml`) — auto-PRs are filed and gated through review + the `cargo-deny` job | Gradle lockfile on Android (`buildscript-gradle.lockfile`); SwiftPM on iOS |
+| Fork-PR CI gate | Repo setting `fork-pr-contributor-approval: all_external_contributors` — every external PR requires maintainer approval before workflows run (T-SC9 ✅) | First-time-contributors approval | Mobile CI is internal-only |
+| Lockfile commitment | `Cargo.lock` committed | `Cargo.lock` committed | `buildscript-gradle.lockfile` (Android); `Package.resolved` (iOS) |
+| Release binary integrity | SHA256 checksums + macOS code-signing; Windows code-signing in progress (T-B3); SLSA Level 3 provenance attestation per-release once PR #71 lands (T-SC6) | Docker images on GitHub Packages + binary releases; relies on GitHub release artifact hosting + Docker pull verification; no SLSA provenance | **App Store / Play Store** distribution — binary integrity is delegated to Apple/Google platform signing; users do not run unsigned binaries |
+| Security disclosure | `security@sovright.com`, plain email (PGP intentionally not offered for v0.1.0-rc) | `security@zfnd.org` with a published PGP key; follows the RD-Crypto-Spec responsible-disclosure standard | `responsible_disclosure.md` published in repo with their process |
+
+**What we took from zebrad.** `cargo-deny` modelled on their `deny.toml`, `yanked = "deny"` as a hard CI gate, SHA-pinning third-party Actions to commit hashes with version comments. This subsumes our former `cargo audit` job (advisories + licenses + bans + sources all in one tool) and surfaces yanked transitive crates as failures rather than warnings.
+
+**What we took from `librustzcash` / the Zcash mobile SDKs.** `cargo-vet` with imports from the same federated audit sets `librustzcash` maintains (Bytecode Alliance, Embark, Fermyon, Google, ISRG, Mozilla, Zcash itself); `zizmor` on `.github/workflows/`; least-privilege workflow `permissions: {}` with per-job grants + `persist-credentials: false` on every `actions/checkout`. The `[imports.zcash]` line in `supply-chain/config.toml` is the leverage — it covers ~148 crates of our shared tree for free.
+
+**What does not transfer from Zodl.** Zodl mobile delegates binary-integrity to App Store / Play Store signing and review. Argos ships standalone binaries directly from GitHub Releases on three platforms, so we cannot offload that step the way Zodl can. The integrity guarantees in §6.5 (T-B2/T-B3/T-B4) and the provenance gap in T-SC6 exist because we are not in the mobile-store model — a structural difference, not a posture gap.
+
+**Where we currently match or exceed both upstreams.** No JavaScript runtime dependencies (§7) is a stronger position than either project: zebrad has no JS, Zodl has the full native-mobile dependency surface, and we deliberately ship zero npm packages in the bundle (PR #50). The conservative dependency-bump policy in `CLAUDE.md` is a process control neither upstream documents. Repo-enforced SHA pinning (T-SC10) is a defence-in-depth gate not yet present in either upstream's settings.
+
+**Where we remain behind.** No PGP disclosure key (a v0.1.0+1 decision; see T-SC2 in §8), and no SLSA provenance attestation for the published binaries (T-SC6).
+
+#### 6.6.2 librustzcash and the Zcash mobile Rust SDKs
+
+The Zodl comparison in §6.6.1 stops at the mobile app, but Argos and Zodl share the *same* upstream Rust core — the librustzcash workspace at `zcash/librustzcash` (now ZODL-maintained per `MEMORY.md`). The Zcash mobile Rust SDKs at `zcash/zcash-android-wallet-sdk` (Kotlin) and `zcash/zcash-swift-wallet-sdk` (Swift) **embed librustzcash as an in-tree Rust submodule** and build it into the platform binding (`backend-lib/` on Android, a `rust/` directory + `Cargo.lock` + `Package.resolved` on iOS). Argos consumes the same crates from crates.io. The dependency graph that flows into a built Argos binary, a built Zodl iOS binary, and a built Zodl Android binary therefore shares its largest single chunk.
+
+The posture of that shared upstream is markedly stronger than ours, zebrad's, or the mobile apps' own platform layer:
+
+| Practice | Argos (today) | zebrad | librustzcash | Zcash mobile SDKs |
+|---|---|---|---|---|
+| Per-crate code audit (third-party crate review, not just advisories) | **none** | none (advisories only via `cargo-deny`) | **`cargo-vet`** with imports from Bytecode Alliance, Embark, Fermyon, Google, ISRG (libprio), Mozilla, and Zcash's own audit set; custom criteria including `crypto-reviewed` and `license-reviewed`; named human auditors per delta (`who = "Kris Nuttycombe <kris@nutty.land>"`, `Daira-Emma Hopwood`, etc.) | Inherit librustzcash's audits transitively because they embed the same workspace |
+| License gate | none (we plan `cargo-deny`) | `cargo-deny check licenses` (broad allow-list) | `cargo-deny check licenses` with `allow = ["Apache-2.0", "MIT"]` only — every other SPDX is named per-crate as an exception. Strictest in the comparison. | Inherit librustzcash's `deny.toml` for the embedded Rust workspace |
+| Multi-target dependency graph vetting | n/a (one target per platform) | single target | `[graph] targets` enumerates 14 triples (Linux/macOS/Windows/iOS/Android/FreeBSD) so the dep tree is vetted under every consumer's build configuration | Inherited |
+| GitHub Actions security analysis | none | none | **`zizmor`** (`zizmor-action`) on every push and PR, with `permissions: {}` at the workflow top level and `persist-credentials: false` on checkout — least-privilege workflows | The Swift SDK also runs `zizmor` + `codeql` on its workflows |
+| Action pin form | most tag-pinned, one (`dtolnay/rust-toolchain@master`) on a branch | tag-pinned with one SHA pin (`cargo-deny-action`) | **SHA-pinned with version comment** for every third-party Action (e.g. `actions/checkout@de0fac2…f5447ce83dd # v6.0.2`, `EmbarkStudios/cargo-deny-action@6c8f9fa…b7b7777d1 # v2.0.18`) — the practice T-SC3 calls for | Same SHA-pin pattern |
+| Mutation / quality posture adjacent to supply chain | none | none | **`cargo-mutants`** in CI (`mutants.yml`) — separate goal but raises the bar for any malicious code change going undetected | Inherits the Rust core; platform-side test suites separate |
+| Disclosure | plain `security@sovright.com`, no PGP for v0.1.0-rc | PGP-keyed (`zfnd.org`), follows RD-Crypto-Spec | inherits ECC / ZODL process | PGP-keyed (`security@z.cash`), follows RD-Crypto-Spec |
+
+The honest takeaway: the upstream Rust supply chain we consume is auditing itself more rigorously than we audit our consumption of it.
+
+#### 6.6.3 What Argos adopted from each
+
+Recorded in the order the items landed. Each maps onto a `T-SC*` row in §6.6 and a check-marked entry in §8.
+
+**From `zebrad` — the practical foundation.**
+
+1. **`cargo-deny` with a checked-in `deny.toml`** (PR #70, T-B1 / T-SC1 part 1). Consolidates advisories + licenses + bans + sources into one CI job; replaced the former `cargo audit` job. License allow-list trimmed to identifiers actually present in the tree; an `openssl-sys` ban catches dep regressions away from `rustls`; `multiple-versions = "warn"` rather than `"deny"` because the Tauri + librustzcash stack has known semver duplicates worth tracking but not yet blocking.
+2. **`yanked = "deny"`** (PR #69 then PR #70, T-SC5). zebrad runs this as a hard gate; we could not until the librustzcash 2026-04 release wave (PR #69) replaced the yanked `core2 0.3.3` with `corez 0.1.1` throughout the tree.
+
+**From `librustzcash` and the Zcash mobile SDKs — the highest-leverage items.**
+
+3. **`cargo-vet` with imports from `librustzcash`'s audit set** (PR #70, T-SC1 part 2). `supply-chain/config.toml` lists `[imports.zcash]` plus the same federated imports `librustzcash` already curates (Bytecode Alliance, Embark, Fermyon, Google, ISRG, Mozilla). Result at adoption: 142 fully audited + 6 partial + 565 exempted out of 618 transitive crates — the imports cover 148 crates of the shared tree (§6.6.4) for free.
+4. **`zizmor` on `.github/workflows/`** (PR #70, T-SC1b). Catches Actions-supply-chain misconfigurations (overly broad `permissions:`, persistent credentials, command injection via untrusted GitHub event payloads). Mirrors `librustzcash` and `zcash/zcash-swift-wallet-sdk`.
+5. **SHA-pin every third-party Action with a `# vX.Y.Z` trailing comment** (PR #70, T-SC3). Replaced `dtolnay/rust-toolchain@master` and the `@v4` / `@v2` tags on everything else with 40-character commit SHAs.
+6. **Least-privilege workflows** (PR #70). Top-level `permissions: {}` on both `ci.yml` and `release.yml`, with per-job grants only as needed; `persist-credentials: false` on every `actions/checkout` step.
+
+**Beyond what either upstream does — repository-level enforcement.**
+
+7. **Fork-PR contributor approval set to `all_external_contributors`** (T-SC9 ✅). Every fork PR requires explicit maintainer approval before any workflow runs; closes the fork-PR CI / cache exfiltration / CI-minutes-burning attack class.
+8. **`sha_pinning_required` enabled at the repo level** (T-SC10 ✅). GitHub refuses to start any job that references a non-SHA-pinned third-party Action — locks in T-SC3 against future regressions at the platform layer.
+
+**Still open.**
+
+- **PGP-keyed responsible disclosure** — both mobile SDKs and `zebrad` publish a PGP key and follow the RD-Crypto-Spec standard. Argos explicitly dropped PGP for v0.1.0-rc (commit `3406c83`); revisit once we have a security mailing address with a steward.
+- **SLSA provenance attestation** (T-SC6) — neither structural to upstream nor blocked on it; tracked in §8 as the largest remaining gap.
+
+#### 6.6.4 How much of our dependency surface actually diverges?
+
+The §6.6.1–6.6.3 record of what we adopted from each upstream rests on a quantitative claim: that the value of inheriting an upstream's audit posture depends on how much of our tree they actually cover. This subsection measures it.
+
+Comparing `Cargo.lock` crate sets (verified 2026-05-27 against `ZcashFoundation/zebra` and `zcash/librustzcash` `main`):
+
+| Set | Crates |
+|---|---|
+| Argos total | 618 |
+| Shared with librustzcash | 364 (59%) |
+| Shared with zebra | 423 (68%) |
+| Shared with **either** upstream | **452 (73%)** |
+| Unique to Argos (in neither) | **166 (27%)** |
+
+So **73% of Argos's dependency surface is already exercised — and in librustzcash's case, audited — by an upstream Zcash project**. Adopting `cargo-vet` with `[imports.zcash]` (T-SC1, §6.6.3) captures that majority for free.
+
+The 27% that diverges is overwhelmingly **the Tauri desktop-GUI stack**, broken down roughly as:
+
+- **~52+ crates** in the Tauri / WebView / GTK3 stack: `tauri`, `wry`, the full `gtk-rs` family (`gtk`/`gdk`/`atk`/`gio`/`glib`/`gobject-sys`/`gtk3-macros`/`gdkwayland-sys`/`gdkx11`), `cairo-rs` + `cairo-sys-rs`, `webkit2gtk-*`, `javascriptcore-rs`, `core-graphics`, `cocoa`/`objc` (macOS), `libappindicator`, `embed_plist` (macOS bundling), `embed-resource` (Windows), `kuchikiki` + `html5ever` + `cssparser` + `selectors` (HTML/CSS Tauri uses internally), `keyboard-types`, `dpi`, `cookie`, `ico`, `infer`, `json-patch`.
+- **~15 crates** in the `smol`/`async-std` runtime adjacent to Tauri's internal IPC — `async-broadcast`, `async-channel`, `async-executor`, `async-io`, `async-lock`, `async-process`, `async-signal`, `async-task`, `blocking`, `event-listener-strategy`, `futures-lite`, etc. — pulled by Tauri even though our application code uses `tokio`.
+- **A handful of CLI helpers** unique to us: `dialoguer`, `keepawake`.
+- **The remainder** (~95 crates): compression (`brotli`, `brotli-decompressor`, `fdeflate`), HTML/text helpers (`dom_query`, `futf`, `cesu8`), build-tooling adjacent (`cargo_toml`, `cfg-expr`, `cfb`, `ctor`, `ico`, `infer`), Unicode/i18n (`icu_locale_core`), and miscellaneous utility crates.
+
+This is the same set the categorization in §7 calls *category 2* (the Tauri desktop-GUI stack), and it overlaps almost perfectly with the unmaintained-crate ignores in `deny.toml` (RUSTSEC-2024-0411..0420, 2025-0080, 2025-0081, 2025-0100) — those are exactly the gtk-rs GTK3 transitive set Tauri pulls in.
+
+**Practical implications:**
+
+1. The 73% we share is well-trodden ground. Bumps to that part of the tree carry low novel risk because both upstreams exercise it and librustzcash audits it.
+2. The 27% that's ours alone is where new supply-chain risk concentrates. Future first-party `cargo-vet` audits should focus here first; importing more federated audit sets (Mozilla / Google / Embark already in §6.6.3's plan) covers some of the async-runtime tail but is light on the gtk-rs family.
+3. Shrinking the divergence meaningfully requires one of: (a) Tauri upstream migrating to GTK4 (out of our hands; an upstream-scale change), (b) finding an audit source that targets the desktop-GUI stack specifically (none in our current import set does), or (c) first-party audits of the Tauri tree, which is real effort.
+
+The honest framing: T-SC1's `cargo-vet` adoption gives us large coverage cheaply; the remaining work to drive exemptions toward zero is concentrated in a single, structurally hard-to-audit subsystem.
+
 ## 7. Dependency posture
 
-Cargo dependencies are pinned via `Cargo.lock`. The high-value crates are the librustzcash family (`zcash_client_backend`, `zcash_client_sqlite`, `zcash_keys`, `zcash_protocol`, `zcash_primitives`, `zcash_transparent`, `sapling-crypto`, `orchard`), maintained by ZODL (formerly the ECC mobile team); `secrecy` and `secp256k1` for key handling; `rustls` (with the `ring` provider and no `aws-lc-sys`, per PR #54) for TLS; and Tauri for the GUI shell. CI runs `cargo audit` against the RustSec advisory database on every push and PR (T-B1); the documented advisory carve-outs live in `.cargo/audit.toml`.
+Argos's dependency tree is best summarised as **three categories**, in roughly the order they contribute to attack surface:
+
+1. **The librustzcash + Zcash ecosystem core that we share with `zebrad` and `Zodl`** — the librustzcash family (`zcash_client_backend`, `zcash_client_sqlite`, `zcash_keys`, `zcash_protocol`, `zcash_primitives`, `zcash_transparent`, `sapling-crypto`, `orchard`), maintained by ZODL (formerly the ECC mobile team); the cryptographic primitives they pull (`bls12_381`, `pasta_curves`, `halo2`, `equihash`, `secp256k1`); `secrecy` for key handling; `rustls` with the `ring` provider and no `aws-lc-sys` (PR #54) for TLS; `tonic` + `prost` + `tokio` for the gRPC lightwalletd client. This category is roughly the same set of crates that `zebrad` and `Zodl` consume — quantified in §6.6.4, **452 of our 618 lockfile crates (73%) are shared with either upstream**, and the librustzcash maintainers actively audit them via `cargo-vet`.
+
+2. **The Tauri desktop-GUI stack** — `tauri` itself; `wry` (cross-platform WebView bindings); the `gtk-rs` family on Linux (`gtk`/`gdk`/`atk`/`gio`/`glib`/`gobject-sys`/`gtk3-macros`/`gdkwayland-sys`/`gdkx11` + their `*-sys` companions); `cairo-rs` + `cairo-sys-rs`; `webkit2gtk-*` + `javascriptcore-rs` on Linux, `core-graphics`/`cocoa`/`objc` on macOS, `embed_plist` for macOS bundling, `embed-resource` for Windows; the HTML/CSS parsing crates Tauri uses internally (`kuchikiki`, `html5ever`, `cssparser`, `selectors`); plus the smol-family async runtime Tauri's IPC pulls in (`async-channel`, `async-io`, `async-lock`, `blocking`, `futures-lite`). This is essentially all of the **~166 crates unique to Argos's tree** (§6.6.4) — neither `zebrad` nor `Zodl` consume it, and it dominates the unmaintained-crate advisory ignores in `deny.toml` (the RUSTSEC-2024-0411..0420 / 2025-0080 / 2025-0081 GTK3 family).
+
+3. **Project-specific helpers for the recovery workflow.** A small tail: `keepawake` to hold a power-management guard so the OS doesn't sleep mid-scan (recovery scans of older wallets routinely run for hours); `bip0039` for the seed phrase; `clap` + `dialoguer` + `indicatif` for the CLI; `rusqlite` for the workspace database. `keepawake` in particular is unique to our long-scan use case — `zebrad` runs as a server and `Zodl` is a foreground app, so neither needs it.
 
 JavaScript dependencies: **none at runtime**. The Tauri GUI ships zero npm packages in the browser bundle (PR #50).
+
+**Tooling for the integrity of these inputs.** CI runs three gates against every push and PR, all modelled on the practices librustzcash and `zebrad` already use (see §6.6 for the comparison and §6.6.3 for what we adopted from each):
+
+- `cargo deny check advisories bans licenses sources` (T-B1, T-SC1 part 1) — replaces the previous `cargo audit` job. Configuration lives in `deny.toml`; the carry-over advisory ignores for the GTK3 / Tauri stack and the `time` 0.3.x DoS sit there. `yanked = "deny"` is in force.
+- `cargo vet --locked` (T-SC1 part 2) — third-party crate audits, with `supply-chain/config.toml` importing the same audit sets librustzcash maintains: Bytecode Alliance, Embark, Fermyon, Google, ISRG, Mozilla, and Zcash itself. Initial state at adoption: 142 fully audited + 6 partial + 565 exempted; the exemptions are concentrated in category 2 (the Tauri stack).
+- `zizmor` (T-SC1b) on `.github/workflows/` — catches Actions-supply-chain misconfigurations (overly broad `permissions:` blocks, persistent credentials, command injection via untrusted GitHub event payloads). Mirrors librustzcash and `zcash/zcash-swift-wallet-sdk`.
+
+Plus two repository-level gates (T-SC9, T-SC10): every fork PR requires maintainer approval before workflows run, and any workflow that references a non-SHA-pinned third-party Action is refused by GitHub at job-start time.
+
+For the full threat enumeration of supply-chain integrity see §6.6, the cross-project posture comparison see §6.6.1–§6.6.2, the adoption summary see §6.6.3, and the divergence quantification see §6.6.4.
 
 ## 8. Open issues and known gaps
 
@@ -161,8 +300,15 @@ These are intentionally listed in one place so the document drives a backlog rat
 - [ ] **T-N2** — pin the certificate of `zec.rocks` / `na.zec.rocks` for the default endpoints.
 - [ ] **T-N5** — surface the auto-detect privacy implication more loudly in the UI.
 - [x] **T-L3** — add a "Delete workspace" action that securely wipes a session post-recovery.
-- [x] **T-B1** — add `cargo audit` (or `cargo deny check advisories`) to CI on every push.
-- [ ] **T-B3** — provision a Windows code-signing certificate and gate it behind the same protected-environment mechanism as macOS.
+- [x] **T-B1** — gate CI on advisories (originally `cargo audit`; upgraded to `cargo-deny check advisories bans licenses sources` + `cargo-vet --locked` in PR #70).
+- [ ] **T-B3** — provision a Windows code-signing certificate and gate it behind the same protected-environment mechanism as macOS. **In progress** — certificate procurement underway; signing step will mirror the existing `release-sign` environment used for macOS.
+- [x] **T-SC1** — adopt `cargo-deny` + `cargo-vet` with `[imports.zcash]` and the federated audit sets librustzcash already pulls (PR #70). Geiger-style `build.rs` enumeration / sandboxing remains a separate item if we want to tighten further.
+- [x] **T-SC1b** — adopt `zizmor` (`zizmorcore/zizmor-action`) on `.github/workflows/` (PR #70).
+- [ ] **T-SC2** — formalize a dependency-bump review checklist (diff the changelog, scan for new `build.rs` / network calls / proc macros) and record sign-off in the PR. `cargo-vet` now catches new untrusted resolutions automatically; the checklist would tighten the human-review side around bumps to crates *already exempted*.
+- [x] **T-SC3** — SHA-pin every third-party GitHub Action with a `# vX.Y.Z` trailing comment (PR #70) and enforce at the repo level (T-SC10).
+- [ ] **T-SC6** — investigate reproducible builds for release artifacts and publishing SLSA provenance attestations (e.g. via `slsa-github-generator`). Largest remaining supply-chain gap.
+- [x] **T-SC9** — set repository `fork-pr-contributor-approval` to `all_external_contributors` so every fork PR requires maintainer approval before workflows run.
+- [x] **T-SC10** — enable repository `sha_pinning_required` so workflows referencing a non-SHA-pinned Action are refused at job-start time.
 
 ## 9. Out of scope
 
@@ -181,5 +327,9 @@ Please **do not** open a public GitHub issue for a security vulnerability. Email
 
 | Date | Author | Notes |
 |---|---|---|
-| 2026-05-19 | Zaki | Initial draft. Covers v0.1.0-rc. Open items listed in §8. |
 | 2026-05-13 | Kristi | Correct T-L1 status (permissions implemented); fix CSP quote; clarify T-N4 address count; PGP note. |
+| 2026-05-19 | Zaki | Initial draft. Covers v0.1.0-rc. Open items listed in §8. |
+| 2026-05-27 | Zaki | Added §6.6 Supply chain integrity (T-SC1..T-SC8), §6.6.1 cross-project posture comparison (zebrad + Zodl), §6.6.2 extending to librustzcash and the Zcash mobile Rust SDKs (documenting their `cargo-vet` posture with federated audits from Bytecode Alliance / Embark / Fermyon / Google / ISRG / Mozilla, `zizmor` on workflows, uniformly SHA-pinned Actions), §6.6.3 adoption plan, and §6.6.4 quantifying dependency-surface divergence: 452/618 (73%) of our crates are shared with zebra or librustzcash; the 166 unique to Argos are essentially the Tauri desktop-GUI stack. |
+| 2026-05-28 | Zaki | Added T-SC9 (fork-PR CI execution) and T-SC10 (SHA-pin regression), both ✅ via repository-level Actions settings (`fork-pr-contributor-approval: all_external_contributors`, `sha_pinning_required: true`). T-SC3 upgraded ⚠️→✅ on the back of T-SC10. |
+| 2026-05-28 | Zaki | Holistic pass after PRs #69 (librustzcash 2026-04 bump) and #70 (cargo-deny + cargo-vet + zizmor + SHA-pin Actions + least-privilege workflows): rewrote §7 to lead with the three-category framing (librustzcash + Zcash ecosystem shared with zebrad/Zodl; Tauri desktop-GUI stack; project-specific helpers including `keepawake` for long scans); reframed §6.6 + §6.6.3 from prospective adoption plan to retrospective record of what we took from each upstream; updated T-B1 / T-SC1 / T-SC2 / T-SC5 statuses to reflect the new tooling; refreshed §6.6.1 comparison table to the post-#70 state; updated §8 backlog (T-SC1 / T-SC1b / T-SC3 / T-SC9 / T-SC10 now ✅; T-SC6 named as the largest remaining supply-chain gap). |
+| 2026-05-28 | Zaki | T-B3 status moved ❌ → ⚠️: Windows code-signing certificate procurement is in progress. §4 build-pipeline trust boundary and §6.6.1 comparison-table release-binary row updated to reflect (a) Windows signing in progress, (b) SLSA Level 3 provenance attestation (T-SC6) coming via PR #71 as the third-party-verifiable source-to-binary chain in the interim. |
