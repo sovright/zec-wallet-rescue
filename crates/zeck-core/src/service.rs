@@ -13,7 +13,7 @@ use zcash_client_backend::{
             create_proposed_transactions, input_selection::GreedyInputSelector,
             propose_send_max_transfer, propose_shielding, ConfirmationsPolicy, SpendingKeys,
         },
-        MaxSpendMode, TransactionStatus, WalletRead, WalletWrite,
+        MaxSpendMode, TransactionStatus, TransparentOutputFilter, WalletRead, WalletWrite,
     },
     fees::{standard::SingleOutputChangeStrategy, DustOutputPolicy, StandardFeeRule},
     proto::service::{
@@ -688,6 +688,7 @@ async fn execute_shielding_step(
         &tracked_account.transparent_receivers,
         tracked_account.wallet_account_id,
         ConfirmationsPolicy::MIN,
+        TransparentOutputFilter::All,
     )
     .map_err(|err| ZeckError::TransactionBuild(format!("building shielding proposal: {err}")))?;
     let fee_zatoshis = proposal_fee_zatoshis(&proposal)?;
@@ -699,19 +700,19 @@ async fn execute_shielding_step(
     let mut standalone_keys = HashMap::new();
     standalone_keys.insert(
         tracked_account.transparent_receivers[0],
-        legacy_transparent_secret_key(
+        vec![legacy_transparent_secret_key(
             transparent_account,
             crate::models::AddressScope::External,
             tracked_account.derived.index,
-        )?,
+        )?],
     );
     standalone_keys.insert(
         tracked_account.transparent_receivers[1],
-        legacy_transparent_secret_key(
+        vec![legacy_transparent_secret_key(
             transparent_account,
             crate::models::AddressScope::Internal,
             tracked_account.derived.index,
-        )?,
+        )?],
     );
     let txids = create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
         &mut wallet_db,
