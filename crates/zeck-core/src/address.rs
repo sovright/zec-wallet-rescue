@@ -98,4 +98,62 @@ mod tests {
             "got {err:?}"
         );
     }
+
+    // ─── Address resilience (R-A6..R-A9) ──────────────────────────────────────
+    //
+    // Coverage gaps named in docs/superpowers/test-plans/recovery-resilience.md.
+    // None of these inputs are valid destinations; the validator must reject
+    // each without panicking and without ambiguous error variants.
+
+    #[test]
+    fn very_long_random_string_rejected_without_panic() {
+        // R-A6: defends against pathological clipboard / form input. 100 KB
+        // of `u` characters is structurally not a unified address but starts
+        // with the expected prefix — the decoder must reject rather than
+        // hang on a giant Bech32m payload.
+        let huge = "u".to_owned() + &"q".repeat(100_000);
+        let err = validate_destination_address(&huge).unwrap_err();
+        assert!(matches!(err, ZeckError::InvalidAddress(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn upper_case_unified_address_rejected() {
+        // R-A7: Bech32m is case-sensitive (case-mixing within the payload is
+        // explicitly disallowed). Upper-casing a valid UA must not round-trip
+        // back to the same address.
+        let upper = UA_ORCHARD_SAPLING.to_ascii_uppercase();
+        // Skip if the test UA happens to already be uppercase (impossible for
+        // a `u1…` prefix, defensive).
+        assert!(upper.starts_with("U1"));
+        let err = validate_destination_address(&upper).unwrap_err();
+        assert!(matches!(err, ZeckError::InvalidAddress(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn unified_address_with_embedded_whitespace_rejected() {
+        // R-A8: a space in the middle of a UA is an immediate Bech32m
+        // violation. Embedded NUL too — both should reject before any
+        // partial parse.
+        let with_space = format!("{}{}{}",
+            &UA_ORCHARD_SAPLING[..40], " ", &UA_ORCHARD_SAPLING[40..]);
+        let err = validate_destination_address(&with_space).unwrap_err();
+        assert!(matches!(err, ZeckError::InvalidAddress(_)), "got {err:?}");
+
+        let with_nul = format!("{}{}{}",
+            &UA_ORCHARD_SAPLING[..40], "\x00", &UA_ORCHARD_SAPLING[40..]);
+        let err = validate_destination_address(&with_nul).unwrap_err();
+        assert!(matches!(err, ZeckError::InvalidAddress(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn zip321_payment_uri_rejected_as_destination() {
+        // R-A9: `zcash:u1…` is a payment URI, not a destination address.
+        // Argos's sweep destination field expects a bare address; the URI
+        // form must be rejected so users aren't surprised by their entire
+        // ZIP-321 URI (including amount/memo parameters) being silently
+        // accepted and partially parsed.
+        let uri = format!("zcash:{UA_ORCHARD_SAPLING}");
+        let err = validate_destination_address(&uri).unwrap_err();
+        assert!(matches!(err, ZeckError::InvalidAddress(_)), "got {err:?}");
+    }
 }
