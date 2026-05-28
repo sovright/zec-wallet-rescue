@@ -8,7 +8,7 @@ use crate::error::{ZeckError, ZeckResult};
 /// Baked-in donation recipient. MUST be a shielded Unified Address (memos
 /// require a shielded output). Empty string disables the donation feature
 /// everywhere. Set this to the real address to activate.
-pub const DONATION_ADDRESS: &str = "";
+pub const DONATION_ADDRESS: &str = "u16327q4390542tvd6hxug322368v3xt6h204g4fd50m30y56kft0utddcva3r6hgmjzzrnfcqmw5e7x2cvftuzhk8a9unmuejp3n9qgp4yv20n4un55fxs3htn0alpcmkfz56vapf58erhfmu9ke4wa84x6xqlcm0p3a48j75ygwf3ft2";
 
 /// Fixed label so all sweep-sourced donations are identifiable when the
 /// project scans the donation address's memos.
