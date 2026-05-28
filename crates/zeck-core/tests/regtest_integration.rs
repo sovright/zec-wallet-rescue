@@ -436,17 +436,197 @@ fn sprout_only_wallet_scans_cleanly_with_zero_funds() {
 }
 
 // ─── R-S26: Reorg during scan ───────────────────────────────────────────────
-#[ignore = "requires regtest to mine a reorg via invalidateblock / reconsiderblock"]
-#[test]
-fn reorg_during_scan_invalidates_and_rescans_affected_range() {
-    let _harness = RegtestHarness::require();
-    // Verify:
-    //   - The scan detects the reorg via zcash_client_backend's chain
-    //     reconciliation.
-    //   - The wallet DB rolls back to the common ancestor and re-scans.
-    //   - Final balance after re-scan matches the post-reorg ground truth
-    //     (not the pre-reorg snapshot).
-    unimplemented!("regtest harness PR will implement");
+#[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
+#[tokio::test]
+async fn reorg_during_scan_invalidates_and_rescans_affected_range() {
+    // Verifies that a chain reorg between two scans is detected and handled
+    // by `zcash_client_backend`'s sync layer: the wallet DB rolls back to
+    // the common ancestor and re-scans the new fork, reaching at least the
+    // new chain tip on completion.
+    //
+    // ## Sequence
+    //
+    //   1. Initial scan via the shared helper — wallet observes the
+    //      harness's current tip.
+    //   2. Drive a regtest reorg via zcash-cli:
+    //        - `invalidateblock <hash@tip-5>` rolls the active chain back
+    //          to height (tip - 6).
+    //        - `generate 10` mines a strictly-longer fork, ending at
+    //          (tip - 6 + 10) = tip + 4.
+    //   3. Brief sleep so lightwalletd's polling loop observes the new
+    //      view before Argos's next sync. The exact delay depends on
+    //      lightwalletd's poll interval (~5s in the harness config); 3s
+    //      is the conservative default — bump it via the test wrapper if
+    //      the hands-on validation shows flakiness.
+    //   4. Second scan against the same workspace. The conflict-
+    //      cancellation logic (R-W24) cleans up the first session; the
+    //      new session resumes from the workspace's `fully_scanned_height`
+    //      and forces sync's reorg-detection path.
+    //   5. Final progress must report a `synced_to_height` at least as
+    //      high as the new chain tip, and the balance must be unchanged
+    //      (funding tx is at ~height 201 per setup.sh, well below the
+    //      5-block reorg window).
+    //
+    // ## What this test does NOT cover
+    //
+    // The strong version of "final balance matches post-reorg ground
+    // truth" would put a transaction *inside* the reorged range and
+    // verify Argos sees the post-reorg version, not the pre-reorg one.
+    // That needs a wallet that can send funds on regtest (and therefore
+    // a working spend pipeline against the harness), which is a separate
+    // future PR. The current test pins the structural property: scan
+    // doesn't crash on reorg + tip advances + balance below the reorg
+    // window is preserved.
+
+    let harness = RegtestHarness::require();
+    let temp_data_dir = tempfile::tempdir().expect("tempdir");
+    let fixture =
+        complete_scan_against_test_seed(&harness, &temp_data_dir, "argos-rs26-initial").await;
+
+    let pre = fixture
+        .service
+        .get_scan_progress(&fixture.handle)
+        .await
+        .expect("get_scan_progress after initial scan");
+    let pre_tip = pre
+        .synced_to_height
+        .expect("[regtest] initial scan must populate synced_to_height");
+    let pre_balance: u64 = pre.accounts.iter().map(|a| a.total_zatoshis).sum();
+    eprintln!("[regtest] pre-reorg: tip={pre_tip}, balance={pre_balance}");
+
+    let invalidate_height = pre_tip.saturating_sub(5);
+    let invalidate_hash = zcashd_cli(&["getblockhash", &invalidate_height.to_string()]);
+    eprintln!(
+        "[regtest] invalidating block @ height {invalidate_height} (hash {invalidate_hash})",
+    );
+    let _ = zcashd_cli(&["invalidateblock", &invalidate_hash]);
+    let _ = zcashd_cli(&["generate", "10"]);
+
+    // Let lightwalletd's polling loop observe the new tip.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let new_chain_tip: u64 = zcashd_cli(&["getblockcount"])
+        .parse()
+        .expect("[regtest] parse getblockcount output");
+    assert!(
+        new_chain_tip > pre_tip,
+        "[regtest] post-reorg chain tip must exceed pre-reorg tip; got new={new_chain_tip}, pre={pre_tip}"
+    );
+    eprintln!("[regtest] post-reorg new chain tip: {new_chain_tip}");
+
+    // Second scan against the same workspace forces sync's reorg path.
+    let scan_config = ScanConfig {
+        birthday: 1,
+        num_accounts: Some(2),
+        gap_limit: 5,
+        lightwalletd_url: harness.lightwalletd_url().to_owned(),
+        data_dir: temp_data_dir.path().to_path_buf(),
+        network: ZeckNetwork::Testnet,
+        label: "argos-rs26-post".to_owned(),
+    };
+    let handle = fixture
+        .service
+        .start_scan(
+            scan_config,
+            SecretString::new(harness.test_seed().to_owned()),
+        )
+        .await
+        .expect("post-reorg start_scan must succeed");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let final_progress = loop {
+        let progress = fixture
+            .service
+            .get_scan_progress(&handle)
+            .await
+            .expect("get_scan_progress during post-reorg scan");
+        match progress.phase {
+            ScanPhase::Complete => break progress,
+            ScanPhase::Error => panic!(
+                "[regtest] post-reorg scan errored: {:?} — \
+                 zcash_client_backend's chain reconciliation regressed?",
+                progress.error
+            ),
+            ScanPhase::Cancelled => {
+                panic!("[regtest] post-reorg scan unexpectedly cancelled")
+            }
+            _ => {
+                if std::time::Instant::now() > deadline {
+                    panic!(
+                        "[regtest] post-reorg scan did not complete within 120s; \
+                         last phase = {:?}",
+                        progress.phase
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    };
+
+    let post_tip = final_progress
+        .synced_to_height
+        .expect("[regtest] post-reorg scan must populate synced_to_height");
+    let post_balance: u64 = final_progress.accounts.iter().map(|a| a.total_zatoshis).sum();
+    eprintln!("[regtest] post-reorg: tip={post_tip}, balance={post_balance}");
+
+    assert!(
+        post_tip >= new_chain_tip,
+        "[regtest] post-reorg scan must reach the new chain tip; \
+         post_tip={post_tip}, new_chain_tip={new_chain_tip} — sync's reorg \
+         reconciliation didn't roll forward to the new fork"
+    );
+    assert_eq!(
+        post_balance, pre_balance,
+        "[regtest] funding tx is below the reorg window; balance must be unchanged"
+    );
+
+    eprintln!("[regtest] reorg detected and rescanned successfully");
+}
+
+/// Execute a zcash-cli command against the harness's zcashd-regtest container
+/// and return stdout (trimmed). Used by R-S26 to drive chain manipulation
+/// (invalidateblock, generate, getblockhash) via RPC.
+///
+/// Defaults to `docker exec` against the well-known container name from
+/// `tests/regtest/docker-compose.yml`. Bare-metal contributors (those
+/// running zcashd locally rather than via the docker harness) override the
+/// wrapper command line via:
+///
+///     ARGOS_REGTEST_ZCASH_CLI="zcash-cli -conf=/path/to/zcash.conf"
+///
+/// The override is parsed by whitespace-splitting and so cannot contain
+/// args with embedded spaces — sufficient for typical zcash-cli usage.
+///
+/// Panics rather than returning Result because every failure here is a
+/// hard test-setup error (docker missing, container down, zcash-cli
+/// returning non-zero) — the C2 tests are already `#[ignore]`'d so the
+/// panic only surfaces under `cargo test --ignored`.
+fn zcashd_cli(args: &[&str]) -> String {
+    let wrapper = std::env::var("ARGOS_REGTEST_ZCASH_CLI").unwrap_or_else(|_| {
+        "docker exec argos-zcashd-regtest zcash-cli -conf=/srv/zcashd/.zcash/zcash.conf".to_owned()
+    });
+    let parts: Vec<&str> = wrapper.split_whitespace().collect();
+    let (program, base_args) = parts
+        .split_first()
+        .expect("[regtest] ARGOS_REGTEST_ZCASH_CLI must not be empty");
+    let output = std::process::Command::new(program)
+        .args(base_args)
+        .args(args)
+        .output()
+        .unwrap_or_else(|err| {
+            panic!("[regtest] failed to spawn `{program}` for zcash-cli: {err}")
+        });
+    if !output.status.success() {
+        panic!(
+            "[regtest] zcash-cli {args:?} failed: status={:?}, stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    String::from_utf8(output.stdout)
+        .expect("[regtest] zcash-cli stdout was not valid UTF-8")
+        .trim()
+        .to_owned()
 }
 
 // ─── R-S27: Crash mid-scan resume ───────────────────────────────────────────
