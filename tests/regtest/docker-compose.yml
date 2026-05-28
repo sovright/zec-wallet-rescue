@@ -1,0 +1,72 @@
+# Regtest harness for Argos integration tests.
+#
+# Boots a private Zcash regtest network on the local machine: one `zcashd` in
+# regtest mode + one `lightwalletd` pointed at it over plaintext gRPC (the
+# `--no-tls-very-insecure` flag — *local-only*, never expose this stack to
+# anything beyond loopback).
+#
+# Once `docker compose up -d` succeeds, run `./setup.sh` to mine the initial
+# 200 blocks (coinbase maturity) and fund the well-known Argos test seed's
+# transparent address with a deterministic amount. Then export:
+#
+#     export ARGOS_REGTEST_LIGHTWALLETD_URL=http://localhost:9067
+#
+# and run the C2 integration tests:
+#
+#     cargo test --workspace -- --ignored
+#
+# See README.md in this directory for the full setup, prerequisites, and
+# teardown instructions.
+
+services:
+  zcashd-regtest:
+    image: electriccoinco/zcashd:latest
+    container_name: argos-zcashd-regtest
+    restart: "no"
+    # Only bound to loopback — never publish regtest RPC to a non-loopback
+    # interface. Anything that can talk to this port has full miner rights.
+    ports:
+      - "127.0.0.1:18232:18232"
+    volumes:
+      - ./zcashd-regtest.conf:/srv/zcashd/.zcash/zcash.conf:ro
+      - zcashd-data:/srv/zcashd/.zcash
+    healthcheck:
+      # zcashd's RPC takes a while to come up; the lightwalletd container
+      # waits on this healthcheck before launching its gRPC server.
+      test:
+        - "CMD"
+        - "zcash-cli"
+        - "-conf=/srv/zcashd/.zcash/zcash.conf"
+        - "getblockchaininfo"
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  lightwalletd-regtest:
+    image: electriccoinco/lightwalletd:latest
+    container_name: argos-lightwalletd-regtest
+    restart: "no"
+    depends_on:
+      zcashd-regtest:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:9067:9067"
+    volumes:
+      - ./lightwalletd-regtest.yaml:/etc/lightwalletd.yaml:ro
+      - zcashd-data:/srv/zcashd/.zcash:ro
+      - lwd-data:/var/lib/lightwalletd
+    # `--no-tls-very-insecure` is required because Argos's
+    # `validate_lightwalletd_endpoint` only allows plaintext over the
+    # loopback host set (`127.0.0.1`, `::1`, `localhost`, `*.localhost`).
+    # The port mapping above keeps this loopback-only.
+    command:
+      - "--config=/etc/lightwalletd.yaml"
+      - "--no-tls-very-insecure"
+      - "--zcash-conf-path=/srv/zcashd/.zcash/zcash.conf"
+      - "--data-dir=/var/lib/lightwalletd"
+      - "--log-file=/dev/stdout"
+
+volumes:
+  zcashd-data:
+  lwd-data:
