@@ -5,18 +5,27 @@ on:
     tags:
       - "v*"
 
+# Least-privilege default: every job opts in explicitly. Only the publish
+# job needs `contents: write` (to create the GitHub Release). Mitigates
+# third-party Action token-exfiltration risk (THREAT_MODEL.md §6.6 T-SC3).
+permissions: {}
+
 jobs:
   build-linux:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master@2026-05-27
         with:
           toolchain: "1.87"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: ". -> target"
 
@@ -31,7 +40,7 @@ jobs:
             patchelf
 
       - name: Install Node (for Tauri CLI)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
 
@@ -43,7 +52,7 @@ jobs:
         run: tauri build --bundles deb --bundles appimage
 
       - name: Upload artifacts (Linux)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: zeck-linux
           path: |
@@ -57,21 +66,25 @@ jobs:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     runs-on: macos-latest
     environment: release-sign
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master@2026-05-27
         with:
           toolchain: "1.87"
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: ". -> target"
 
       - name: Install Node (for Tauri CLI)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
 
@@ -91,14 +104,14 @@ jobs:
 
       - name: Upload artifacts (macOS ARM)
         if: matrix.target == 'aarch64-apple-darwin'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: zeck-macos-arm
           path: target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
 
       - name: Upload artifacts (macOS Intel)
         if: matrix.target == 'x86_64-apple-darwin'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: zeck-macos-intel
           path: target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
@@ -106,20 +119,24 @@ jobs:
   build-windows:
     runs-on: windows-latest
     environment: release-sign
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master@2026-05-27
         with:
           toolchain: "1.87"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: ". -> target"
 
       - name: Install Node (for Tauri CLI)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
 
@@ -131,7 +148,7 @@ jobs:
         run: tauri build --bundles msi --bundles nsis
 
       - name: Upload artifacts (Windows)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: zeck-windows
           path: |
@@ -145,10 +162,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
 
@@ -161,7 +180,7 @@ jobs:
             | tee SHA256SUMS
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: artifacts/**/*
           generate_release_notes: true
