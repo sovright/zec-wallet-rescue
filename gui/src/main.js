@@ -21,6 +21,7 @@ const state = {
   unlistenDiscovered: null,
   scanConfig: null,
   savedReportPath: null,
+  donationEnabled: false,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -759,19 +760,44 @@ $("cancel-scan").addEventListener("click", async () => {
   }
 });
 
+function donationParamsFromForm() {
+  if (!state.donationEnabled) return { donationRate: null, donorEmail: null };
+  const enabled = $("donate-enabled").checked;
+  const pct = parseFloat($("donate-rate").value);
+  const donationRate = enabled && Number.isFinite(pct) && pct > 0 ? pct / 100 : null;
+  const donorEmail = enabled ? ($("donate-email").value.trim() || null) : null;
+  return { donationRate, donorEmail };
+}
+
+async function refreshSweepProposal() {
+  const { donationRate, donorEmail } = donationParamsFromForm();
+  const proposal = await invoke("propose_sweep", {
+    handle: state.scanHandle,
+    destination: state.destination,
+    memo: state.memo,
+    maxFeeZec: state.maxFeeZec,
+    donationRate,
+    donorEmail,
+  });
+  state.sweepProposal = proposal;
+  renderSweepProposal(proposal);
+}
+
+async function maybeRefreshProposal() {
+  if (!state.sweepProposal) return;
+  try {
+    await refreshSweepProposal();
+  } catch (err) {
+    setStatus("sweep-execute-status", `✗ ${err}`, "error");
+  }
+}
+
 $("review-sweep").addEventListener("click", async () => {
   setStatus("scan-message", "Fetching sweep proposal…", "");
   $("review-sweep").disabled = true;
 
   try {
-    const proposal = await invoke("propose_sweep", {
-      handle: state.scanHandle,
-      destination: state.destination,
-      memo: state.memo,
-      maxFeeZec: state.maxFeeZec,
-    });
-    state.sweepProposal = proposal;
-    renderSweepProposal(proposal);
+    await refreshSweepProposal();
     goTo("sweep");
   } catch (err) {
     setStatus("scan-message", `✗ ${err}`, "error");
@@ -787,6 +813,13 @@ $("sweep-back").addEventListener("click", () => {
   }
   goTo("scan");
 });
+
+$("donate-enabled").addEventListener("change", () => {
+  $("donate-fields").hidden = !$("donate-enabled").checked;
+  maybeRefreshProposal();
+});
+$("donate-rate").addEventListener("change", maybeRefreshProposal);
+// email does not affect amounts; it's read fresh at propose/execute time, no re-propose needed
 
 // ─── Step 5: Sweep Review ─────────────────────────────────────────────────────
 
@@ -816,6 +849,7 @@ function renderSweepProposal(proposal) {
     appendCell(tr, fmt(tx.gross_zatoshis));
     appendCell(tr, fmt(tx.fee_zatoshis));
     appendCell(tr, fmt(tx.net_zatoshis));
+    appendCell(tr, fmt(tx.donation_zatoshis || 0));
     appendCell(tr, String(tx.memo ?? "—"));
     tbody.appendChild(tr);
   });
@@ -842,6 +876,23 @@ function renderSweepProposal(proposal) {
       list.appendChild(li);
     });
     skippedEl.appendChild(list);
+  }
+
+  $("donate-form").hidden = !state.donationEnabled || state.scanConfig?.network === "testnet";
+  const donated = proposal.total_donation_zatoshis || 0;
+  const preview = $("donate-amount-preview");
+  if (donated > 0) {
+    const net = (proposal.net_received_zatoshis || 0) - donated;
+    preview.textContent = `Donation: ${fmt(donated)} · Net to you: ${fmt(net)} (estimate)`;
+  } else if (state.donationEnabled && $("donate-enabled").checked && state.scanConfig?.network !== "testnet") {
+    // The proposal estimate uses a fixed ZIP-317 floor; execution uses the
+    // real fee. Right at the donation threshold the two can disagree by a
+    // few thousand zatoshis, so a "below threshold" preview is only a
+    // best-estimate — name that explicitly rather than implying a guarantee.
+    preview.textContent =
+      "Donation is below the minimum threshold at the estimated fee — may be included or skipped at execution time depending on the real ZIP-317 fee. Funds are never at risk either way.";
+  } else {
+    preview.textContent = "";
   }
 
   $("irreversible-check").checked = false;
@@ -872,11 +923,14 @@ $("execute-sweep").addEventListener("click", async () => {
   setStatus("sweep-execute-status", "Broadcasting transactions to the Zcash network… this may take up to 2 minutes.", "");
 
   try {
+    const { donationRate, donorEmail } = donationParamsFromForm();
     const results = await invoke("execute_sweep", {
       handle: state.scanHandle,
       destination: state.destination,
       memo: state.memo,
       maxFeeZec: state.maxFeeZec,
+      donationRate,
+      donorEmail,
     });
     setStatus("sweep-execute-status", "", "");
     renderCompleteScreen(results);
@@ -1093,6 +1147,15 @@ $("restart-flow").addEventListener("click", () => {
   $("destination-input").value = "";
   $("max-fee-zec").value = "";
   $("sweep-memo").value = "";
+  // Reset donation form to its default-on state so a previous run's choices
+  // don't silently carry into the next sweep. `state.donationEnabled` itself
+  // is feature-availability (whether the backend has a baked address) and is
+  // refreshed once at startup via initDonate; it does not need resetting.
+  $("donate-enabled").checked = true;
+  $("donate-rate").value = "10";
+  $("donate-email").value = "";
+  $("donate-fields").hidden = false;
+  setStatus("donate-amount-preview", "", "");
   $("start-scan").disabled = false;
 
   // Reset scan screen to blank state so stale results aren't visible if the
@@ -1113,6 +1176,48 @@ $("restart-flow").addEventListener("click", () => {
   $("cancel-scan").style.display = "";
 
   goTo("welcome");
+});
+
+// ─── Donate ───────────────────────────────────────────────────────────────────
+
+(async function initDonate() {
+  try {
+    const addr = await invoke("donation_address");
+    state.donationEnabled = !!addr;
+    if (addr) {
+      $("donate-address").textContent = addr;
+      $("copy-donate-address").disabled = false;
+    }
+    // empty address → keep the existing "Address coming soon" text + disabled copy button
+  } catch (err) {
+    // leave the placeholder/disabled state on failure
+  }
+})();
+
+function openDonate() {
+  $("donate-overlay").style.display = "";
+  document.body.style.overflow = "hidden";
+  $("close-donate").focus();
+}
+
+function closeDonate() {
+  $("donate-overlay").style.display = "none";
+  document.body.style.overflow = "";
+}
+
+$("open-donate").addEventListener("click", openDonate);
+$("complete-open-donate").addEventListener("click", openDonate);
+$("close-donate").addEventListener("click", closeDonate);
+
+$("donate-overlay").addEventListener("click", (e) => {
+  if (e.target === $("donate-overlay")) closeDonate();
+});
+
+$("copy-donate-address").addEventListener("click", () => {
+  navigator.clipboard.writeText($("donate-address").textContent).then(() => {
+    setStatus("donate-copy-status", "✓ Address copied", "success");
+    setTimeout(() => setStatus("donate-copy-status", "", ""), 2500);
+  });
 });
 
 // ─── User Guide ───────────────────────────────────────────────────────────────
@@ -1136,9 +1241,12 @@ $("guide-overlay").addEventListener("click", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && $("guide-overlay").style.display !== "none") {
-    $("guide-overlay").style.display = "none";
-    document.body.style.overflow = "";
+  if (e.key === "Escape") {
+    if ($("donate-overlay").style.display !== "none") closeDonate();
+    else if ($("guide-overlay").style.display !== "none") {
+      $("guide-overlay").style.display = "none";
+      document.body.style.overflow = "";
+    }
   }
 });
 

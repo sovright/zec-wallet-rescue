@@ -601,6 +601,48 @@ pre {
   color: var(--ink);
 }
 
+.donate-btn {
+  color: var(--accent);
+  border-color: var(--accent-soft);
+}
+
+.donate-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.donate-address-block {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.donate-address {
+  flex: 1;
+  font-size: 0.78rem;
+  word-break: break-all;
+  color: var(--ink);
+}
+
+.donate-card {
+  border-left: 3px solid var(--accent);
+}
+
+.donate-card h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
+.donate-card p {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
 /* ── Guide overlay ── */
 .guide-overlay {
   position: fixed;
@@ -897,3 +939,9 @@ select {
   width: 100%;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
 }
+
+.donate-form { border-left: 3px solid var(--accent); }
+.donate-form[hidden] { display: none; }
+.checkbox-row { display: flex; align-items: center; gap: 8px; }
+.donate-fields { margin-top: 10px; }
+.donate-fields[hidden] { display: none; }

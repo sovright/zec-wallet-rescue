@@ -295,6 +295,13 @@ pub struct SweepRequest {
     /// means no limit — use only when the caller has already reviewed the
     /// proposal fee and explicitly accepted it.
     pub max_fee_zatoshis: Option<u64>,
+    /// Fraction of each account's send amount to donate (e.g. 0.10). `None`
+    /// skips the donation entirely. Validated to 0.0..1.0.
+    #[serde(default)]
+    pub donation_rate: Option<f64>,
+    /// Optional email placed in the donation memo for an off-chain receipt.
+    #[serde(default)]
+    pub donor_email: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -312,6 +319,9 @@ pub struct ProposedTx {
     pub gross_zatoshis: u64,
     pub fee_zatoshis: u64,
     pub net_zatoshis: u64,
+    /// Portion of `net_zatoshis` routed to the donation address (0 if none).
+    #[serde(default)]
+    pub donation_zatoshis: u64,
     pub note: String,
     pub memo: Option<String>,
 }
@@ -330,6 +340,9 @@ pub struct SweepProposal {
     pub total_send_zatoshis: u64,
     pub total_fee_zatoshis: u64,
     pub net_received_zatoshis: u64,
+    /// Sum of `donation_zatoshis` across all transactions.
+    #[serde(default)]
+    pub total_donation_zatoshis: u64,
     pub dry_run_default: bool,
     pub warning: Option<String>,
 }

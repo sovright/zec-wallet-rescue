@@ -145,6 +145,8 @@ pub async fn propose_sweep(
     destination: String,
     memo: Option<String>,
     max_fee_zec: Option<String>,
+    donation_rate: Option<f64>,
+    donor_email: Option<String>,
 ) -> Result<SweepProposal, String> {
     let max_fee_zatoshis = max_fee_zec
         .as_deref()
@@ -161,6 +163,8 @@ pub async fn propose_sweep(
                 destination,
                 memo,
                 max_fee_zatoshis,
+                donation_rate,
+                donor_email,
             },
         )
         .await
@@ -168,6 +172,7 @@ pub async fn propose_sweep(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_sweep(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -175,6 +180,8 @@ pub async fn execute_sweep(
     destination: String,
     memo: Option<String>,
     max_fee_zec: Option<String>,
+    donation_rate: Option<f64>,
+    donor_email: Option<String>,
 ) -> Result<Vec<TxBroadcastResult>, String> {
     let max_fee_zatoshis = max_fee_zec
         .as_deref()
@@ -191,6 +198,8 @@ pub async fn execute_sweep(
                 destination,
                 memo,
                 max_fee_zatoshis,
+                donation_rate,
+                donor_email,
             },
         )
         .await
@@ -213,6 +222,11 @@ pub fn default_data_dir(app: AppHandle) -> Result<String, String> {
         .app_data_dir()
         .map_err(|err| format!("resolving app data dir: {err}"))?;
     Ok(base.join("workspace").display().to_string())
+}
+
+#[tauri::command]
+pub fn donation_address() -> String {
+    argos_core::DONATION_ADDRESS.to_owned()
 }
 
 #[tauri::command]
@@ -593,17 +607,14 @@ fn parse_zec_to_zatoshis(input: &str) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     use super::*;
 
     fn temp_workspace() -> PathBuf {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "argos-report-path-test-{}-{suffix}",
+            "argos-report-path-test-{}-{n}",
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("temp workspace should be created");
