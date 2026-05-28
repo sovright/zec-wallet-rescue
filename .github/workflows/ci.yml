@@ -116,3 +116,29 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@a531616d8ce3b9177443e48a1159bc945a099823 # v2.0.19
         with:
           command: check advisories bans licenses sources
+
+  cargo-vet:
+    name: Cargo vet (third-party crate audits)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.87
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master@2026-05-27
+        with:
+          toolchain: "1.87"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      # Use the same major series librustzcash uses (~0.10).
+      - run: cargo install cargo-vet --version "~0.10" --locked
+
+      # `--locked` uses the committed imports.lock; no network for fresh
+      # import resolution. Refreshing the imports is a deliberate local
+      # action (`cargo vet update-imports`) so an upstream rewrite of any
+      # imported audits.toml cannot silently change our trust set.
+      - run: cargo vet --locked
