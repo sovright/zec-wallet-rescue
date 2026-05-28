@@ -40,12 +40,15 @@ jobs:
             patchelf
 
       - name: Install Node (for Tauri CLI)
+        # zizmor: ignore[cache-poisoning]
+        # setup-node is required to install the Tauri CLI. We pass `cache: ""`
+        # so no npm/yarn/pnpm cache is read or written at runtime; zizmor's
+        # static rule flags setup-node regardless because the action *can*
+        # cache when `cache:` is set to a package-manager string. Suppressed
+        # on the explicit `cache: ""` opt-out below.
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
-          # Explicit opt-out of npm/yarn/pnpm caching — same reasoning as the
-          # rust-cache removal above. zizmor cache-poisoning rule is satisfied
-          # by setting `cache:` rather than relying on the default-empty.
           cache: ""
 
       - name: Install Tauri CLI
@@ -86,12 +89,15 @@ jobs:
       # No Swatinem/rust-cache in release builds — see Linux job above.
 
       - name: Install Node (for Tauri CLI)
+        # zizmor: ignore[cache-poisoning]
+        # setup-node is required to install the Tauri CLI. We pass `cache: ""`
+        # so no npm/yarn/pnpm cache is read or written at runtime; zizmor's
+        # static rule flags setup-node regardless because the action *can*
+        # cache when `cache:` is set to a package-manager string. Suppressed
+        # on the explicit `cache: ""` opt-out below.
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
-          # Explicit opt-out of npm/yarn/pnpm caching — same reasoning as the
-          # rust-cache removal above. zizmor cache-poisoning rule is satisfied
-          # by setting `cache:` rather than relying on the default-empty.
           cache: ""
 
       - name: Install Tauri CLI
@@ -140,12 +146,15 @@ jobs:
       # No Swatinem/rust-cache in release builds — see Linux job above.
 
       - name: Install Node (for Tauri CLI)
+        # zizmor: ignore[cache-poisoning]
+        # setup-node is required to install the Tauri CLI. We pass `cache: ""`
+        # so no npm/yarn/pnpm cache is read or written at runtime; zizmor's
+        # static rule flags setup-node regardless because the action *can*
+        # cache when `cache:` is set to a package-manager string. Suppressed
+        # on the explicit `cache: ""` opt-out below.
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
-          # Explicit opt-out of npm/yarn/pnpm caching — same reasoning as the
-          # rust-cache removal above. zizmor cache-poisoning rule is satisfied
-          # by setting `cache:` rather than relying on the default-empty.
           cache: ""
 
       - name: Install Tauri CLI
