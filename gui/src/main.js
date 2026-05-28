@@ -883,9 +883,14 @@ function renderSweepProposal(proposal) {
   const preview = $("donate-amount-preview");
   if (donated > 0) {
     const net = (proposal.net_received_zatoshis || 0) - donated;
-    preview.textContent = `Donation: ${fmt(donated)} · Net to you: ${fmt(net)}`;
+    preview.textContent = `Donation: ${fmt(donated)} · Net to you: ${fmt(net)} (estimate)`;
   } else if (state.donationEnabled && $("donate-enabled").checked && state.scanConfig?.network !== "testnet") {
-    preview.textContent = "Donation is below the minimum threshold — it will be skipped.";
+    // The proposal estimate uses a fixed ZIP-317 floor; execution uses the
+    // real fee. Right at the donation threshold the two can disagree by a
+    // few thousand zatoshis, so a "below threshold" preview is only a
+    // best-estimate — name that explicitly rather than implying a guarantee.
+    preview.textContent =
+      "Donation is below the minimum threshold at the estimated fee — may be included or skipped at execution time depending on the real ZIP-317 fee. Funds are never at risk either way.";
   } else {
     preview.textContent = "";
   }
@@ -1142,6 +1147,15 @@ $("restart-flow").addEventListener("click", () => {
   $("destination-input").value = "";
   $("max-fee-zec").value = "";
   $("sweep-memo").value = "";
+  // Reset donation form to its default-on state so a previous run's choices
+  // don't silently carry into the next sweep. `state.donationEnabled` itself
+  // is feature-availability (whether the backend has a baked address) and is
+  // refreshed once at startup via initDonate; it does not need resetting.
+  $("donate-enabled").checked = true;
+  $("donate-rate").value = "10";
+  $("donate-email").value = "";
+  $("donate-fields").hidden = false;
+  setStatus("donate-amount-preview", "", "");
   $("start-scan").disabled = false;
 
   // Reset scan screen to blank state so stale results aren't visible if the

@@ -837,6 +837,32 @@ async fn execute_shielding_step(
 /// Returns `Some(proposal)` once the candidate fee matches the proposal's
 /// computed fee, or `None` if convergence (or a positive user remainder) could
 /// not be achieved — in which case the caller falls back to the donation-free
+/// Reduce a donation-split build result to a concrete `Proposal`, falling
+/// back to the donation-free `max_proposal` on both `Ok(None)` (the
+/// helper's intentional fallback signal) and `Err(_)` (any unexpected
+/// failure constructing the split). Logged on `Err` so a regression is
+/// observable in production logs rather than silent.
+///
+/// Extracted from the inline match in `execute_send_max_step` so the
+/// three-way branch is unit-testable without a wallet DB.
+fn donation_proposal_or_fallback<P>(
+    split_result: ZeckResult<Option<P>>,
+    max_proposal: P,
+    account_index: u32,
+) -> P {
+    match split_result {
+        Ok(Some(proposal)) => proposal,
+        Ok(None) => max_proposal,
+        Err(err) => {
+            tracing::warn!(
+                "donation split proposal failed for account {account_index}: {err}; \
+                 falling back to donation-free sweep for this account",
+            );
+            max_proposal
+        }
+    }
+}
+
 /// send-max sweep. This is a pure extraction of the inline two-pass logic; the
 /// checked arithmetic, convergence loop, and fallback semantics are unchanged.
 #[allow(clippy::too_many_arguments)]
@@ -985,8 +1011,12 @@ async fn execute_send_max_step(
                 ZeckError::InvalidAddress(format!("failed to decode donation address: {err}"))
             })?;
         // On non-convergence (or a non-positive user remainder) fall back to the
-        // donation-free send-max sweep.
-        build_donation_split_proposal(
+        // donation-free send-max sweep. The `Err` case is treated identically
+        // to `Ok(None)`: anything that prevents us from constructing the
+        // donation split (zip321 validation, unexpected proposal error,
+        // future regressions) must not lose the user their sweep. Donation is
+        // best-effort; the user's recovery is not.
+        let split_result = build_donation_split_proposal(
             &mut wallet_db,
             ctx.network,
             tracked_account.wallet_account_id,
@@ -997,8 +1027,12 @@ async fn execute_send_max_step(
             send_amount,
             send_max_fee,
             donation,
-        )?
-        .unwrap_or(max_proposal)
+        );
+        donation_proposal_or_fallback(
+            split_result,
+            max_proposal,
+            tracked_account.derived.index,
+        )
     };
 
     let fee_zatoshis = proposal_fee_zatoshis(&proposal)?;
@@ -1325,7 +1359,8 @@ mod tests {
         derive_accounts,
         error::ZeckError,
         models::{
-            AccountBalancePreview, ScanHandle, ScanPhase, ScanProgress, SweepRequest, ZeckNetwork,
+            AccountBalancePreview, ProposedTxKind, ScanHandle, ScanPhase, ScanProgress,
+            SweepRequest, ZeckNetwork,
         },
     };
 
@@ -1587,5 +1622,228 @@ mod tests {
         use super::{normalized_memo_text, RECOVERY_MEMO_DEFAULT};
         let result = normalized_memo_text(Some("   ")).unwrap();
         assert_eq!(result, RECOVERY_MEMO_DEFAULT);
+    }
+
+    // ─── Donation Err-fallback (Kristi review #1) ─────────────────────────────
+    //
+    // The three-way branch in execute_send_max_step's donation handling lives
+    // in `donation_proposal_or_fallback`. Tests below use a String stand-in
+    // for the Proposal type to exercise all three arms without a wallet DB.
+
+    #[test]
+    fn donation_fallback_ok_some_returns_split() {
+        let got = super::donation_proposal_or_fallback::<&str>(
+            Ok(Some("donation-split")),
+            "donation-free-max",
+            0,
+        );
+        assert_eq!(got, "donation-split");
+    }
+
+    #[test]
+    fn donation_fallback_ok_none_returns_max() {
+        let got = super::donation_proposal_or_fallback::<&str>(
+            Ok(None),
+            "donation-free-max",
+            0,
+        );
+        assert_eq!(got, "donation-free-max");
+    }
+
+    #[test]
+    fn donation_fallback_err_returns_max() {
+        // The critical safety property: an Err must NOT propagate. The user's
+        // sweep proceeds donation-free. Pre-fix, an Err here aborted the
+        // entire sweep — see PR #66 review (Kristi, 2026-05-28).
+        let got = super::donation_proposal_or_fallback::<&str>(
+            Err(ZeckError::TransactionBuild("synthetic regression".to_owned())),
+            "donation-free-max",
+            42,
+        );
+        assert_eq!(got, "donation-free-max");
+    }
+
+    // ─── Multi-account proposal donation logic ────────────────────────────────
+
+    fn progress_with_accounts(accounts: Vec<AccountBalancePreview>) -> ScanProgress {
+        ScanProgress {
+            handle: ScanHandle::new(),
+            phase: ScanPhase::Complete,
+            blocks_scanned: 1,
+            blocks_total: 1,
+            synced_to_height: None,
+            elapsed_seconds: None,
+            estimated_remaining_seconds: None,
+            accounts,
+            discoveries: vec![],
+            summary: None,
+            server: None,
+            message: None,
+            error: None,
+            sleep_event: None,
+            in_sandblasting_zone: false,
+        }
+    }
+
+    /// Helper to build a shielded-only account preview with a chosen Sapling
+    /// balance. The index lets each account in a multi-account scenario be
+    /// distinguishable in the proposal output.
+    fn shielded_account(index: u32, sapling_zatoshis: u64) -> AccountBalancePreview {
+        AccountBalancePreview {
+            account_index: index,
+            sapling_address: String::new(),
+            unified_address: derived_destination(),
+            transparent_receive_address: String::new(),
+            transparent_change_address: String::new(),
+            transparent_utxo_count: 0,
+            sapling_zatoshis,
+            orchard_zatoshis: 0,
+            transparent_zatoshis: 0,
+            total_zatoshis: sapling_zatoshis,
+            has_activity: sapling_zatoshis > 0,
+            status: String::new(),
+        }
+    }
+
+    #[test]
+    fn proposal_only_above_threshold_accounts_contribute_donation() {
+        // Three accounts. Account 0 is large (donation included); account 1
+        // is right at the threshold boundary (included); account 2 is below
+        // threshold (skipped from donation, swept normally). Total donation
+        // is the sum of accounts 0 and 1, not just one of them and not all.
+        let proposal = build_sweep_proposal(
+            &progress_with_accounts(vec![
+                shielded_account(0, 5_000_000), // 10% = 500k, well above MIN
+                shielded_account(1, 1_010_000), // net ≈ 1_000_000 → 10% = 100k = MIN
+                shielded_account(2, 500_000),   // 10% ≈ 49.9k, below MIN → no donation
+            ]),
+            SweepRequest {
+                destination: derived_destination(),
+                memo: None,
+                max_fee_zatoshis: None,
+                donation_rate: Some(0.10),
+                donor_email: None,
+            },
+            ZeckNetwork::Mainnet,
+            DONATION_TEST_UA,
+        )
+        .unwrap();
+        let sweeps: Vec<_> = proposal
+            .transactions
+            .iter()
+            .filter(|t| t.kind == ProposedTxKind::SweepShielded)
+            .collect();
+        assert_eq!(sweeps.len(), 3, "every account produces a sweep tx");
+        // Account 0 and 1 above threshold; account 2 below.
+        assert!(sweeps[0].donation_zatoshis > 0);
+        assert!(sweeps[1].donation_zatoshis > 0);
+        assert_eq!(sweeps[2].donation_zatoshis, 0);
+        // Total matches the per-tx sum.
+        let summed: u64 = sweeps.iter().map(|s| s.donation_zatoshis).sum();
+        assert_eq!(proposal.total_donation_zatoshis, summed);
+        // Fund-safety invariant: per-tx, gross == net + fee (donation is part
+        // of net in the estimate).
+        for s in &sweeps {
+            assert_eq!(s.net_zatoshis + s.fee_zatoshis, s.gross_zatoshis);
+            assert!(s.donation_zatoshis < s.net_zatoshis,
+                "donation must remain strictly below net so user receives positive remainder");
+        }
+    }
+
+    #[test]
+    fn proposal_donation_rate_zero_produces_no_donation_across_accounts() {
+        // donation_rate Some(0.0) is treated as "skip" by the helper. The
+        // total donation must be 0 regardless of how many accounts exist.
+        let proposal = build_sweep_proposal(
+            &progress_with_accounts(vec![
+                shielded_account(0, 10_000_000),
+                shielded_account(1, 20_000_000),
+                shielded_account(2, 5_000_000),
+            ]),
+            SweepRequest {
+                destination: derived_destination(),
+                memo: None,
+                max_fee_zatoshis: None,
+                donation_rate: Some(0.0),
+                donor_email: None,
+            },
+            ZeckNetwork::Mainnet,
+            DONATION_TEST_UA,
+        )
+        .unwrap();
+        assert_eq!(proposal.total_donation_zatoshis, 0);
+        for s in proposal
+            .transactions
+            .iter()
+            .filter(|t| t.kind == ProposedTxKind::SweepShielded)
+        {
+            assert_eq!(s.donation_zatoshis, 0);
+        }
+    }
+
+    #[test]
+    fn proposal_no_donation_when_donation_address_empty() {
+        // The feature off-switch: an empty DONATION_ADDRESS constant must
+        // suppress every donation output regardless of rate or account size.
+        // (Production passes `crate::donation::DONATION_ADDRESS`; the test
+        // injects "" to simulate the dormant state.)
+        let proposal = build_sweep_proposal(
+            &progress_with_accounts(vec![
+                shielded_account(0, 100_000_000), // 1 ZEC
+                shielded_account(1, 50_000_000),  // 0.5 ZEC
+            ]),
+            SweepRequest {
+                destination: derived_destination(),
+                memo: None,
+                max_fee_zatoshis: None,
+                donation_rate: Some(0.10),
+                donor_email: Some("donor@example.com".to_owned()),
+            },
+            ZeckNetwork::Mainnet,
+            "", // address blanked
+        )
+        .unwrap();
+        assert_eq!(proposal.total_donation_zatoshis, 0);
+    }
+
+    #[test]
+    fn proposal_rejects_invalid_donation_rate() {
+        let err = build_sweep_proposal(
+            &progress_with_accounts(vec![shielded_account(0, 5_000_000)]),
+            SweepRequest {
+                destination: derived_destination(),
+                memo: None,
+                max_fee_zatoshis: None,
+                donation_rate: Some(1.5),
+                donor_email: None,
+            },
+            ZeckNetwork::Mainnet,
+            DONATION_TEST_UA,
+        )
+        .unwrap_err();
+        match err {
+            ZeckError::InvalidConfig(msg) => {
+                assert!(msg.contains("donation rate"), "got: {msg}");
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn proposal_rejects_invalid_donor_email() {
+        let err = build_sweep_proposal(
+            &progress_with_accounts(vec![shielded_account(0, 5_000_000)]),
+            SweepRequest {
+                destination: derived_destination(),
+                memo: None,
+                max_fee_zatoshis: None,
+                donation_rate: Some(0.10),
+                donor_email: Some("notanemail".to_owned()),
+            },
+            ZeckNetwork::Mainnet,
+            DONATION_TEST_UA,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ZeckError::InvalidConfig(_)));
     }
 }

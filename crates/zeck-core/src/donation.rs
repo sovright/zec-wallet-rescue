@@ -82,6 +82,12 @@ pub fn validate_donor_email(email: Option<&str>) -> ZeckResult<()> {
         Some(e) if e.len() > MAX_DONOR_EMAIL_BYTES => Err(ZeckError::InvalidConfig(format!(
             "email too long (max {MAX_DONOR_EMAIL_BYTES} bytes)"
         ))),
+        // ASCII control characters (including \n, \r, \t) would corrupt the
+        // `{tag}\n{email}` memo format and let a malicious / careless input
+        // inject extra memo lines. Reject any ASCII control character.
+        Some(e) if e.chars().any(|c| (c as u32) < 0x20 || c == '\x7f') => Err(
+            ZeckError::InvalidConfig("email contains control characters".to_owned()),
+        ),
         Some(e) if e.contains('@') && !e.starts_with('@') && !e.ends_with('@') => Ok(()),
         Some(e) => Err(ZeckError::InvalidConfig(format!("invalid email: {e}"))),
     }
@@ -161,6 +167,124 @@ mod tests {
         let email = format!("{local}@b.com");
         assert!(email.len() > MAX_DONOR_EMAIL_BYTES);
         assert!(validate_donor_email(Some(&email)).is_err());
+    }
+
+    #[test]
+    fn email_validation_rejects_embedded_control_characters() {
+        // Embedded control chars would corrupt the `{tag}\n{email}` memo
+        // format by injecting extra lines or NULs. The validator trims
+        // leading/trailing whitespace (including \n/\r/\t) before any other
+        // check — that's intentional for copy-paste tolerance — but a
+        // control character in the *middle* of the email is rejected.
+        assert!(validate_donor_email(Some("a\nb@c.com")).is_err(), "embedded LF");
+        assert!(validate_donor_email(Some("a@b\rc.com")).is_err(), "embedded CR");
+        assert!(validate_donor_email(Some("a@b\tc.com")).is_err(), "embedded TAB");
+        assert!(validate_donor_email(Some("a@b.com\x00x")).is_err(), "embedded NUL");
+        assert!(validate_donor_email(Some("a@b.com\x07x")).is_err(), "embedded BEL");
+        assert!(validate_donor_email(Some("a@b.com\x7fx")).is_err(), "embedded DEL");
+        // Trailing whitespace is OK — trim() strips it before validation.
+        assert!(validate_donor_email(Some("a@b.com\n")).is_ok());
+        assert!(validate_donor_email(Some("  a@b.com  ")).is_ok());
+    }
+
+    #[test]
+    fn email_validation_accepts_unicode_local_part() {
+        // Lenient validator: unicode in the local part is fine; the @ check
+        // and the control-character ban are what matters for memo safety.
+        assert!(validate_donor_email(Some("tëst@example.com")).is_ok());
+        assert!(validate_donor_email(Some("zaki+argos@manian.org")).is_ok());
+    }
+
+    #[test]
+    fn memo_body_stays_within_512_bytes_at_max_email_size() {
+        // The 512-byte hard limit on Zcash memos must be respected for any
+        // email that passes validation. MAX_DONOR_EMAIL_BYTES is the gate.
+        let max_email = "a".repeat(MAX_DONOR_EMAIL_BYTES - 6) + "@b.com";
+        assert_eq!(max_email.len(), MAX_DONOR_EMAIL_BYTES);
+        assert!(validate_donor_email(Some(&max_email)).is_ok());
+        let memo = donation_memo_body(Some(&max_email));
+        assert!(memo.len() <= 512, "memo body {} bytes exceeds 512", memo.len());
+    }
+
+    #[test]
+    fn donation_amount_boundaries_around_threshold() {
+        // Sweep rate × send_amount through the threshold gate so an off-by-one
+        // at the boundary surfaces immediately. The gate is `< MIN`, so a
+        // product equal to MIN must produce a donation.
+        // Clearly below threshold:
+        assert_eq!(donation_for_send_amount(SOME_ADDR, Some(0.10), 990_000), 0);
+        // Floating-point boundary: 0.10 × 999_999 = 99_999.9 → rounds UP to
+        // 100_000 = MIN, so the donation is included. Documents how rounding
+        // interacts with the gate.
+        assert_eq!(
+            donation_for_send_amount(SOME_ADDR, Some(0.10), 999_999),
+            MIN_DONATION_ZATOSHIS
+        );
+        // Exactly threshold: rate × send == MIN → included.
+        assert_eq!(
+            donation_for_send_amount(SOME_ADDR, Some(0.10), 1_000_000),
+            MIN_DONATION_ZATOSHIS
+        );
+        // Just above threshold:
+        assert_eq!(donation_for_send_amount(SOME_ADDR, Some(0.10), 1_000_010), 100_001);
+        // Tiny send_amount where rate × send rounds well below MIN:
+        assert_eq!(
+            donation_for_send_amount(SOME_ADDR, Some(0.10), MIN_DONATION_ZATOSHIS + 1),
+            0,
+            "rate × (MIN+1) = MIN/10 + 0.1, well below MIN — should skip"
+        );
+    }
+
+    #[test]
+    fn donation_amount_table_across_rates() {
+        // Sweep rates from "definitely skipped" through "essentially everything"
+        // for a fixed send_amount well above the threshold.
+        let send = 10_000_000u64; // 0.1 ZEC
+        struct Row { rate: f64, want_donation: u64, note: &'static str }
+        let rows = [
+            Row { rate: 0.0,       want_donation: 0,         note: "zero rate" },
+            Row { rate: 1e-10,     want_donation: 0,         note: "rounding floor below MIN" },
+            Row { rate: 0.0001,    want_donation: 0,         note: "0.01% of 10M = 1000, below MIN" },
+            Row { rate: 0.01,      want_donation: 100_000,   note: "1% = 100k, exactly MIN" },
+            Row { rate: 0.10,      want_donation: 1_000_000, note: "10% nominal default" },
+            Row { rate: 0.50,      want_donation: 5_000_000, note: "half" },
+            Row { rate: 0.99,      want_donation: 9_900_000, note: "99% leaves 100k for user" },
+            Row { rate: 0.9999999, want_donation: 9_999_999, note: "very high but still under send_amount" },
+        ];
+        for r in rows {
+            let got = donation_for_send_amount(SOME_ADDR, Some(r.rate), send);
+            assert_eq!(got, r.want_donation, "rate {} ({}): expected {}, got {}", r.rate, r.note, r.want_donation, got);
+            assert!(got < send, "donation must always stay strictly below send_amount");
+        }
+    }
+
+    #[test]
+    fn donation_zero_for_pathological_rate_inputs() {
+        // None of these should ever produce a donation; they pass through to
+        // `rate > 0.0` False (NaN compares false; negatives compare false;
+        // Inf > 0.0 but is later rejected by validate_donation_rate).
+        assert_eq!(donation_for_send_amount(SOME_ADDR, Some(f64::NAN), 10_000_000), 0);
+        assert_eq!(donation_for_send_amount(SOME_ADDR, Some(-0.1), 10_000_000), 0);
+        assert_eq!(donation_for_send_amount(SOME_ADDR, Some(-1.0), 10_000_000), 0);
+    }
+
+    #[test]
+    fn donation_zero_for_zero_send_amount() {
+        // Defensive: an account that contributes nothing should never produce a
+        // donation, regardless of rate.
+        for rate in [0.0, 0.01, 0.10, 0.50, 0.99] {
+            assert_eq!(donation_for_send_amount(SOME_ADDR, Some(rate), 0), 0);
+        }
+    }
+
+    #[test]
+    fn rate_validation_rejects_nan_and_inf() {
+        // NaN and Inf are not in the closed range 0.0..=1.0 so the validator
+        // must reject them. Defends against a malformed JSON/CLI input
+        // sneaking past the form's number type.
+        assert!(validate_donation_rate(Some(f64::NAN)).is_err());
+        assert!(validate_donation_rate(Some(f64::INFINITY)).is_err());
+        assert!(validate_donation_rate(Some(f64::NEG_INFINITY)).is_err());
     }
 
     // A syntactically valid mainnet UA for tests (NOT the real donation address).
