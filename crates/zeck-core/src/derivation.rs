@@ -263,6 +263,82 @@ mod tests {
         assert!(validate_mnemonic_words(&words).is_ok());
     }
 
+    // ─── Seed resilience (R-D5..R-D10) ────────────────────────────────────────
+    //
+    // Coverage gaps named in docs/superpowers/test-plans/recovery-resilience.md.
+    // These exercise inputs a careless or hostile UI / CLI invocation might
+    // hand to `validate_mnemonic_words`. None of them should panic; all must
+    // produce a clean `ZeckError::InvalidMnemonic`.
+
+    #[test]
+    fn empty_seed_rejected() {
+        // R-D5: an empty Vec is "zero words", far from the required 24.
+        let err = validate_mnemonic_words(&[]).unwrap_err();
+        assert!(matches!(err, ZeckError::InvalidMnemonic(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn whitespace_only_words_rejected() {
+        // R-D6: "  " entries normalise to empty strings, which are not BIP-39
+        // words. Counts as a non-BIP-39 input, not as "0 words" — the
+        // validator's downstream check should still reject it cleanly.
+        let words: Vec<String> = vec!["   ".to_owned(); 24];
+        let err = validate_mnemonic_words(&words).unwrap_err();
+        assert!(matches!(err, ZeckError::InvalidMnemonic(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn embedded_control_characters_rejected() {
+        // R-D7: control characters inside a word are not BIP-39 wordlist
+        // members. Should reject cleanly (no panic from utf-8 boundary
+        // issues or from the bip0039 crate).
+        let mut words: Vec<String> = TEST_SEED.split_whitespace().map(str::to_owned).collect();
+        words[0] = "aband\x00on".to_owned(); // NUL inside the word
+        let err = validate_mnemonic_words(&words).unwrap_err();
+        assert!(matches!(err, ZeckError::InvalidMnemonic(_)), "got {err:?}");
+
+        words[0] = "aband\non".to_owned(); // LF inside the word
+        let err = validate_mnemonic_words(&words).unwrap_err();
+        assert!(matches!(err, ZeckError::InvalidMnemonic(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn very_long_single_word_rejected_without_panic() {
+        // R-D8: defends the validator against absurd inputs from a faulty
+        // form / CLI argument. 1 MB of letters in one slot must not crash
+        // or hang.
+        let mut words: Vec<String> = TEST_SEED.split_whitespace().map(str::to_owned).collect();
+        words[0] = "a".repeat(1_000_000);
+        let err = validate_mnemonic_words(&words).unwrap_err();
+        assert!(matches!(err, ZeckError::InvalidMnemonic(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn valid_words_but_broken_checksum_rejected() {
+        // R-D9: 24 BIP-39 wordlist members are a syntactically valid set,
+        // but the BIP-39 entropy+checksum constraint isn't met for an
+        // arbitrary sequence. The validator must rely on the bip0039 crate's
+        // full validation, not just the wordlist membership check.
+        //
+        // Constructed by replacing the LAST word (which carries the checksum
+        // bits) with a different valid wordlist member, breaking the
+        // checksum but keeping all entries in the wordlist.
+        let mut words: Vec<String> = TEST_SEED.split_whitespace().map(str::to_owned).collect();
+        assert_eq!(words.last().map(String::as_str), Some("art"));
+        words[23] = "ability".to_owned(); // also in the wordlist; different bits
+        let err = validate_mnemonic_words(&words).unwrap_err();
+        assert!(matches!(err, ZeckError::InvalidMnemonic(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn unicode_garbage_rejected_without_panic() {
+        // R-D10: emoji and other multi-byte unicode aren't BIP-39 wordlist
+        // members. Cleanly rejected, no utf-8 indexing bugs.
+        let words: Vec<String> = (0..24).map(|i| format!("🎉{i}")).collect();
+        let err = validate_mnemonic_words(&words).unwrap_err();
+        assert!(matches!(err, ZeckError::InvalidMnemonic(_)), "got {err:?}");
+    }
+
     #[test]
     fn derive_accounts_mainnet_produces_expected_account_0_addresses() {
         let accounts = derive_accounts(&test_seed(), ZeckNetwork::Mainnet, 1).unwrap();

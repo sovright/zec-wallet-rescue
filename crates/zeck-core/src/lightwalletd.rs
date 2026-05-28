@@ -179,7 +179,15 @@ fn validate_lightwalletd_endpoint(endpoint: &str) -> ZeckResult<String> {
 fn is_loopback_host(host: Option<&str>) -> bool {
     host.map(|host| {
         let host = host.to_ascii_lowercase();
-        host == "localhost" || host == "127.0.0.1" || host == "::1" || host.ends_with(".localhost")
+        // `url::Url::host_str()` returns IPv6 addresses inside brackets
+        // (e.g. `[::1]` for `http://[::1]:9067`), so both forms must be
+        // recognised as loopback. RFC 6761 .localhost subdomains are also
+        // loopback by convention.
+        host == "localhost"
+            || host == "127.0.0.1"
+            || host == "::1"
+            || host == "[::1]"
+            || host.ends_with(".localhost")
     })
     .unwrap_or(false)
 }
@@ -289,5 +297,88 @@ mod tests {
             .expect_err("wrong chain should be rejected");
 
         assert!(err.to_string().contains("does not match selected mainnet"));
+    }
+
+    // ─── Endpoint URL resilience (R-N4..R-N7) ─────────────────────────────────
+    //
+    // Coverage gaps named in docs/superpowers/test-plans/recovery-resilience.md.
+    // These exercise inputs a user might type into the lightwalletd field
+    // without realising. Each must reject (or accept for the IPv6 loopback
+    // case) cleanly without panicking.
+
+    #[test]
+    fn endpoint_validation_rejects_input_without_scheme() {
+        // R-N4: `wallet.example.com:9067` without a scheme is not a URL
+        // even though it looks like a host:port. The validator must reject
+        // it rather than silently picking a scheme.
+        let err = validated_lightwalletd_endpoints("wallet.example.com:9067")
+            .expect_err("scheme-less input should be rejected");
+        assert!(
+            matches!(err, crate::error::ZeckError::InvalidConfig(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn endpoint_validation_rejects_non_http_schemes() {
+        // R-N5: only http (for loopback) and https are valid lightwalletd
+        // transports. ftp / file / gopher / data must all reject, not
+        // silently accept.
+        for url in &[
+            "ftp://wallet.example.com:9067",
+            "file:///etc/passwd",
+            "gopher://wallet.example.com:9067",
+            "data:text/plain,whatever",
+            "ws://wallet.example.com:9067",
+        ] {
+            let result = validated_lightwalletd_endpoints(url);
+            assert!(result.is_err(), "URL '{url}' should have been rejected");
+            assert!(
+                matches!(
+                    result.unwrap_err(),
+                    crate::error::ZeckError::InvalidConfig(_)
+                ),
+                "URL '{url}' should produce InvalidConfig"
+            );
+        }
+    }
+
+    #[test]
+    fn endpoint_validation_allows_ipv6_loopback_http() {
+        // R-N6: a local lightwalletd reachable via the IPv6 loopback `::1`
+        // should be permitted on plain http, mirroring the IPv4 127.0.0.1
+        // case. The host_str() that the loopback check sees is `::1`
+        // (without the bracket-wrapping from the URL form).
+        let endpoints = validated_lightwalletd_endpoints("http://[::1]:9067")
+            .expect("IPv6 loopback over http should be allowed for local testing");
+        assert_eq!(endpoints, vec!["http://[::1]:9067".to_owned()]);
+    }
+
+    #[test]
+    fn endpoint_validation_allows_dot_localhost_http() {
+        // R-N6 cont.: `.localhost` subdomains (RFC 6761) are also loopback
+        // by convention and explicitly allowed by `is_loopback_host`. Useful
+        // for users running a privacy-proxy with a stable hostname.
+        let endpoints = validated_lightwalletd_endpoints("http://lwd.localhost:9067")
+            .expect(".localhost subdomains over http should be allowed for local testing");
+        assert_eq!(endpoints, vec!["http://lwd.localhost:9067".to_owned()]);
+    }
+
+    #[test]
+    fn endpoint_validation_accepts_embedded_credentials_in_https() {
+        // R-N7: documents that the validator does NOT strip embedded
+        // credentials. `https://user:pass@host:port` parses as a valid URL
+        // and `url::Url::host_str()` returns "host", so the loopback /
+        // scheme check passes. The credentials are passed through to
+        // `tonic::transport::Channel::from_static`, which will use them as
+        // basic-auth on the gRPC layer. Argos does not warn or strip; users
+        // who paste a credentialed URL get what they pasted.
+        //
+        // This is the current behaviour as of v0.1.0-rc — flagged in the
+        // test plan as documented rather than enforced; the validator could
+        // tighten this in a future revision if we decide credentials in
+        // lightwalletd URLs are out of scope.
+        let result = validated_lightwalletd_endpoints("https://user:pass@wallet.example.com:443");
+        assert!(result.is_ok(), "current behaviour: credentialed URLs pass validation");
     }
 }
