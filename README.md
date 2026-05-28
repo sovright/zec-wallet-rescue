@@ -56,6 +56,25 @@ Building from source is an advanced/auditor path and is supported on **Windows x
 
 Security note: for a wallet-recovery tool, the ability to audit and build from source is a trust property. If you are relying on the prebuilt binary, verify the published checksum before running it.
 
+## Verifying release provenance
+
+Each tagged release publishes a [SLSA Level 3](https://slsa.dev/spec/v1.0/levels#build-l3) in-toto provenance attestation (`argos-<tag>.intoto.jsonl`) alongside the binaries. The attestation is Sigstore-signed (no long-lived key — anchored to the GitHub Actions OIDC identity of this repository) and proves that the exact bytes of a release artifact were produced by `.github/workflows/release.yml` at the tagged commit. It complements the SHA256 checksum: the checksum proves "this file matches the one we published," and the provenance attestation proves "we published it from this source at this tag."
+
+To verify a downloaded artifact:
+
+```bash
+# Install the verifier once (a small Go binary maintained by the SLSA project).
+go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
+
+# Verify any release artifact against its provenance attestation.
+slsa-verifier verify-artifact <downloaded-file> \
+    --provenance-path argos-<tag>.intoto.jsonl \
+    --source-uri github.com/sovright/zec-wallet-rescue \
+    --source-tag <tag>
+```
+
+A passing verification confirms that `<downloaded-file>` was produced by the named tag's release workflow in this repository. This is particularly useful on Windows, where the installer is currently unsigned: even without a code-signing certificate, the provenance attestation gives a third-party-verifiable source-to-binary chain.
+
 ## Development
 
 ```bash
