@@ -4,20 +4,29 @@ on:
   push:
   pull_request:
 
+# Least-privilege default: every job opts in explicitly to anything beyond
+# read-only metadata. Mitigates third-party Action token-exfiltration risk
+# (THREAT_MODEL.md §6.6 T-SC3).
+permissions: {}
+
 jobs:
   check:
     name: Cargo check & clippy
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master@2026-05-27
         with:
           toolchain: "1.87"
           components: clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install Tauri system dependencies
         run: |
@@ -38,6 +47,8 @@ jobs:
   check-windows:
     name: Cargo check (Windows ${{ matrix.label }})
     runs-on: windows-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         include:
@@ -46,15 +57,17 @@ jobs:
           - label: ARM64
             target: aarch64-pc-windows-msvc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master@2026-05-27
         with:
           toolchain: "1.87"
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: cargo check (workspace)
         run: cargo check --workspace --target ${{ matrix.target }}
@@ -62,15 +75,19 @@ jobs:
   test:
     name: Cargo test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust 1.87
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master@2026-05-27
         with:
           toolchain: "1.87"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install Tauri system dependencies
         run: |
@@ -85,18 +102,17 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
-  audit:
-    name: Cargo audit (advisories)
+  cargo-deny:
+    name: Cargo deny (advisories + bans + licenses + sources)
     runs-on: ubuntu-latest
-    # rustsec/audit-check posts results as a check-run; without checks:write the
-    # GITHUB_TOKEN is read-only on push events and the action fails with
-    # "Resource not accessible by integration" even when no vulnerabilities exist.
     permissions:
-      checks: write
       contents: read
+      checks: write
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: rustsec/audit-check@v2.0.0
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+
+      - uses: EmbarkStudios/cargo-deny-action@a531616d8ce3b9177443e48a1159bc945a099823 # v2.0.19
+        with:
+          command: check advisories bans licenses sources
