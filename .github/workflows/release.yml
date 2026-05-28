@@ -25,9 +25,9 @@ jobs:
         with:
           toolchain: "1.87"
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: ". -> target"
+      # No Swatinem/rust-cache in release builds: a poisoned cache from a PR
+      # run feeding a signed release tag is a worse failure mode than a slow
+      # tag build (THREAT_MODEL.md §6.6 T-SC3 / zizmor cache-poisoning).
 
       - name: Install Linux system dependencies
         run: |
@@ -43,6 +43,10 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
+          # Explicit opt-out of npm/yarn/pnpm caching — same reasoning as the
+          # rust-cache removal above. zizmor cache-poisoning rule is satisfied
+          # by setting `cache:` rather than relying on the default-empty.
+          cache: ""
 
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli@2.11.1
@@ -79,14 +83,16 @@ jobs:
           toolchain: "1.87"
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: ". -> target"
+      # No Swatinem/rust-cache in release builds — see Linux job above.
 
       - name: Install Node (for Tauri CLI)
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
+          # Explicit opt-out of npm/yarn/pnpm caching — same reasoning as the
+          # rust-cache removal above. zizmor cache-poisoning rule is satisfied
+          # by setting `cache:` rather than relying on the default-empty.
+          cache: ""
 
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli@2.11.1
@@ -131,14 +137,16 @@ jobs:
         with:
           toolchain: "1.87"
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: ". -> target"
+      # No Swatinem/rust-cache in release builds — see Linux job above.
 
       - name: Install Node (for Tauri CLI)
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
+          # Explicit opt-out of npm/yarn/pnpm caching — same reasoning as the
+          # rust-cache removal above. zizmor cache-poisoning rule is satisfied
+          # by setting `cache:` rather than relying on the default-empty.
+          cache: ""
 
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli@2.11.1
