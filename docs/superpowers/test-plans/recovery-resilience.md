@@ -96,9 +96,9 @@ boot and CI runners don't keep it warm. C3/C4 are humans driving the app.
 | R-S23 | `gap_limit` 0/1/500/501 boundary in `validate_scan_config` | C1 | ➕ added in this branch |
 | R-S24 | `num_accounts` 0/1/500/501 boundary | C1 | ➕ added in this branch |
 | R-S26 | Reorg during scan invalidates and re-scans the reorganised range | C2 | ✅ implemented |
-| R-S27 | Crash mid-scan — resume picks up from `fully_scanned_height` | C2 | ⏸️ deferred — needs argos-cli subprocess + JSON progress mode |
+| R-S27 | Crash mid-scan — resume picks up from `fully_scanned_height` | C2 | ✅ implemented (subprocess SIGKILL of `argos-scan-helper` past block 50, resume run must reach baseline `total_zatoshis`) |
 | R-S28 | Machine sleep during scan surfaces `sleep_event` | C2 | 🔲 stub (manual on a real machine — laptop lid close) |
-| R-S29 | Crash mid-broadcast — resume detects broadcast tx in wallet DB | C2 | ⏸️ deferred — needs multi-account funding or broadcast pause hook |
+| R-S29 | Crash mid-broadcast — resume detects broadcast tx in wallet DB | C2 | ✅ implemented (setup.sh funds 2 accounts; `argos-sweep-helper` with `--pause-millis-between-broadcasts 30000` sleeps in the gap; SIGKILL; resume run produces exactly 1 broadcast, proving no double-spend) |
 
 ### Long-running scan behaviour (T-N4 / G2)
 
