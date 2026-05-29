@@ -169,6 +169,11 @@ jobs:
     environment: release-sign
     permissions:
       contents: read
+      # Required for the OIDC token azure/login exchanges with Entra ID
+      # (federated credential subject:
+      # repo:sovright/zec-wallet-rescue:environment:release-sign). No signing
+      # secret is stored in GitHub — the key lives in Azure Trusted Signing.
+      id-token: write
     outputs:
       hashes: ${{ steps.hash.outputs.hashes }}
     steps:
@@ -198,9 +203,85 @@ jobs:
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli@2.11.1
 
-      - name: Build Tauri app
+      # Azure Trusted Signing (cloud-held key) via OIDC — no secret in CI.
+      # Signs the inner Argos.exe *and* the MSI/NSIS installers during the
+      # build (see signCommand injected below), so the hash step that follows
+      # — and therefore the SLSA provenance — covers the signed bytes with no
+      # reordering. All non-secret parameters come from `release-sign`
+      # environment variables; flip AZURE_SIGNING_PROFILE from the test
+      # profile to the public-trust profile to cut a trusted release.
+      - name: Azure login (OIDC)
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2
+        with:
+          client-id: ${{ vars.AZURE_SIGNING_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_SIGNING_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SIGNING_SUBSCRIPTION_ID }}
+
+      - name: Set up Trusted Signing (dlib + signtool + signCommand)
+        id: ts
+        shell: pwsh
+        env:
+          TS_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          TS_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          TS_PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # Microsoft's Trusted Signing client (the signtool dlib). Pinned;
+          # bump deliberately. The dlib authenticates via DefaultAzureCredential,
+          # which picks up the azure/login session above (no secret needed).
+          $nugetVersion = "1.0.95"
+          $pkgZip = Join-Path $env:RUNNER_TEMP "mtsc.zip"
+          $pkgDir = Join-Path $env:RUNNER_TEMP "mtsc"
+          Invoke-WebRequest -UseBasicParsing `
+            -Uri "https://www.nuget.org/api/v2/package/Microsoft.Trusted.Signing.Client/$nugetVersion" `
+            -OutFile $pkgZip
+          Expand-Archive -Path $pkgZip -DestinationPath $pkgDir -Force
+          $dlib = Join-Path $pkgDir "bin\x64\Azure.CodeSigning.Dlib.dll"
+          if (-not (Test-Path $dlib)) {
+            $dlib = (Get-ChildItem -Path $pkgDir -Recurse -Filter "Azure.CodeSigning.Dlib.dll" |
+                     Select-Object -First 1 -ExpandProperty FullName)
+          }
+          if (-not $dlib) { throw "Azure.CodeSigning.Dlib.dll not found in package" }
+
+          # Trusted Signing metadata consumed by the dlib.
+          $metadata = Join-Path $env:RUNNER_TEMP "ts-metadata.json"
+          [ordered]@{
+            Endpoint               = $env:TS_ENDPOINT
+            CodeSigningAccountName = $env:TS_ACCOUNT
+            CertificateProfileName = $env:TS_PROFILE
+          } | ConvertTo-Json | Out-File -FilePath $metadata -Encoding utf8
+
+          # signtool from the Windows SDK (present on windows-latest); pick the
+          # highest-versioned x64 build.
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
+                       Sort-Object FullName -Descending |
+                       Select-Object -First 1 -ExpandProperty FullName)
+          if (-not $signtool) { throw "signtool.exe not found in Windows SDK" }
+
+          # Tauri config override: signs each artifact (inner exe + installers)
+          # as it is produced. %1 is Tauri's file-path placeholder.
+          $signConfig = Join-Path $env:RUNNER_TEMP "sign-config.json"
+          @{
+            bundle = @{
+              windows = @{
+                signCommand = @{
+                  cmd  = $signtool
+                  args = @(
+                    "sign", "/v", "/fd", "SHA256",
+                    "/tr", "http://timestamp.acs.microsoft.com", "/td", "SHA256",
+                    "/dlib", $dlib, "/dmdf", $metadata, "%1"
+                  )
+                }
+              }
+            }
+          } | ConvertTo-Json -Depth 10 | Out-File -FilePath $signConfig -Encoding utf8
+
+          "sign_config=$signConfig" >> $env:GITHUB_OUTPUT
+
+      - name: Build + sign Tauri app
         working-directory: gui
-        run: tauri build --bundles msi --bundles nsis
+        run: tauri build --bundles msi --bundles nsis --config "${{ steps.ts.outputs.sign_config }}"
 
       - name: Compute artifact hashes
         id: hash
