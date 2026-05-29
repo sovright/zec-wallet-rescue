@@ -37,7 +37,7 @@ The risks we *can't* address from inside Argos — a compromised host, a coerced
 
 ## 1. Purpose and scope
 
-Argos is a single-use Zcash wallet **recovery** tool for ZecWallet Lite seeds. Its purpose is to take a 24-word BIP-39 seed phrase, scan the Zcash chain for funds derived under ZecWallet Lite's account layout, and sweep them to a modern wallet (Zashi/Zodl, YWallet) in a single session. It is not an everyday wallet.
+Argos is a single-use Zcash wallet **recovery** tool for ZecWallet Lite seeds. Its purpose is to take a 24-word BIP-39 seed phrase, scan the Zcash chain for funds derived under ZecWallet Lite's account layout, and sweep them to a modern wallet (Zodl, YWallet) in a single session. It is not an everyday wallet.
 
 This threat model covers:
 
