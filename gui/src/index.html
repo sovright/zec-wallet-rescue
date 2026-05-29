@@ -91,14 +91,14 @@
 
             <div class="guide-section">
               <h3>What is Argos?</h3>
-              <p>Argos recovers your Zcash from a ZecWallet Lite seed phrase and sweeps it to a modern wallet like Zashi or YWallet. You need your 24-word BIP-39 seed phrase and the Unified Address of your destination wallet. Nothing else.</p>
+              <p>Argos recovers your Zcash from a ZecWallet Lite seed phrase and sweeps it to a modern wallet like ZODL (formerly Zashi) or YWallet. You need your 24-word BIP-39 seed phrase and the Unified Address of your destination wallet. Nothing else.</p>
             </div>
 
             <div class="guide-section">
               <h3>Before you start</h3>
               <ul>
                 <li><strong>Your 24-word seed phrase</strong> from ZecWallet Lite.</li>
-                <li><strong>A destination Unified Address</strong> (starts with <code>u1…</code>) from a modern wallet such as Zashi or YWallet. Transparent (t1…) and Sapling (zs…) addresses are not accepted.</li>
+                <li><strong>A destination Unified Address</strong> (starts with <code>u1…</code>) from a modern wallet such as ZODL or YWallet. Transparent (t1…) and Sapling (zs…) addresses are not accepted.</li>
                 <li>A stable internet connection. Long scans can reconnect automatically if the server drops — but don't put your machine to sleep mid-scan.</li>
               </ul>
             </div>
@@ -170,7 +170,7 @@
               <h3>Frequently asked questions</h3>
               <ul>
                 <li><strong>Is my seed phrase safe?</strong> Yes. Argos never transmits your seed. All key derivation happens locally. Only compact block data is downloaded from lightwalletd servers.</li>
-                <li><strong>Can I use a transparent or Sapling address as my destination?</strong> No. Argos requires a Unified Address with an Orchard or Sapling receiver (starts with <code>u1</code>). Get one from Zashi or YWallet.</li>
+                <li><strong>Can I use a transparent or Sapling address as my destination?</strong> No. Argos requires a Unified Address with an Orchard or Sapling receiver (starts with <code>u1</code>). Get one from ZODL or YWallet.</li>
                 <li><strong>What if I had more than one ZecWallet Lite account?</strong> Argos scans up to 500 accounts automatically. If you enabled the gap-limit scan mode, it stops after 20 consecutive empty accounts by default — enough for almost all wallets.</li>
                 <li><strong>What happens to my data after Argos finishes?</strong> The local wallet workspace (compact block cache and derived keys) stays in the data directory you chose. You can delete it once you've confirmed your funds arrived safely.</li>
                 <li><strong>Can I run Argos offline?</strong> The scan phase requires a lightwalletd connection to download block data. Seed validation and key derivation are fully offline.</li>
@@ -344,7 +344,7 @@
             <label class="field span-two">
               <span>Destination address — where to send your recovered ZEC</span>
               <input id="destination-input" type="text" placeholder="u1..." />
-              <small>Must be a Unified Address starting with "u1" from your new wallet (e.g. Zashi or Ywallet). Transparent (t1…) and Sapling (zs…) addresses are not accepted.</small>
+              <small>Must be a Unified Address starting with "u1" from your new wallet (e.g. ZODL or YWallet). Transparent (t1…) and Sapling (zs…) addresses are not accepted.</small>
             </label>
             <label class="field span-two">
               <span>Recovery memo (optional)</span>
