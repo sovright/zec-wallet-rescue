@@ -15,12 +15,12 @@ The five things most worth knowing:
 | What | Severity | Where we stand |
 |---|---|---|
 | Seed phrase in memory or on disk | Critical | ✅ Wrapped in `secrecy::SecretString`, zeroized on drop, never written to disk. Residual: OS swap (we do not `mlock`). |
-| Dependency / supply-chain compromise | High | ✅ ~73% of our Rust tree is shared with the upstream Zcash ecosystem (`librustzcash`, Tauri); the rest is covered by `cargo-deny` + `cargo-vet` audits and SLSA Level 3 build provenance. |
+| Dependency / supply-chain compromise | High | ✅ ~73% of our Rust tree is shared with the upstream Zcash ecosystem (`librustzcash`). The Tauri-side residue is a separate supply-chain surface we view as acceptable on the same terms other Tauri apps accept it. The rest of the tree is covered by `cargo-deny` + `cargo-vet` audits and SLSA Level 3 build provenance. |
 | Hostile lightwalletd | Medium–High | ✅ Crafted compact blocks are rejected by `librustzcash` sync; the server learns *that* you're scanning but no scanning-side keys are sent. |
 | Windows installer authenticity | Medium | ⚠️ macOS signing landed; Windows code-signing is in progress (T-B3). SLSA provenance (T-SC6) gives a third-party-verifiable source-to-binary chain in the interim. |
 | Clipboard residue after paste | Medium | ⚠️ Argos itself never writes the seed to the clipboard. If the user pastes their seed in, that exposure is theirs to manage. The GUI offers a "Clear clipboard" button — see T-S4. |
 
-Where this puts us relative to neighbours: we ship the same `librustzcash` family that Zodl, Zashi, and zebrad rely on, the same Tauri version Zashi-Desktop ships, and a CI posture (`cargo-deny`, `cargo-vet`, zizmor, SLSA Level 3) that is at or above what those projects have today. The detailed comparison is in §6.6 and §7.
+Where this puts us relative to neighbours: we ship the same `librustzcash` family that Zodl, Zashi, and zebrad rely on, the same Tauri version Zashi-Desktop ships (a separate but accepted residue), and a CI posture (`cargo-deny`, `cargo-vet`, zizmor, SLSA Level 3) that is at or above what those projects have today. The detailed comparison is in §6.6 and §7.
 
 ### If you're not deep in security
 
@@ -33,7 +33,7 @@ The honest version of "is this safe?" is: **all software has risk, and Argos is 
 - Only download Argos from our official release page. Verify the signature on macOS; verify the SLSA provenance on Windows until code-signing lands. We document how in the release notes.
 - Sweep to a wallet you control and have backed up. The point of Argos is to move funds *out* of an old wallet you're not going to use again.
 
-The risks we *can't* address from inside Argos — a compromised host, a coerced user ("$5 wrench attack"), a future cryptanalytic break of Sapling/Orchard — are listed honestly in §9 (Out of scope) so you can decide what to do about them.
+The risks we *can't* address from inside Argos — a compromised host, a coerced user ("$5 wrench attack") — are listed honestly in §9 (Out of scope) so you can decide what to do about them.
 
 ## 1. Purpose and scope
 
