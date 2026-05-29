@@ -1,0 +1,160 @@
+// Copyright (c) 2019-2020 The Zcash developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or https://www.opensource.org/licenses/mit-license.php .
+//
+// Pruned for use by the Argos FakeLightwalletd test fixture. This file is a
+// strict subset of the upstream walletrpc/service.proto: only the RPC methods
+// Argos's gRPC client actually invokes, plus their request/response messages
+// and any types those messages transitively reference. See PROVENANCE.md for
+// the upstream commit and the list of dropped methods.
+
+syntax = "proto3";
+package cash.z.wallet.sdk.rpc;
+option go_package = "lightwalletd/walletrpc";
+option swift_prefix = "";
+import "compact_formats.proto";
+
+// An identifier for a Zcash value pool.
+enum PoolType {
+    POOL_TYPE_INVALID = 0;
+    TRANSPARENT = 1;
+    SAPLING = 2;
+    ORCHARD = 3;
+}
+
+// A BlockID message contains identifiers to select a block: a height or a
+// hash. Support for specification by hash is not mandatory. (If `hash` is
+// non-empty, the rpc may return an error.) This field is present to support
+// a possible future upgrade.
+message BlockID {
+    uint64 height = 1;
+    bytes hash = 2;
+}
+
+// BlockRange specifies a series of blocks from start to end inclusive.
+message BlockRange {
+    BlockID start = 1;
+    BlockID end = 2;
+    repeated PoolType poolTypes = 3;
+}
+
+// A TxFilter contains the information needed to identify a particular
+// transaction: either a block and an index, or a direct transaction hash.
+// Currently, only specification by hash is supported.
+message TxFilter {
+     BlockID block = 1;
+     uint64 index = 2;
+     bytes hash = 3;
+}
+
+// RawTransaction contains the complete transaction data.
+message RawTransaction {
+    bytes data = 1;
+    uint64 height = 2;
+}
+
+// A SendResponse encodes an error code and a string.
+message SendResponse {
+    int32 errorCode = 1;
+    string errorMessage = 2;
+}
+
+// Empty is for gRPCs that take no arguments, currently only GetLightdInfo.
+message Empty {}
+
+// LightdInfo returns various information about this lightwalletd instance
+// and the state of the blockchain.
+message LightdInfo {
+    string version = 1;
+    string vendor = 2;
+    bool   taddrSupport = 3;
+    string chainName = 4;
+    uint64 saplingActivationHeight = 5;
+    string consensusBranchId = 6;
+    uint64 blockHeight = 7;
+    string gitCommit = 8;
+    string branch = 9;
+    string buildDate = 10;
+    string buildUser = 11;
+    uint64 estimatedHeight = 12;
+    string zcashdBuild = 13;
+    string zcashdSubversion = 14;
+    string donationAddress = 15;
+    string upgradeName = 16;
+    uint64 upgradeHeight = 17;
+    string lightwalletProtocolVersion = 18;
+}
+
+// TransparentAddressBlockFilter restricts the results of the GRPC methods that
+// use it to the transactions that involve the given address and were mined in
+// the specified block range.
+message TransparentAddressBlockFilter {
+    string address = 1;
+    BlockRange range = 2;
+}
+
+// The TreeState is derived from the Zcash z_gettreestate rpc.
+message TreeState {
+    string network = 1;
+    uint64 height = 2;
+    string hash = 3;
+    uint32 time = 4;
+    string saplingTree = 5;
+    string orchardTree = 6;
+}
+
+// Results are sorted by height, which makes it easy to issue another
+// request that picks up from where the previous left off.
+message GetAddressUtxosArg {
+    repeated string addresses = 1;
+    uint64 startHeight = 2;
+    uint32 maxEntries = 3;
+}
+message GetAddressUtxosReply {
+    string address = 6;
+    bytes txid = 1;
+    int32 index = 2;
+    bytes script = 3;
+    int64 valueZat = 4;
+    uint64 height = 5;
+}
+message GetAddressUtxosReplyList {
+    repeated GetAddressUtxosReply addressUtxos = 1;
+}
+
+// Pruned CompactTxStreamer service: only the RPC methods used by the Argos
+// gRPC client. The upstream service additionally exposes GetLatestBlock,
+// GetBlockNullifiers, GetBlockRangeNullifiers, GetTaddressTransactions,
+// GetTaddressBalance(Stream), GetMempoolTx, GetMempoolStream,
+// GetLatestTreeState, GetSubtreeRoots, GetAddressUtxosStream, and Ping;
+// none of those are called by Argos at the time this fixture was written.
+// If Argos starts using one, add it here and to the FakeLightwalletd impl.
+service CompactTxStreamer {
+    // Used by Argos's birthday probe (Phase 1 needs GetBlock indirectly via
+    // the sync machinery; kept for completeness since the sync backend may
+    // call it). Returns a single compact block.
+    rpc GetBlock(BlockID) returns (CompactBlock) {}
+
+    // Drives the main scan loop in zcash_client_backend::sync.
+    rpc GetBlockRange(BlockRange) returns (stream CompactBlock) {}
+
+    // Used by Argos to fetch the full transaction for sweep construction.
+    rpc GetTransaction(TxFilter) returns (RawTransaction) {}
+
+    // Used by Argos when broadcasting a sweep.
+    rpc SendTransaction(RawTransaction) returns (SendResponse) {}
+
+    // Used by birthday auto-detection (Phase 1) to find the earliest
+    // transparent transaction for an address.
+    rpc GetTaddressTxids(TransparentAddressBlockFilter) returns (stream RawTransaction) {}
+
+    // GetTreeState is used by Argos to anchor sync at a given height.
+    rpc GetTreeState(BlockID) returns (TreeState) {}
+
+    // GetAddressUtxos drives the transparent-first quick probe and the
+    // birthday auto-detect Phase 1.
+    rpc GetAddressUtxos(GetAddressUtxosArg) returns (GetAddressUtxosReplyList) {}
+
+    // Probed at connection setup; also used to validate the server's chain.
+    rpc GetLightdInfo(Empty) returns (LightdInfo) {}
+}

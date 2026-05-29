@@ -1229,6 +1229,14 @@ criteria = "safe-to-deploy"
 version = "0.14.3"
 criteria = "safe-to-deploy"
 
+[[exemptions.pulldown-cmark]]
+version = "0.13.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.pulldown-cmark-to-cmark]]
+version = "22.0.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.quick-xml]]
 version = "0.38.4"
 criteria = "safe-to-deploy"
@@ -1759,6 +1767,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.uint]]
 version = "0.9.5"
+criteria = "safe-to-deploy"
+
+[[exemptions.unicase]]
+version = "2.9.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.unicode-ident]]
