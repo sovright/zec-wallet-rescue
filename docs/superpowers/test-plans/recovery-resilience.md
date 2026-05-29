@@ -73,11 +73,11 @@ boot and CI runners don't keep it warm. C3/C4 are humans driving the app.
 | R-N10 | All configured endpoints unreachable surfaces a clean error | C2 | ✅ implemented |
 | R-N11 | TLS handshake failure surfaced without falling back to plaintext | C2 | ✅ implemented (TCP accepts, no TLS frames sent; cert-specific failures deferred to a TLS-cert fixture) |
 | R-N12 | Multi-endpoint fallback respects order with one slow endpoint | C2 | ✅ implemented |
-| R-N13 | Sustained high latency (e.g. 300 ms RTT) — scan completes; ETA / stall-detection sane | C2 | 🔲 planned — see Bad-network gap below |
-| R-N14 | Bandwidth throttle (e.g. 256 kbps) — `ProgressPoller` does NOT flag a false stall | C2 | 🔲 planned |
-| R-N15 | Hung stream / dead peer — TCP up, no h2 frames — surfaced as Err within bounded time | C2 | 🔲 planned |
+| R-N13 | Sustained high latency (e.g. 300 ms RTT) — scan completes; ETA / stall-detection sane | C2 | ✅ implemented (FakeLightwalletd `latency(Duration)`; baseline-equivalence assertion) |
+| R-N14 | Bandwidth throttle (e.g. 256 kbps) — `ProgressPoller` does NOT flag a false stall | C2 | ✅ implemented (FakeLightwalletd `bandwidth_bytes_per_sec`; asserts no `"stalled"` substring during scan) |
+| R-N15 | Hung stream / dead peer — TCP up, no h2 frames — surfaced as Err within bounded time | C2 | ✅ implemented (stall watchdog at `scan.rs::stall_watchdog`, 60 s no-advance trips with `"h2 protocol error"` so the existing retry matcher catches it; FakeLightwalletd `hang_after_blocks(N)` drives the test) |
 | R-N16 | DNS resolution drift between retries (mainnet endpoint resolves to a different IP mid-scan) | C2 | 🔲 planned |
-| R-N17 | Captive-portal-shaped MitM — TLS-stripping HTTP 200 — surfaced as Err, not silent success | C2 | 🔲 planned |
+| R-N17 | Captive-portal-shaped MitM — TLS-stripping HTTP 200 — surfaced as Err, not silent success | C2 | ✅ implemented (`serve_captive_portal_shim` writes raw HTTP 200) |
 | R-N18 | Asymmetric loss — outbound bytes flow, return path silently dropped | C2 / C3 | 🔲 planned — likely manual on Linux (`tc netem` one-way) |
 | R-N19 | Long sleep + resume on different network (wifi → cellular) | C3 manual | 🔲 documented checklist below |
 

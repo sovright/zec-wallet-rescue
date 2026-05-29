@@ -650,19 +650,19 @@ async fn bandwidth_throttled_scan_does_not_flag_false_stall() {
 // handshake but then sends *zero* further block frames is surfaced as an
 // Err within a bounded time — rather than Argos's scan hanging indefinitely.
 //
-// **This test is expected to FAIL today.** `run_wallet_sync_with_retry` has
-// no per-stream watchdog; the gRPC client's `Stream::next()` await on a
-// hung server simply never resolves, and the scan blocks forever. The test
-// wraps the whole call in a 90s `tokio::time::timeout` so the failure is
-// surfaced as a clear assertion ("Argos did not Err within 90s — no
-// per-stream watchdog?") rather than hanging the test runner.
+// Backed by the `stall_watchdog` in `scan.rs`: after `STALL_TIMEOUT_SECS`
+// of no new blocks, the watchdog tripping returns an error whose message
+// contains `"h2 protocol error"`, which the existing retry matcher in
+// `run_wallet_sync_with_retry` catches. The retry loop then attempts to
+// reconnect; because `hang_after_blocks` is a one-shot fault, the second
+// connection serves normally and the scan completes.
 //
-// If/when Argos gains a per-stream watchdog (recommended product change),
-// this test will start passing and the assertion can be tightened. Until
-// then, the test documents the gap in the most visible way the C2 surface
-// can — a deterministic failure with an actionable message.
+// The 180 s budget here accommodates one full watchdog cycle (60 s) plus
+// the reconnect delay (5 s) plus normal scan time to chain tip — generous
+// headroom on a regtest chain that completes in well under a second
+// unimpeded.
 #[cfg(feature = "argos-network")]
-#[ignore = "requires the Argos network harness; expected to FAIL until Argos gains a stream watchdog"]
+#[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
 #[tokio::test]
 async fn hung_stream_surfaces_err_within_bounded_time() {
     let harness = RegtestHarness::require();
@@ -694,24 +694,33 @@ async fn hung_stream_surfaces_err_within_bounded_time() {
         .await
         .expect("start_scan against hang fixture");
 
-    // 90s budget: the GoAway retry path sleeps 5s × 10 attempts = 50s. The
-    // hung stream isn't a retry event today, so 90s gives Argos comfortable
-    // headroom to surface an Err if it has any timeout at all.
-    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    // 180 s budget: stall watchdog trips at 60 s, retry loop reconnects
+    // (5 s delay), the second connection has no fault active and serves the
+    // chain in well under a second. 180 s is ~3× the lower bound.
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
     loop {
         let p = service.get_scan_progress(&handle).await.expect("progress");
         match p.phase {
-            ScanPhase::Complete | ScanPhase::Error => {
-                eprintln!("[regtest] R-N15 ok: Argos surfaced phase = {:?}", p.phase);
+            ScanPhase::Complete => {
+                eprintln!(
+                    "[regtest] R-N15 ok: stall watchdog tripped, retry recovered, scan completed"
+                );
+                return;
+            }
+            ScanPhase::Error => {
+                eprintln!(
+                    "[regtest] R-N15 ok: scan ended in Error after stall watchdog tripped: {:?}",
+                    p.error
+                );
                 return;
             }
             ScanPhase::Cancelled => panic!("[regtest] R-N15: scan unexpectedly cancelled"),
             _ => {
                 if std::time::Instant::now() > deadline {
                     panic!(
-                        "[regtest] R-N15: Argos did not surface Err within 90s against a \
-                         hung-stream peer. This is the documented gap — production \
-                         code lacks a per-stream watchdog. Last phase = {:?}, message = {:?}",
+                        "[regtest] R-N15: Argos did not surface a terminal phase within 180 s \
+                         against a hung-stream peer. The stall watchdog (scan.rs::stall_watchdog) \
+                         should have tripped at 60 s. Last phase = {:?}, message = {:?}",
                         p.phase, p.message
                     );
                 }

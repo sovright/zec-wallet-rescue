@@ -894,6 +894,93 @@ async fn import_accounts(
 const MAX_SYNC_RETRIES: u32 = 10;
 const SYNC_RETRY_DELAY_SECS: u64 = 5;
 
+/// Stall watchdog: how long we wait without seeing `synced_to_height` advance
+/// before declaring the gRPC stream hung. 60 s comfortably exceeds:
+///
+///   - librustzcash's default ~100-block batch boundary (committed in one tick
+///     even under the R-N13 300 ms/block latency profile = 30 s per batch),
+///   - the R-N14 32 KB/s throttle's per-batch budget,
+///   - the regtest harness's typical mid-scan ProgressPoller refresh cycle.
+///
+/// A stall this long against a real chain means the server stopped sending —
+/// the R-N15 failure mode the watchdog exists to surface.
+const STALL_TIMEOUT_SECS: u64 = 60;
+
+/// How often the watchdog polls `synced_to_height`. 5 s keeps the cost
+/// negligible and gives the watchdog 12 ticks before tripping.
+const STALL_CHECK_INTERVAL_SECS: u64 = 5;
+
+/// Returns a [`ZeckError`] when `synced_to_height` has not advanced for
+/// `STALL_TIMEOUT_SECS`. The returned future *only* resolves on stall — used
+/// inside `tokio::select!` against the actual sync future.
+///
+/// State lives entirely on the local stack: each call gets a fresh
+/// `last_height` baseline. When the retry loop in
+/// `run_wallet_sync_with_retry` reopens a connection, a new watchdog is
+/// started, so a progress event on the previous attempt doesn't paper over
+/// a stall on the next.
+///
+/// The error message contains the substring `"h2 protocol error"` so the
+/// existing retry matcher in `run_wallet_sync_with_retry` catches it
+/// without a separate string match.
+async fn stall_watchdog(state: &SharedScanTaskState) -> ZeckError {
+    let mut last_height: Option<u64> = None;
+    let mut stalled_ticks: u32 = 0;
+    // `max_stalled_ticks` is computed at call time rather than as a const so
+    // future tuning of either constant stays internally consistent.
+    let max_stalled_ticks =
+        (STALL_TIMEOUT_SECS / STALL_CHECK_INTERVAL_SECS).max(1) as u32;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(STALL_CHECK_INTERVAL_SECS)).await;
+        let current = state.lock().await.progress.synced_to_height;
+        match (last_height, current) {
+            // First observation of a height: just record it. We do not count
+            // the pre-progress phase (probing/connecting) toward the stall
+            // budget — sync begins when the first block lands.
+            (None, Some(h)) => {
+                last_height = Some(h);
+                stalled_ticks = 0;
+            }
+            // Advancing — reset the counter.
+            (Some(prev), Some(curr)) if curr != prev => {
+                last_height = Some(curr);
+                stalled_ticks = 0;
+            }
+            // No advance (either still None, or stuck at the same height).
+            _ => {
+                stalled_ticks = stalled_ticks.saturating_add(1);
+                if stalled_ticks >= max_stalled_ticks {
+                    return ZeckError::Lightwalletd(format!(
+                        "scan stalled: no new blocks for {STALL_TIMEOUT_SECS}s — \
+                         h2 protocol error: hung stream from lightwalletd"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Runs `run_wallet_sync` under a stall watchdog. Returns whichever future
+/// completes first:
+///   - sync's `Ok(())` / sync's `Err(...)` — natural outcome
+///   - watchdog's `Err(...)` — stall detected; passed to the retry loop
+///
+/// `biased` polling ensures the sync future is given a chance on every
+/// wake-up before the watchdog is checked, so an in-flight sync completion
+/// never loses to a coincidentally-tripping watchdog.
+async fn run_wallet_sync_with_stall_watchdog(
+    workspace: &RecoveryWorkspace,
+    network: &zcash_protocol::consensus::Network,
+    client: &mut CompactTxStreamerClient<tonic::transport::Channel>,
+    state: &SharedScanTaskState,
+) -> ZeckResult<()> {
+    tokio::select! {
+        biased;
+        result = run_wallet_sync(workspace, network, client) => result,
+        err = stall_watchdog(state) => Err(err),
+    }
+}
+
 /// Runs `run_wallet_sync`, reconnecting to lightwalletd on transient transport
 /// errors.  Each reconnection attempt tries all configured endpoints in order.
 /// Permanent errors (wallet database corruption, etc.) are returned immediately.
@@ -906,7 +993,7 @@ async fn run_wallet_sync_with_retry(
 ) -> ZeckResult<()> {
     let mut attempts = 0u32;
     loop {
-        match run_wallet_sync(workspace, network, client).await {
+        match run_wallet_sync_with_stall_watchdog(workspace, network, client, state).await {
             Ok(()) => return Ok(()),
             Err(err) => {
                 let msg = err.to_string();
@@ -2496,6 +2583,126 @@ mod tests {
                 "cache.sqlite should shrink dramatically after delete + incremental_vacuum \
                  (was {size_after_insert}, now {size_after_vacuum})"
             );
+        }
+    }
+
+    // ─── stall watchdog (covers R-N15 production behaviour) ──────────────
+    //
+    // These tests run under tokio's paused-time clock so the 60 s threshold
+    // doesn't burn wall-clock. We construct a `SharedScanTaskState` by hand
+    // (without spinning up a real scan), mutate `progress.synced_to_height`
+    // from a sibling task to simulate ProgressPoller's behaviour, and
+    // observe whether the watchdog tripped or not.
+    mod stall_watchdog_tests {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use tokio::sync::Mutex;
+
+        use super::super::{
+            stall_watchdog, ScanTaskState, SharedScanTaskState, STALL_CHECK_INTERVAL_SECS,
+            STALL_TIMEOUT_SECS,
+        };
+        use crate::ScanHandle;
+
+        fn empty_state() -> SharedScanTaskState {
+            Arc::new(Mutex::new(ScanTaskState::new(ScanHandle::new())))
+        }
+
+        async fn set_height(state: &SharedScanTaskState, h: u64) {
+            state.lock().await.progress.synced_to_height = Some(h);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn fires_after_threshold_when_height_never_advances() {
+            let state = empty_state();
+            set_height(&state, 100).await;
+
+            // Spawn the watchdog; it must trip within the threshold + one
+            // poll interval of paused-time advancement.
+            let watchdog = {
+                let state = state.clone();
+                tokio::spawn(async move { stall_watchdog(&state).await })
+            };
+
+            // Advance paused time by STALL_TIMEOUT + one full check interval
+            // to give the loop body time to observe the final stalled tick.
+            tokio::time::advance(Duration::from_secs(
+                STALL_TIMEOUT_SECS + STALL_CHECK_INTERVAL_SECS,
+            ))
+            .await;
+            tokio::task::yield_now().await;
+
+            let err = watchdog
+                .await
+                .expect("watchdog task did not panic");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("scan stalled") && msg.contains("h2 protocol error"),
+                "watchdog error must include the stall marker AND the retry-matcher string; got: {msg}"
+            );
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn does_not_fire_when_height_advances_each_tick() {
+            let state = empty_state();
+            set_height(&state, 0).await;
+
+            let watchdog = {
+                let state = state.clone();
+                tokio::spawn(async move { stall_watchdog(&state).await })
+            };
+
+            // Make the height advance every STALL_CHECK_INTERVAL_SECS for
+            // twice the trip threshold. The watchdog should never fire.
+            let ticks_to_run =
+                (STALL_TIMEOUT_SECS / STALL_CHECK_INTERVAL_SECS) * 2 + 4;
+            for tick in 1..=ticks_to_run {
+                tokio::time::advance(Duration::from_secs(STALL_CHECK_INTERVAL_SECS)).await;
+                tokio::task::yield_now().await;
+                set_height(&state, tick).await;
+            }
+
+            // Watchdog must still be awaiting — it returns *only* on stall.
+            assert!(
+                !watchdog.is_finished(),
+                "watchdog tripped while height was advancing every tick"
+            );
+            watchdog.abort();
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn resets_on_resumed_progress_after_partial_stall() {
+            let state = empty_state();
+            set_height(&state, 50).await;
+
+            let watchdog = {
+                let state = state.clone();
+                tokio::spawn(async move { stall_watchdog(&state).await })
+            };
+
+            // Stall for half the threshold, then resume advancing.
+            let half_ticks =
+                (STALL_TIMEOUT_SECS / STALL_CHECK_INTERVAL_SECS) / 2;
+            for _ in 0..half_ticks {
+                tokio::time::advance(Duration::from_secs(STALL_CHECK_INTERVAL_SECS)).await;
+                tokio::task::yield_now().await;
+            }
+
+            // Resume advancement for past the original threshold.
+            let resumed_ticks =
+                (STALL_TIMEOUT_SECS / STALL_CHECK_INTERVAL_SECS) + 4;
+            for tick in 1..=resumed_ticks {
+                tokio::time::advance(Duration::from_secs(STALL_CHECK_INTERVAL_SECS)).await;
+                tokio::task::yield_now().await;
+                set_height(&state, 50 + tick).await;
+            }
+
+            assert!(
+                !watchdog.is_finished(),
+                "watchdog tripped after stall was resolved by resumed progress"
+            );
+            watchdog.abort();
         }
     }
 }

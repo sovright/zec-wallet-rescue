@@ -53,6 +53,9 @@ zip32.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# `test-util` enables `#[tokio::test(start_paused = true)]` so the stall
+# watchdog unit tests can advance the clock without burning wall-clock.
+tokio = { workspace = true, features = ["test-util"] }
 tokio-stream = { version = "0.1", features = ["net", "sync"] }
 # Required at runtime by the tonic-server code generated for the FakeLightwalletd
 # fixture (see build.rs). Already in the workspace lock as a transitive of
