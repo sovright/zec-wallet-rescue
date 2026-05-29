@@ -560,10 +560,13 @@
           <span>Seed phrase</span>
           <textarea id="resume-seed-input" rows="4" class="masked"></textarea>
         </label>
-        <label class="checkline">
-          <input type="checkbox" id="resume-seed-visibility" />
-          <span>Show words on screen</span>
-        </label>
+        <div class="inline-actions">
+          <label class="checkline">
+            <input type="checkbox" id="resume-seed-visibility" />
+            <span>Show words on screen</span>
+          </label>
+          <button class="ghost" id="resume-seed-clear-clipboard" type="button" title="Overwrite the OS clipboard with empty text. Does not clear clipboard-history apps.">Clear clipboard</button>
+        </div>
         <label class="field">
           <span>Label (optional rename)</span>
           <input id="resume-label-input" type="text" maxlength="120" />

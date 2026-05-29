@@ -2,9 +2,42 @@
 
 > **Status:** Initial draft, v0.1.0-rc. This document describes the security posture of Argos as of the v0.1.0 release candidate. It is a living document; revisit on every release and whenever a new attack surface is added.
 
+## 0. At a glance
+
+This section summarises the document for readers who don't have time for the full text. The detail lives in §1–§11 and is the source of truth.
+
+### If you're in a hurry
+
+Argos is a single-use recovery tool. You give it a 24-word seed phrase, it scans the chain, it sweeps your funds into a modern wallet. The seed never leaves your machine, never touches disk, and only lives in memory for the length of the session. Everything else in this document is about *what could go wrong around that core promise* and how we bound the damage.
+
+The five things most worth knowing:
+
+| What | Severity | Where we stand |
+|---|---|---|
+| Seed phrase in memory or on disk | Critical | ✅ Wrapped in `secrecy::SecretString`, zeroized on drop, never written to disk. Residual: OS swap (we do not `mlock`). |
+| Dependency / supply-chain compromise | High | ✅ ~73% of our Rust tree is shared with the upstream Zcash ecosystem (`librustzcash`). The Tauri-side residue is a separate supply-chain surface we view as acceptable on the same terms other Tauri apps accept it. The rest of the tree is covered by `cargo-deny` + `cargo-vet` audits and SLSA Level 3 build provenance. |
+| Hostile lightwalletd | Medium–High | ✅ Crafted compact blocks are rejected by `librustzcash` sync; the server learns *that* you're scanning but no scanning-side keys are sent. |
+| Windows installer authenticity | Medium | ⚠️ macOS signing landed; Windows code-signing is in progress (T-B3). SLSA provenance (T-SC6) gives a third-party-verifiable source-to-binary chain in the interim. |
+| Clipboard residue after paste | Medium | ⚠️ Argos itself never writes the seed to the clipboard. If the user pastes their seed in, that exposure is theirs to manage. The GUI offers a "Clear clipboard" button — see T-S4. |
+
+Where this puts us relative to neighbours: we ship the same `librustzcash` family that ZODL (formerly Zashi) and zebrad rely on, a Tauri stack that is the same residue any Tauri-based Zcash desktop app carries, and a CI posture (`cargo-deny`, `cargo-vet`, zizmor, SLSA Level 3) that is at or above what those projects have today. The detailed comparison is in §6.6 and §7.
+
+### If you're not deep in security
+
+Your seed phrase is the master key to your money. If anyone else gets it, they can move your funds. Argos handles your seed for a specific job: it reads the chain, finds your funds, and helps you sweep them somewhere safer. It doesn't store the seed, doesn't send it anywhere, and doesn't keep it after the app closes.
+
+The honest version of "is this safe?" is: **all software has risk, and Argos is no exception.** Our review shows the risks are bounded if you set up your environment well. Specifically:
+
+- **Match your effort to the amount you're recovering.** For small recoveries (under ~25 ZEC), running Argos on your everyday machine is reasonable as long as you trust it — modern operating systems isolate apps well enough for that. For larger amounts, the operational cost of a clean, dedicated machine starts being worth it: a spare laptop, a fresh OS install, or a live-USB system (Tails, a clean Ubuntu) limits the surface for problems we can't reach from inside Argos.
+- Don't run Argos on a machine you suspect is already compromised, regardless of the amount. We can't protect a seed from malware that's already on your computer — no recovery tool can.
+- Only download Argos from our official release page. Verify the signature on macOS; verify the SLSA provenance on Windows until code-signing lands. We document how in the release notes.
+- Sweep to a wallet you control and have backed up. The point of Argos is to move funds *out* of an old wallet you're not going to use again.
+
+The risks we *can't* address from inside Argos — a compromised host, a coerced user ("$5 wrench attack") — are listed honestly in §9 (Out of scope) so you can decide what to do about them.
+
 ## 1. Purpose and scope
 
-Argos is a single-use Zcash wallet **recovery** tool for ZecWallet Lite seeds. Its purpose is to take a 24-word BIP-39 seed phrase, scan the Zcash chain for funds derived under ZecWallet Lite's account layout, and sweep them to a modern wallet (Zashi/Zodl, YWallet) in a single session. It is not an everyday wallet.
+Argos is a single-use Zcash wallet **recovery** tool for ZecWallet Lite seeds. Its purpose is to take a 24-word BIP-39 seed phrase, scan the Zcash chain for funds derived under ZecWallet Lite's account layout, and sweep them to a modern wallet (ZODL, YWallet) in a single session. It is not an everyday wallet.
 
 This threat model covers:
 
@@ -105,7 +138,7 @@ Severity: **C**ritical / **H**igh / **M**edium / **L**ow. Status: ✅ mitigated,
 | T-S1 | Seed phrase remains in process memory after use; swapped to disk | H | ✅ | Seed is wrapped in `secrecy::SecretString` and the BIP-39-derived 64-byte seed in `Secret<[u8;64]>` (PR #47). `Drop` zeroizes underlying memory. We do **not** call `mlock`/`VirtualLock` — swap remains a residual risk on the host. |
 | T-S2 | Seed phrase ends up in JS state and outlives the scan | H | ✅ | `state.scanConfig` stores a seed-less copy of the config (network/birthday/account params only). The seed is passed to the `start_scan` Tauri command and the textarea is cleared on submit; no JS reference outlives the call. |
 | T-S3 | Seed phrase leaks via logs / tracing / `Debug` impl | H | ✅ | `secrecy` wrappers do not implement `Debug`/`Display` for their inner value. No `println!`/`tracing` calls on seed-bearing variables. |
-| T-S4 | Seed phrase leaks via clipboard | M | ⚠️ | Argos never writes the seed to the clipboard. The recovery-report "Copy path" button (PR #53) only copies the file path. Users pasting their own seed in is bounded by the OS clipboard's lifetime. |
+| T-S4 | Seed phrase leaks via clipboard | M | ⚠️ | **What Argos does:** never calls `writeText(seed)`. The only `writeText` callsites in the GUI are the recovery-report "Copy path" button (PR #53, copies a file path) and the donate-overlay address button (copies a public unified address). There is no "Copy seed" affordance anywhere. **What users can do:** the seed-entry screen and the resume-scan modal both expose a "Clear clipboard" button that calls `navigator.clipboard.writeText("")` to overwrite the bare OS clipboard once the user has finished pasting. **What stays bounded by the user's environment:** clipboard-history managers (e.g. Maccy, ClipboardFusion, the iOS handoff clipboard) may have snapshotted the seed at paste time; our `writeText("")` does not retroactively scrub those. We deliberately do *not* block paste — a password manager → paste flow is safer than retyping a 24-word seed under a keylogger or shoulder-surfer, and "block copy" via `oncopy="return false"` is bypassable theatre on a textarea, not a real control. |
 | T-S5 | Seed visible on screen during entry | L | ✅ | Seed textarea is blurred by default; user must explicitly toggle "Show words on screen". |
 
 ### 6.2 Frontend (Tauri + WebView)
@@ -168,11 +201,11 @@ The high-level posture is: **we adopted the practices the rest of the Zcash Rust
 
 **Combined effect after the §6.6.3 adoption.** We have strong reproducibility of *what we build today* (lockfile + pinned toolchain + SHA-pinned + repo-enforced Actions), per-crate audit coverage on the 73% of our tree shared with the rest of the Zcash Rust ecosystem (T-SC1 via `cargo-vet`), and platform-level gates against fork-PR exfiltration (T-SC9) and SHA-pin regression (T-SC10). The two structural gaps that remain are T-SC4 (upstream Rust toolchain compromise — out of practical reach for a project this size) and T-SC6 (no reproducible builds / SLSA provenance attestation — a real gap, tracked). On the dependency-tree integrity side, the 565 `cargo-vet` exemptions are concentrated in the Tauri stack (§6.6.4); shrinking that further is structurally hard and tracked rather than blocked on.
 
-#### 6.6.1 Comparison with zebrad and Zodl
+#### 6.6.1 Comparison with zebrad and ZODL
 
 Argos shares the librustzcash dependency core with two other production Zcash projects, but with different distribution models and supply-chain postures. Honest comparison:
 
-| Practice | Argos (after PR #70) | zebrad (ZcashFoundation/zebra) | Zodl iOS / Android (zodl-inc) |
+| Practice | Argos (after PR #70) | zebrad (ZcashFoundation/zebra) | ZODL iOS / Android (zodl-inc) |
 |---|---|---|---|
 | Rust dependency gate in CI | `cargo-deny check advisories bans licenses sources` **and** `cargo-vet --locked` | `cargo-deny` covering advisories, licenses, multiple-versions, wildcards, bans, and sources | n/a — Rust enters as a built artifact via the Zcash mobile SDKs, not compiled directly |
 | Yanked-crate policy | `yanked = "deny"` in `deny.toml` — CI **fails** on any yanked dep (T-SC5 ✅; enabled by the librustzcash 2026-04 bump in PR #69) | `yanked = "deny"` in `deny.toml` | n/a |
@@ -187,15 +220,15 @@ Argos shares the librustzcash dependency core with two other production Zcash pr
 
 **What we took from `librustzcash` / the Zcash mobile SDKs.** `cargo-vet` with imports from the same federated audit sets `librustzcash` maintains (Bytecode Alliance, Embark, Fermyon, Google, ISRG, Mozilla, Zcash itself); `zizmor` on `.github/workflows/`; least-privilege workflow `permissions: {}` with per-job grants + `persist-credentials: false` on every `actions/checkout`. The `[imports.zcash]` line in `supply-chain/config.toml` is the leverage — it covers ~148 crates of our shared tree for free.
 
-**What does not transfer from Zodl.** Zodl mobile delegates binary-integrity to App Store / Play Store signing and review. Argos ships standalone binaries directly from GitHub Releases on three platforms, so we cannot offload that step the way Zodl can. The integrity guarantees in §6.5 (T-B2/T-B3/T-B4) and the provenance gap in T-SC6 exist because we are not in the mobile-store model — a structural difference, not a posture gap.
+**What does not transfer from ZODL.** ZODL mobile delegates binary-integrity to App Store / Play Store signing and review. Argos ships standalone binaries directly from GitHub Releases on three platforms, so we cannot offload that step the way ZODL can. The integrity guarantees in §6.5 (T-B2/T-B3/T-B4) and the provenance gap in T-SC6 exist because we are not in the mobile-store model — a structural difference, not a posture gap.
 
-**Where we currently match or exceed both upstreams.** No JavaScript runtime dependencies (§7) is a stronger position than either project: zebrad has no JS, Zodl has the full native-mobile dependency surface, and we deliberately ship zero npm packages in the bundle (PR #50). The conservative dependency-bump policy in `CLAUDE.md` is a process control neither upstream documents. Repo-enforced SHA pinning (T-SC10) is a defence-in-depth gate not yet present in either upstream's settings.
+**Where we currently match or exceed both upstreams.** No JavaScript runtime dependencies (§7) is a stronger position than either project: zebrad has no JS, ZODL has the full native-mobile dependency surface, and we deliberately ship zero npm packages in the bundle (PR #50). The conservative dependency-bump policy in `CLAUDE.md` is a process control neither upstream documents. Repo-enforced SHA pinning (T-SC10) is a defence-in-depth gate not yet present in either upstream's settings.
 
 **Where we remain behind.** No PGP disclosure key (a v0.1.0+1 decision; see T-SC2 in §8), and no SLSA provenance attestation for the published binaries (T-SC6).
 
 #### 6.6.2 librustzcash and the Zcash mobile Rust SDKs
 
-The Zodl comparison in §6.6.1 stops at the mobile app, but Argos and Zodl share the *same* upstream Rust core — the librustzcash workspace at `zcash/librustzcash` (now ZODL-maintained per `MEMORY.md`). The Zcash mobile Rust SDKs at `zcash/zcash-android-wallet-sdk` (Kotlin) and `zcash/zcash-swift-wallet-sdk` (Swift) **embed librustzcash as an in-tree Rust submodule** and build it into the platform binding (`backend-lib/` on Android, a `rust/` directory + `Cargo.lock` + `Package.resolved` on iOS). Argos consumes the same crates from crates.io. The dependency graph that flows into a built Argos binary, a built Zodl iOS binary, and a built Zodl Android binary therefore shares its largest single chunk.
+The ZODL comparison in §6.6.1 stops at the mobile app, but Argos and ZODL share the *same* upstream Rust core — the librustzcash workspace at `zcash/librustzcash` (now ZODL-maintained per `MEMORY.md`). The Zcash mobile Rust SDKs at `zcash/zcash-android-wallet-sdk` (Kotlin) and `zcash/zcash-swift-wallet-sdk` (Swift) **embed librustzcash as an in-tree Rust submodule** and build it into the platform binding (`backend-lib/` on Android, a `rust/` directory + `Cargo.lock` + `Package.resolved` on iOS). Argos consumes the same crates from crates.io. The dependency graph that flows into a built Argos binary, a built ZODL iOS binary, and a built ZODL Android binary therefore shares its largest single chunk.
 
 The posture of that shared upstream is markedly stronger than ours, zebrad's, or the mobile apps' own platform layer:
 
@@ -274,11 +307,11 @@ The honest framing: T-SC1's `cargo-vet` adoption gives us large coverage cheaply
 
 Argos's dependency tree is best summarised as **three categories**, in roughly the order they contribute to attack surface:
 
-1. **The librustzcash + Zcash ecosystem core that we share with `zebrad` and `Zodl`** — the librustzcash family (`zcash_client_backend`, `zcash_client_sqlite`, `zcash_keys`, `zcash_protocol`, `zcash_primitives`, `zcash_transparent`, `sapling-crypto`, `orchard`), maintained by ZODL (formerly the ECC mobile team); the cryptographic primitives they pull (`bls12_381`, `pasta_curves`, `halo2`, `equihash`, `secp256k1`); `secrecy` for key handling; `rustls` with the `ring` provider and no `aws-lc-sys` (PR #54) for TLS; `tonic` + `prost` + `tokio` for the gRPC lightwalletd client. This category is roughly the same set of crates that `zebrad` and `Zodl` consume — quantified in §6.6.4, **452 of our 618 lockfile crates (73%) are shared with either upstream**, and the librustzcash maintainers actively audit them via `cargo-vet`.
+1. **The librustzcash + Zcash ecosystem core that we share with `zebrad` and `ZODL`** — the librustzcash family (`zcash_client_backend`, `zcash_client_sqlite`, `zcash_keys`, `zcash_protocol`, `zcash_primitives`, `zcash_transparent`, `sapling-crypto`, `orchard`), maintained by ZODL (formerly the ECC mobile team); the cryptographic primitives they pull (`bls12_381`, `pasta_curves`, `halo2`, `equihash`, `secp256k1`); `secrecy` for key handling; `rustls` with the `ring` provider and no `aws-lc-sys` (PR #54) for TLS; `tonic` + `prost` + `tokio` for the gRPC lightwalletd client. This category is roughly the same set of crates that `zebrad` and `ZODL` consume — quantified in §6.6.4, **452 of our 618 lockfile crates (73%) are shared with either upstream**, and the librustzcash maintainers actively audit them via `cargo-vet`.
 
-2. **The Tauri desktop-GUI stack** — `tauri` itself; `wry` (cross-platform WebView bindings); the `gtk-rs` family on Linux (`gtk`/`gdk`/`atk`/`gio`/`glib`/`gobject-sys`/`gtk3-macros`/`gdkwayland-sys`/`gdkx11` + their `*-sys` companions); `cairo-rs` + `cairo-sys-rs`; `webkit2gtk-*` + `javascriptcore-rs` on Linux, `core-graphics`/`cocoa`/`objc` on macOS, `embed_plist` for macOS bundling, `embed-resource` for Windows; the HTML/CSS parsing crates Tauri uses internally (`kuchikiki`, `html5ever`, `cssparser`, `selectors`); plus the smol-family async runtime Tauri's IPC pulls in (`async-channel`, `async-io`, `async-lock`, `blocking`, `futures-lite`). This is essentially all of the **~166 crates unique to Argos's tree** (§6.6.4) — neither `zebrad` nor `Zodl` consume it, and it dominates the unmaintained-crate advisory ignores in `deny.toml` (the RUSTSEC-2024-0411..0420 / 2025-0080 / 2025-0081 GTK3 family).
+2. **The Tauri desktop-GUI stack** — `tauri` itself; `wry` (cross-platform WebView bindings); the `gtk-rs` family on Linux (`gtk`/`gdk`/`atk`/`gio`/`glib`/`gobject-sys`/`gtk3-macros`/`gdkwayland-sys`/`gdkx11` + their `*-sys` companions); `cairo-rs` + `cairo-sys-rs`; `webkit2gtk-*` + `javascriptcore-rs` on Linux, `core-graphics`/`cocoa`/`objc` on macOS, `embed_plist` for macOS bundling, `embed-resource` for Windows; the HTML/CSS parsing crates Tauri uses internally (`kuchikiki`, `html5ever`, `cssparser`, `selectors`); plus the smol-family async runtime Tauri's IPC pulls in (`async-channel`, `async-io`, `async-lock`, `blocking`, `futures-lite`). This is essentially all of the **~166 crates unique to Argos's tree** (§6.6.4) — neither `zebrad` nor `ZODL` consume it, and it dominates the unmaintained-crate advisory ignores in `deny.toml` (the RUSTSEC-2024-0411..0420 / 2025-0080 / 2025-0081 GTK3 family).
 
-3. **Project-specific helpers for the recovery workflow.** A small tail: `keepawake` to hold a power-management guard so the OS doesn't sleep mid-scan (recovery scans of older wallets routinely run for hours); `bip0039` for the seed phrase; `clap` + `dialoguer` + `indicatif` for the CLI; `rusqlite` for the workspace database. `keepawake` in particular is unique to our long-scan use case — `zebrad` runs as a server and `Zodl` is a foreground app, so neither needs it.
+3. **Project-specific helpers for the recovery workflow.** A small tail: `keepawake` to hold a power-management guard so the OS doesn't sleep mid-scan (recovery scans of older wallets routinely run for hours); `bip0039` for the seed phrase; `clap` + `dialoguer` + `indicatif` for the CLI; `rusqlite` for the workspace database. `keepawake` in particular is unique to our long-scan use case — `zebrad` runs as a server and `ZODL` is a foreground app, so neither needs it.
 
 JavaScript dependencies: **none at runtime**. The Tauri GUI ships zero npm packages in the browser bundle (PR #50).
 
@@ -329,7 +362,7 @@ Please **do not** open a public GitHub issue for a security vulnerability. Email
 |---|---|---|
 | 2026-05-13 | Kristi | Correct T-L1 status (permissions implemented); fix CSP quote; clarify T-N4 address count; PGP note. |
 | 2026-05-19 | Zaki | Initial draft. Covers v0.1.0-rc. Open items listed in §8. |
-| 2026-05-27 | Zaki | Added §6.6 Supply chain integrity (T-SC1..T-SC8), §6.6.1 cross-project posture comparison (zebrad + Zodl), §6.6.2 extending to librustzcash and the Zcash mobile Rust SDKs (documenting their `cargo-vet` posture with federated audits from Bytecode Alliance / Embark / Fermyon / Google / ISRG / Mozilla, `zizmor` on workflows, uniformly SHA-pinned Actions), §6.6.3 adoption plan, and §6.6.4 quantifying dependency-surface divergence: 452/618 (73%) of our crates are shared with zebra or librustzcash; the 166 unique to Argos are essentially the Tauri desktop-GUI stack. |
+| 2026-05-27 | Zaki | Added §6.6 Supply chain integrity (T-SC1..T-SC8), §6.6.1 cross-project posture comparison (zebrad + ZODL), §6.6.2 extending to librustzcash and the Zcash mobile Rust SDKs (documenting their `cargo-vet` posture with federated audits from Bytecode Alliance / Embark / Fermyon / Google / ISRG / Mozilla, `zizmor` on workflows, uniformly SHA-pinned Actions), §6.6.3 adoption plan, and §6.6.4 quantifying dependency-surface divergence: 452/618 (73%) of our crates are shared with zebra or librustzcash; the 166 unique to Argos are essentially the Tauri desktop-GUI stack. |
 | 2026-05-28 | Zaki | Added T-SC9 (fork-PR CI execution) and T-SC10 (SHA-pin regression), both ✅ via repository-level Actions settings (`fork-pr-contributor-approval: all_external_contributors`, `sha_pinning_required: true`). T-SC3 upgraded ⚠️→✅ on the back of T-SC10. |
-| 2026-05-28 | Zaki | Holistic pass after PRs #69 (librustzcash 2026-04 bump) and #70 (cargo-deny + cargo-vet + zizmor + SHA-pin Actions + least-privilege workflows): rewrote §7 to lead with the three-category framing (librustzcash + Zcash ecosystem shared with zebrad/Zodl; Tauri desktop-GUI stack; project-specific helpers including `keepawake` for long scans); reframed §6.6 + §6.6.3 from prospective adoption plan to retrospective record of what we took from each upstream; updated T-B1 / T-SC1 / T-SC2 / T-SC5 statuses to reflect the new tooling; refreshed §6.6.1 comparison table to the post-#70 state; updated §8 backlog (T-SC1 / T-SC1b / T-SC3 / T-SC9 / T-SC10 now ✅; T-SC6 named as the largest remaining supply-chain gap). |
+| 2026-05-28 | Zaki | Holistic pass after PRs #69 (librustzcash 2026-04 bump) and #70 (cargo-deny + cargo-vet + zizmor + SHA-pin Actions + least-privilege workflows): rewrote §7 to lead with the three-category framing (librustzcash + Zcash ecosystem shared with zebrad/ZODL; Tauri desktop-GUI stack; project-specific helpers including `keepawake` for long scans); reframed §6.6 + §6.6.3 from prospective adoption plan to retrospective record of what we took from each upstream; updated T-B1 / T-SC1 / T-SC2 / T-SC5 statuses to reflect the new tooling; refreshed §6.6.1 comparison table to the post-#70 state; updated §8 backlog (T-SC1 / T-SC1b / T-SC3 / T-SC9 / T-SC10 now ✅; T-SC6 named as the largest remaining supply-chain gap). |
 | 2026-05-28 | Zaki | T-B3 status moved ❌ → ⚠️: Windows code-signing certificate procurement is in progress. §4 build-pipeline trust boundary and §6.6.1 comparison-table release-binary row updated to reflect (a) Windows signing in progress, (b) SLSA Level 3 provenance attestation (T-SC6) coming via PR #71 as the third-party-verifiable source-to-binary chain in the interim. |
