@@ -179,62 +179,292 @@ struct ScannedFixture {
 
 // ─── R-N8: GoAway frame mid-scan triggers reconnect ─────────────────────────
 //
-// Deferred. Triggering a GoAway frame specifically (not a TCP RST) requires
-// either:
+// Verifies that an HTTP/2-class mid-stream disconnect triggers the
+// reconnect path in `run_wallet_sync_with_retry`, and that the resumed
+// scan reaches the same final height as a baseline uninterrupted scan
+// without duplicating discoveries.
 //
-//   - A custom lightwalletd build patched to emit `GOAWAY` on a timer (the
-//     stock electriccoinco/lightwalletd image does not expose this knob), or
-//   - An HTTP/2-aware MITM proxy in front of lightwalletd that injects a
-//     well-formed GOAWAY frame at a chosen point in the stream. Building
-//     one with `h2` directly is ~200 lines and warrants its own crate.
+// **What this test substitutes for a real GoAway:** the production retry
+// loop in `scan.rs:run_wallet_sync_with_retry` decides whether to retry
+// by substring-matching the error message against a fixed list of
+// transport-class strings (`"transport error"`, `"h2 protocol error"`,
+// `"GoAway"`, `"TimedOut"`, `"close_notify"`, `"UnexpectedEof"`). It does
+// not inspect the underlying h2 frame. We therefore exercise the retry
+// path by having `FakeLightwalletd` abort the stream with a
+// `Status::unavailable` whose message contains both `"h2 protocol error"`
+// and `"GoAway"` — this is exactly the contract the production code is
+// written against. A real h2-frame-level GoAway is left for whenever the
+// h2 crate exposes a server-side `send_goaway` API; the assertions here
+// would not change.
 //
-// A pure TCP-drop proxy would *also* exercise `run_wallet_sync_with_retry`
-// (the retry loop catches transport-class errors regardless of which
-// HTTP/2 layer raised them), but the proximate cause would be
-// `UnexpectedEof`, not `NO_ERROR` GOAWAY. The CLAUDE.md note that
-// motivated this row specifically calls out GOAWAY as the production
-// failure mode against zec.rocks, so substituting TCP-drop would not
-// honestly verify the documented behaviour — it would just verify that
-// *some* mid-stream disconnect is retried.
+// What the fixture does:
+//   - Proxies all blocks 1..N from the real harness.
+//   - At block N+1, returns the simulated GoAway error and sets its
+//     "fault triggered" flag so the next reconnect sees clean behaviour.
 //
-// Best done in a follow-up PR with a shared `FakeLightwalletd` gRPC
-// fixture (also unblocks R-N9) plus an h2-frame injection layer.
-#[ignore = "deferred: needs an h2 GOAWAY-injecting proxy or patched lightwalletd — see comment"]
-#[test]
-fn goaway_mid_scan_reconnects_without_duplicate_emissions() {
-    let _harness = RegtestHarness::require();
-    panic!(
-        "[regtest] R-N8 deferred: see comment above. Converting needs either \
-         a custom lightwalletd build or an h2-aware MITM proxy that injects \
-         a GOAWAY frame mid-stream."
+// Assertions:
+//   1. Scan reaches phase = Complete (i.e. the retry path succeeded).
+//   2. Final `synced_to_height` equals the baseline uninterrupted scan
+//      run against the bare harness — proves the resume cursor is sound.
+//   3. Discovery list has no duplicates after the disconnect — proves
+//      the per-scan dedup set in the pump loop survives reconnect.
+#[cfg(feature = "argos-network")]
+#[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
+#[tokio::test]
+async fn goaway_mid_scan_reconnects_without_duplicate_emissions() {
+    let harness = RegtestHarness::require();
+
+    // Baseline: run a scan against the bare harness so we know what
+    // `synced_to_height` and which discoveries the chain ought to produce.
+    let baseline_dir = tempfile::tempdir().expect("temp data dir for baseline scan");
+    let baseline = complete_scan_against_test_seed(&harness, &baseline_dir, "rn8-baseline")
+        .await;
+    let baseline_progress = baseline
+        .service
+        .get_scan_progress(&baseline.handle)
+        .await
+        .expect("baseline scan progress");
+    let baseline_synced = baseline_progress.synced_to_height;
+    let baseline_discoveries = baseline_progress.discoveries.len();
+    drop(baseline);
+    drop(baseline_dir);
+
+    // Bring up the fixture in proxy mode with GoAway-after-3-blocks. The
+    // regtest harness's chain is ~200 blocks after setup.sh, so 3 is well
+    // inside the stream — the retry path has to fire.
+    let fake = common::fake_lightwalletd::FakeLightwalletd::builder()
+        .upstream(harness.lightwalletd_url().to_owned())
+        .close_stream_after_blocks(3)
+        .build()
+        .await
+        .expect("bind FakeLightwalletd on loopback");
+
+    // Run the scan against the fixture URL instead of the harness URL.
+    let fixture_dir = tempfile::tempdir().expect("temp data dir for fixture scan");
+    let fixture_seed = harness.test_seed().to_owned();
+    let runtime = argos_core::RuntimeScanConfig {
+        seed_phrase: SecretString::new(fixture_seed.clone()),
+        birthday: 1,
+        num_accounts: Some(2),
+        gap_limit: 5,
+        lightwalletd_url: fake.url.clone(),
+        data_dir: fixture_dir.path().to_path_buf(),
+        network: ZeckNetwork::Testnet,
+        label: "rn8-faulted".to_owned(),
+    };
+    let scan_config = ScanConfig {
+        birthday: runtime.birthday,
+        num_accounts: runtime.num_accounts,
+        gap_limit: runtime.gap_limit,
+        lightwalletd_url: runtime.lightwalletd_url.clone(),
+        data_dir: runtime.data_dir.clone(),
+        network: runtime.network,
+        label: runtime.label.clone(),
+    };
+    let service = RecoveryService::new();
+    let handle = service
+        .start_scan(scan_config, SecretString::new(fixture_seed))
+        .await
+        .expect("start_scan against FakeLightwalletd");
+
+    // Poll to completion. Generous bound — the retry loop sleeps
+    // SYNC_RETRY_DELAY_SECS (5s) between attempts.
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    let final_progress = loop {
+        let progress = service
+            .get_scan_progress(&handle)
+            .await
+            .expect("get_scan_progress");
+        match progress.phase {
+            ScanPhase::Complete => break progress,
+            ScanPhase::Error => panic!(
+                "[regtest] R-N8: scan errored instead of recovering via retry: {:?}",
+                progress.error
+            ),
+            ScanPhase::Cancelled => panic!("[regtest] R-N8: scan unexpectedly cancelled"),
+            _ => {
+                if std::time::Instant::now() > deadline {
+                    panic!(
+                        "[regtest] R-N8: scan did not complete within 180s; last phase = {:?}",
+                        progress.phase
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    };
+
+    assert_eq!(
+        final_progress.synced_to_height, baseline_synced,
+        "[regtest] R-N8: post-reconnect synced_to_height must equal the baseline; \
+         got {:?}, baseline {:?}",
+        final_progress.synced_to_height, baseline_synced
+    );
+
+    // Discovery dedup: every (account, kind, address) triple appears at most
+    // once. The pump loop's seen-set lives in `ScanProgress.discoveries`
+    // itself (it's an append-only log), so duplicates would surface here.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for d in &final_progress.discoveries {
+        let key = format!("{:?}|{}|{}", d.pool, d.account_index, d.address);
+        assert!(
+            seen.insert(key.clone()),
+            "[regtest] R-N8: duplicate discovery after reconnect: {key}"
+        );
+    }
+
+    // Baseline produced N discoveries; the faulted run must produce the
+    // same set. Equality on count is sufficient given the dedup assertion
+    // above proves every entry is unique.
+    assert_eq!(
+        final_progress.discoveries.len(),
+        baseline_discoveries,
+        "[regtest] R-N8: discovery count differs from baseline (post-reconnect={}, baseline={})",
+        final_progress.discoveries.len(),
+        baseline_discoveries
+    );
+
+    eprintln!(
+        "[regtest] R-N8 ok: scan recovered from simulated GoAway, reached {:?} (matches baseline)",
+        final_progress.synced_to_height
     );
 }
 
 // ─── R-N9: Hostile compact block ────────────────────────────────────────────
 //
-// Deferred. Verifying that a malformed compact block surfaces a clean Err
-// from `zcash_client_backend::sync` requires a fake `CompactTxStreamer`
-// gRPC server that emits a crafted block whose internal structure is
-// parseable but semantically invalid (e.g. wrong commitment-tree root,
-// wrong tx hash). Two substantial pieces of infrastructure:
+// Verifies that a structurally-parseable but chain-invalid compact block
+// surfaces as a clean error from `zcash_client_backend::sync` (not a
+// panic), without corrupting the wallet DB for a subsequent scan.
 //
-//   - A tonic service stub implementing the `CompactTxStreamer` interface
-//     (GetLightdInfo + GetBlockRange + GetCompactBlock at minimum).
-//   - A crafted compact-block payload — requires understanding the
-//     `zcash_protocol::consensus` block format well enough to build a
-//     block that fails witness validation rather than rejecting at parse.
+// `FakeLightwalletd` mutates the `prev_hash` of the block at a configured
+// height (XOR all bytes with 0xff). The block still parses — gRPC decode
+// succeeds — but the chain-link check in librustzcash's sync rejects it
+// because the block no longer links to its predecessor.
 //
-// Best done in a follow-up PR with a shared `FakeLightwalletd` test
-// fixture; the same scaffolding then unblocks R-N8's GoAway-specific
-// frame injection (currently exercised here at the TCP-drop layer
-// instead — see R-N8 above for the simplification rationale).
-#[ignore = "deferred: needs a FakeLightwalletd gRPC service + crafted block payload — see comment"]
-#[test]
-fn hostile_compact_block_rejected_cleanly() {
-    let _harness = RegtestHarness::require();
-    panic!(
-        "[regtest] R-N9 deferred: see comment above. Convert after the \
-         FakeLightwalletd fixture lands (shared with R-N8 follow-up)."
+// Why XOR-prev_hash rather than e.g. a malformed commitment tree: the
+// chain-link check fires earliest in the sync pipeline, gives a
+// deterministic rejection point regardless of which blocks happened to
+// contain notes for our test seed, and exercises the same error path a
+// genuinely adversarial server would trigger by lying about the chain.
+//
+// Assertions:
+//   1. The first scan ends in `ScanPhase::Error` — not Complete, not a
+//      panic. The retry loop must NOT classify this as a transport-class
+//      error (it isn't); the error must propagate.
+//   2. A second scan against the bare harness (fresh workspace) reaches
+//      the baseline `synced_to_height`. The faulted scan's database
+//      lives in its own tempdir, so this also implicitly verifies that
+//      writing to that DB and then dropping it leaves no global state
+//      that pollutes the next workspace.
+#[cfg(feature = "argos-network")]
+#[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
+#[tokio::test]
+async fn hostile_compact_block_rejected_cleanly() {
+    let harness = RegtestHarness::require();
+
+    // Baseline first (same pattern as R-N8) so we have a target.
+    let baseline_dir = tempfile::tempdir().expect("temp data dir for baseline scan");
+    let baseline = complete_scan_against_test_seed(&harness, &baseline_dir, "rn9-baseline")
+        .await;
+    let baseline_progress = baseline
+        .service
+        .get_scan_progress(&baseline.handle)
+        .await
+        .expect("baseline scan progress");
+    let baseline_synced = baseline_progress.synced_to_height;
+    drop(baseline);
+    drop(baseline_dir);
+
+    // Pick a height inside the funded range. Setup.sh funds the test seed
+    // around block ~100; injecting at block 5 is safely past Sapling
+    // activation (height 1) and well before any wallet-relevant block.
+    let hostile_height: u64 = 5;
+    let fake = common::fake_lightwalletd::FakeLightwalletd::builder()
+        .upstream(harness.lightwalletd_url().to_owned())
+        .inject_hostile_block_at_height(hostile_height)
+        .build()
+        .await
+        .expect("bind FakeLightwalletd on loopback");
+
+    let faulted_dir = tempfile::tempdir().expect("temp data dir for faulted scan");
+    let seed = harness.test_seed().to_owned();
+    let scan_config = ScanConfig {
+        birthday: 1,
+        num_accounts: Some(2),
+        gap_limit: 5,
+        lightwalletd_url: fake.url.clone(),
+        data_dir: faulted_dir.path().to_path_buf(),
+        network: ZeckNetwork::Testnet,
+        label: "rn9-faulted".to_owned(),
+    };
+    let service = RecoveryService::new();
+    let handle = service
+        .start_scan(scan_config, SecretString::new(seed.clone()))
+        .await
+        .expect("start_scan against hostile FakeLightwalletd");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let faulted_progress = loop {
+        let progress = service
+            .get_scan_progress(&handle)
+            .await
+            .expect("get_scan_progress");
+        match progress.phase {
+            ScanPhase::Error => break progress,
+            ScanPhase::Complete => panic!(
+                "[regtest] R-N9: scan must NOT complete cleanly against a hostile chain"
+            ),
+            ScanPhase::Cancelled => panic!("[regtest] R-N9: scan unexpectedly cancelled"),
+            _ => {
+                if std::time::Instant::now() > deadline {
+                    panic!(
+                        "[regtest] R-N9: scan neither errored nor completed within 120s; \
+                         last phase = {:?}",
+                        progress.phase
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    };
+
+    let err_text = faulted_progress
+        .error
+        .as_ref()
+        .expect("[regtest] R-N9: scan ended in Error but error field was empty")
+        .to_string();
+    assert!(
+        !err_text.is_empty(),
+        "[regtest] R-N9: error message must be non-empty"
+    );
+    // The exact wording comes from librustzcash; we just check we got a
+    // *useful* message, not a generic panic backtrace.
+    assert!(
+        !err_text.contains("panicked"),
+        "[regtest] R-N9: scan must surface an Err, not propagate a panic: {err_text}"
+    );
+    eprintln!("[regtest] R-N9 ok: hostile block rejected with: {err_text}");
+
+    drop(service);
+    drop(faulted_dir);
+    drop(fake);
+
+    // Subsequent clean rescan against the bare harness reaches baseline.
+    // Uses a fresh workspace so we're testing "no global state pollution",
+    // not resume.
+    let recovery_dir = tempfile::tempdir().expect("temp data dir for recovery scan");
+    let recovery = complete_scan_against_test_seed(&harness, &recovery_dir, "rn9-recovery")
+        .await;
+    let recovery_progress = recovery
+        .service
+        .get_scan_progress(&recovery.handle)
+        .await
+        .expect("recovery scan progress");
+    assert_eq!(
+        recovery_progress.synced_to_height, baseline_synced,
+        "[regtest] R-N9: post-incident clean scan must reach baseline height \
+         (got {:?}, baseline {:?})",
+        recovery_progress.synced_to_height, baseline_synced
     );
 }
 

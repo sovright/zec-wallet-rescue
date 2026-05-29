@@ -1,14 +1,28 @@
 //! `FakeLightwalletd` — an in-process gRPC server speaking the lightwalletd
 //! wire protocol, used by the C2 integration tests.
 //!
-//! This is the **skeleton + proxy-mode** scaffolding: it boots a tonic server
-//! on a loopback ephemeral port, answers `GetLightdInfo` from a builder-
-//! supplied config, and (when given an upstream URL) forwards every other RPC
-//! Argos uses to a real lightwalletd instance. The fault-injection knobs
-//! (`latency`, `close_stream_after_blocks`, `inject_hostile_block_at_height`)
-//! are wired into the builder but not yet implemented — the follow-up PR will
-//! flesh them out to unblock R-N8 (GoAway mid-stream) and R-N9 (hostile
-//! compact block).
+//! Boots a tonic server on a loopback ephemeral port, answers `GetLightdInfo`
+//! from a builder-supplied config, and (when given an upstream URL) forwards
+//! every other RPC Argos uses to a real lightwalletd instance. Two fault-
+//! injection knobs are honoured by `get_block_range`:
+//!
+//!   - `close_stream_after_blocks(N)` — after the first `N` compact blocks
+//!     have been emitted on a stream, the fixture aborts the stream with a
+//!     `tonic::Status` whose message contains the strings `run_wallet_sync_with_retry`
+//!     matches against (`"h2 protocol error"` + `"GoAway"`). Fires exactly
+//!     once per fixture lifetime — subsequent `get_block_range` calls
+//!     forward cleanly, so the retry loop can reach the chain tip.
+//!     Unblocks R-N8.
+//!   - `inject_hostile_block_at_height(H)` — when the upstream returns the
+//!     compact block at height `H`, the fixture mutates its `prev_hash`
+//!     field (XOR all bytes with 0xff) before forwarding. The resulting
+//!     block parses cleanly but breaks the chain-link invariant, so
+//!     `zcash_client_backend::sync` rejects it. Also fires exactly once.
+//!     Unblocks R-N9.
+//!
+//! The `latency(Duration)` knob is still a no-op — left in the builder for
+//! the follow-up bad-network-coverage PR. See the `TODO(bad-network)`
+//! marker in `FaultState`.
 //!
 //! Why proxy mode: it lets the bad-network tests reuse the real regtest
 //! harness's compact-block stream for the happy-path prefix, then introduce
@@ -19,9 +33,11 @@
 //! never see this file.
 
 #![cfg(feature = "argos-network")]
-#![allow(dead_code)] // Fields and helpers exist for the follow-up fault-injection PR.
+#![allow(dead_code)] // Some helpers (e.g. the `latency` knob) await follow-up wiring.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::TcpListener;
@@ -93,22 +109,23 @@ pub struct FakeLightwalletdBuilder {
     /// lightwalletd. Must be a URL `tonic::transport::Channel::connect` accepts
     /// (e.g. `http://127.0.0.1:9067` for the regtest harness).
     upstream_url: Option<String>,
-    // ─── Fault-injection knobs (TODO follow-up PR) ──────────────────────
+    // ─── Fault-injection knobs ──────────────────────────────────────────
     /// Inject a fixed per-RPC latency before responding.
     ///
-    /// TODO(R-N8/R-N9): implement.
+    /// TODO(bad-network): the follow-up bad-network-coverage PR will wire
+    /// this through `get_block_range` and `get_taddress_txids`. Currently a
+    /// no-op.
     latency: Option<Duration>,
-    /// Close the `GetBlockRange` stream cleanly after this many compact
-    /// blocks have been emitted, causing the client to observe a connection
-    /// drop / GoAway. Unblocks R-N8.
-    ///
-    /// TODO(R-N8/R-N9): implement.
+    /// Abort the `GetBlockRange` stream after this many compact blocks have
+    /// been emitted, surfacing a `Status` whose message matches the strings
+    /// `run_wallet_sync_with_retry` retries on. Fires exactly once per
+    /// fixture lifetime; subsequent calls forward cleanly. Unblocks R-N8.
     close_stream_after_blocks: Option<u64>,
-    /// When the upstream returns the compact block at this height, substitute
-    /// a deliberately malformed block to exercise the client's parser/anchor
-    /// rejection path. Unblocks R-N9.
-    ///
-    /// TODO(R-N8/R-N9): implement.
+    /// When the upstream returns the compact block at this height, mutate
+    /// its `prev_hash` (XOR all bytes with 0xff) before forwarding. The
+    /// resulting block parses but breaks the chain-link invariant, so
+    /// `zcash_client_backend::sync` rejects it. Fires exactly once.
+    /// Unblocks R-N9.
     inject_hostile_block_at_height: Option<u64>,
 }
 
@@ -160,24 +177,26 @@ impl FakeLightwalletdBuilder {
 
     /// Inject a fixed latency before each RPC response.
     ///
-    /// TODO(R-N8/R-N9): implement.
+    /// TODO(bad-network): currently a no-op. Wired through in the bad-network
+    /// follow-up PR alongside throttling and hung-stream knobs.
     pub fn latency(mut self, latency: Duration) -> Self {
         self.latency = Some(latency);
         self
     }
 
-    /// Close the `GetBlockRange` stream after this many compact blocks,
-    /// simulating an HTTP/2 GoAway mid-stream (R-N8).
-    ///
-    /// TODO(R-N8/R-N9): implement.
+    /// After this many compact blocks have been emitted on a `GetBlockRange`
+    /// stream, abort the stream with an error message
+    /// `run_wallet_sync_with_retry` matches against (contains both
+    /// `"h2 protocol error"` and `"GoAway"`). Fires exactly once per fixture
+    /// lifetime; subsequent stream requests forward cleanly. Drives R-N8.
     pub fn close_stream_after_blocks(mut self, count: u64) -> Self {
         self.close_stream_after_blocks = Some(count);
         self
     }
 
-    /// Inject a hostile compact block at the given height (R-N9).
-    ///
-    /// TODO(R-N8/R-N9): implement.
+    /// When the upstream returns the compact block at this height, mutate
+    /// its `prev_hash` so the block parses but fails chain-link validation
+    /// in `zcash_client_backend::sync`. Fires exactly once. Drives R-N9.
     pub fn inject_hostile_block_at_height(mut self, height: u64) -> Self {
         self.inject_hostile_block_at_height = Some(height);
         self
@@ -208,19 +227,38 @@ impl FakeLightwalletdBuilder {
     }
 }
 
+/// One-shot fault state shared across `get_block_range` invocations on the
+/// same fixture. `triggered` flips to `true` the first time a fault fires so
+/// the retry loop's *next* connection sees clean behaviour — otherwise the
+/// retry would hit the same fault repeatedly and exhaust its budget.
+struct FaultState {
+    close_stream_after_blocks: Option<u64>,
+    inject_hostile_block_at_height: Option<u64>,
+    triggered: AtomicBool,
+}
+
+impl FaultState {
+    /// Returns true if a fault knob was set AND has not been triggered yet.
+    /// Used by `get_block_range` to decide whether to apply fault logic at
+    /// all — when false, the stream is forwarded verbatim.
+    fn armed(&self) -> bool {
+        (self.close_stream_after_blocks.is_some()
+            || self.inject_hostile_block_at_height.is_some())
+            && !self.triggered.load(Ordering::SeqCst)
+    }
+}
+
 /// Inner gRPC service implementing the (pruned) `CompactTxStreamer` trait.
 struct FakeService {
     chain_name: String,
     sapling_activation_height: u64,
     block_height: u64,
     /// Lazily-connected upstream client. `None` means no proxy mode; every
-    /// RPC other than `GetLightdInfo` returns `unimplemented` until the
-    /// follow-up PR adds synthetic responders.
+    /// RPC other than `GetLightdInfo` returns `unimplemented`.
     upstream: Option<UpstreamClient<Channel>>,
-    // Fault-injection state (placeholder — see TODO in builder).
+    fault: Arc<FaultState>,
+    /// Reserved for the bad-network follow-up; currently unused.
     _latency: Option<Duration>,
-    _close_stream_after_blocks: Option<u64>,
-    _inject_hostile_block_at_height: Option<u64>,
 }
 
 impl FakeService {
@@ -246,9 +284,12 @@ impl FakeService {
             sapling_activation_height: builder.sapling_activation_height,
             block_height: builder.block_height,
             upstream,
+            fault: Arc::new(FaultState {
+                close_stream_after_blocks: builder.close_stream_after_blocks,
+                inject_hostile_block_at_height: builder.inject_hostile_block_at_height,
+                triggered: AtomicBool::new(false),
+            }),
             _latency: builder.latency,
-            _close_stream_after_blocks: builder.close_stream_after_blocks,
-            _inject_hostile_block_at_height: builder.inject_hostile_block_at_height,
         }
     }
 
@@ -334,9 +375,6 @@ impl CompactTxStreamer for FakeService {
         &self,
         request: Request<BlockRange>,
     ) -> Result<Response<Self::GetBlockRangeStream>, Status> {
-        // TODO(R-N8/R-N9): wrap this stream with the fault-injection logic
-        //   (close_stream_after_blocks for R-N8, hostile-block substitution
-        //   for R-N9).
         let mut upstream = self.upstream()?;
         let req = reencode::<_, zcash_client_backend::proto::service::BlockRange>(
             request.get_ref(),
@@ -344,13 +382,62 @@ impl CompactTxStreamer for FakeService {
         let mut upstream_stream = upstream.get_block_range(req).await?.into_inner();
 
         let (tx, rx) = mpsc::channel::<Result<CompactBlock, Status>>(16);
+        let fault = self.fault.clone();
         tokio::spawn(async move {
+            // If a fault is armed, capture which one + the trigger threshold
+            // up front. The fault fires at most once per fixture lifetime —
+            // after firing we set `triggered` so subsequent stream requests
+            // (which happen during retry) see no fault.
+            let fault_active = fault.armed();
+            let close_after = fault.close_stream_after_blocks;
+            let hostile_height = fault.inject_hostile_block_at_height;
+
+            let mut emitted: u64 = 0;
             while let Some(item) = upstream_stream.message().await.transpose() {
                 let mapped = match item {
-                    Ok(block) => Ok(reencode::<_, CompactBlock>(&block)),
+                    Ok(block) => {
+                        // R-N9: mutate the compact block at the target height.
+                        let mut local = reencode::<_, CompactBlock>(&block);
+                        if fault_active && hostile_height == Some(local.height) {
+                            // Flip every bit of prev_hash. The block still
+                            // decodes; the chain-link check in
+                            // `zcash_client_backend::sync` rejects it.
+                            if local.prev_hash.is_empty() {
+                                local.prev_hash = vec![0xff; 32];
+                            } else {
+                                for b in local.prev_hash.iter_mut() {
+                                    *b ^= 0xff;
+                                }
+                            }
+                            fault.triggered.store(true, Ordering::SeqCst);
+                        }
+                        Ok(local)
+                    }
                     Err(status) => Err(Status::new(status.code(), status.message())),
                 };
+
+                let is_block = mapped.is_ok();
                 if tx.send(mapped).await.is_err() {
+                    // Client disconnected — nothing more to do.
+                    break;
+                }
+                if is_block {
+                    emitted += 1;
+                }
+
+                // R-N8: after N blocks have flowed through, abort the stream
+                // with a Status whose message matches the production retry
+                // matcher in `run_wallet_sync_with_retry`.
+                if fault_active
+                    && close_after == Some(emitted)
+                    && !fault.triggered.load(Ordering::SeqCst)
+                {
+                    fault.triggered.store(true, Ordering::SeqCst);
+                    let _ = tx
+                        .send(Err(Status::unavailable(
+                            "h2 protocol error: GoAway (simulated by FakeLightwalletd)",
+                        )))
+                        .await;
                     break;
                 }
             }
