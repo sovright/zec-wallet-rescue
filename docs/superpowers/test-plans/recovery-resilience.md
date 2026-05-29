@@ -68,8 +68,8 @@ boot and CI runners don't keep it warm. C3/C4 are humans driving the app.
 | R-N5 | `ftp://` and `file://` schemes rejected | C1 | ➕ added in this branch |
 | R-N6 | IPv6 loopback `[::1]` over http allowed (local testing) | C1 | ➕ added in this branch |
 | R-N7 | URL with embedded credentials (`https://u:p@host:port`) — documented behaviour | C1 | ➕ added in this branch |
-| R-N8 | GoAway frame mid-scan triggers reconnect, no duplicate emissions | C2 | ⏸️ deferred — needs h2-aware proxy or patched lightwalletd |
-| R-N9 | Hostile compact block rejected, scan errors cleanly | C2 | ⏸️ deferred — needs FakeLightwalletd gRPC fixture |
+| R-N8 | GoAway frame mid-scan triggers reconnect, no duplicate emissions | C2 | ✅ implemented (FakeLightwalletd injects `Status::unavailable("h2 protocol error: GoAway ...")` after N blocks; asserts baseline-equivalent `synced_to_height` and discovery dedup) |
+| R-N9 | Hostile compact block rejected, scan errors cleanly | C2 | ✅ implemented (FakeLightwalletd XORs `prev_hash` at a configured height; asserts scan ends in Error not panic, then a fresh-workspace rescan reaches baseline) |
 | R-N10 | All configured endpoints unreachable surfaces a clean error | C2 | 🔲 stub |
 | R-N11 | TLS handshake failure surfaced without falling back to plaintext | C2 | 🔲 stub |
 | R-N12 | Multi-endpoint fallback respects order with one slow endpoint | C2 | 🔲 stub |
