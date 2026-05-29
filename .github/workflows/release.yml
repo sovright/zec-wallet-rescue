@@ -5,11 +5,12 @@ on:
     tags:
       - "v*"
 
-# Least-privilege default: every job opts in explicitly. Only the publish
-# job needs `contents: write` (to create the GitHub Release); the provenance
-# job additionally needs `id-token: write` to obtain an OIDC token for
-# Sigstore signing of the in-toto attestation. Mitigates third-party Action
-# token-exfiltration risk (THREAT_MODEL.md §6.6 T-SC3).
+# Least-privilege default: every job opts in explicitly. Each build job needs
+# `id-token: write` + `attestations: write` to produce a Sigstore-signed SLSA
+# build-provenance attestation for the artifacts it creates (via the
+# first-party actions/attest-build-provenance, SHA-pinned per T-SC10). Only the
+# publish job needs `contents: write` (to create the GitHub Release). Mitigates
+# third-party Action token-exfiltration risk (THREAT_MODEL.md §6.6 T-SC3).
 permissions: {}
 
 jobs:
@@ -17,11 +18,8 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: read
-    outputs:
-      # Base64-encoded list of "<sha256>  <filename>" lines for this job's
-      # artifacts. Consumed by the `combine-hashes` job and ultimately by
-      # the SLSA generic generator (T-SC6).
-      hashes: ${{ steps.hash.outputs.hashes }}
+      id-token: write      # Sigstore OIDC for attest-build-provenance
+      attestations: write  # write the provenance attestation to the repo store
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -65,14 +63,12 @@ jobs:
         working-directory: gui
         run: tauri build --bundles deb --bundles appimage
 
-      - name: Compute artifact hashes
-        id: hash
-        shell: bash
-        working-directory: target/release/bundle
-        run: |
-          set -euo pipefail
-          sha256sum deb/*.deb appimage/*.AppImage > hashes-linux.txt
-          echo "hashes=$(base64 -w0 < hashes-linux.txt)" >> "$GITHUB_OUTPUT"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4
+        with:
+          subject-path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
 
       - name: Upload artifacts (Linux)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -91,11 +87,8 @@ jobs:
     environment: release-sign
     permissions:
       contents: read
-    # Per-matrix-instance outputs: GitHub Actions surfaces only the last
-    # successful instance's `outputs:` block, so we cannot return both
-    # targets' hashes through job-level outputs. Each instance therefore
-    # uploads a `hashes-macos-<target>` workflow artifact instead; the
-    # `combine-hashes` job downloads them and aggregates.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -135,20 +128,10 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: tauri build --target ${{ matrix.target }} --bundles dmg
 
-      - name: Compute artifact hashes
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd target/${{ matrix.target }}/release/bundle/dmg
-          # macOS shasum vs sha256sum: use shasum -a 256 for portability.
-          shasum -a 256 *.dmg > hashes-macos-${{ matrix.target }}.txt
-          cp hashes-macos-${{ matrix.target }}.txt "$GITHUB_WORKSPACE/"
-
-      - name: Upload hashes (macOS ${{ matrix.target }})
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4
         with:
-          name: hashes-macos-${{ matrix.target }}
-          path: hashes-macos-${{ matrix.target }}.txt
+          subject-path: target/${{ matrix.target }}/release/bundle/dmg/*.dmg
 
       - name: Upload artifacts (macOS ARM)
         if: matrix.target == 'aarch64-apple-darwin'
@@ -169,13 +152,13 @@ jobs:
     environment: release-sign
     permissions:
       contents: read
-      # Required for the OIDC token azure/login exchanges with Entra ID
-      # (federated credential subject:
-      # repo:sovright/zec-wallet-rescue:environment:release-sign). No signing
-      # secret is stored in GitHub — the key lives in Azure Trusted Signing.
+      # id-token: write serves two consumers: the OIDC token azure/login
+      # exchanges with Entra ID (federated credential subject
+      # repo:sovright/zec-wallet-rescue:environment:release-sign — no signing
+      # secret is stored in GitHub, the key lives in Azure Trusted Signing),
+      # and the Sigstore OIDC for attest-build-provenance below.
       id-token: write
-    outputs:
-      hashes: ${{ steps.hash.outputs.hashes }}
+      attestations: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -205,11 +188,11 @@ jobs:
 
       # Azure Trusted Signing (cloud-held key) via OIDC — no secret in CI.
       # Signs the inner Argos.exe *and* the MSI/NSIS installers during the
-      # build (see signCommand injected below), so the hash step that follows
-      # — and therefore the SLSA provenance — covers the signed bytes with no
-      # reordering. All non-secret parameters come from `release-sign`
-      # environment variables; flip AZURE_SIGNING_PROFILE from the test
-      # profile to the public-trust profile to cut a trusted release.
+      # build (see signCommand injected below). The attest-build-provenance
+      # step runs after this, so the SLSA attestation covers the signed bytes.
+      # All non-secret parameters come from `release-sign` environment
+      # variables; flip AZURE_SIGNING_PROFILE from the test profile to the
+      # public-trust profile to cut a trusted release.
       - name: Azure login (OIDC)
         uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2
         with:
@@ -283,14 +266,12 @@ jobs:
         working-directory: gui
         run: tauri build --bundles msi --bundles nsis --config "${{ steps.ts.outputs.sign_config }}"
 
-      - name: Compute artifact hashes
-        id: hash
-        shell: bash
-        working-directory: target/release/bundle
-        run: |
-          set -euo pipefail
-          sha256sum msi/*.msi nsis/*.exe > hashes-windows.txt
-          echo "hashes=$(base64 -w0 < hashes-windows.txt)" >> "$GITHUB_OUTPUT"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4
+        with:
+          subject-path: |
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
 
       - name: Upload artifacts (Windows)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -300,65 +281,8 @@ jobs:
             target/release/bundle/msi/*.msi
             target/release/bundle/nsis/*.exe
 
-  combine-hashes:
-    # Aggregates per-platform artifact hashes into a single base64-subjects
-    # blob for the SLSA generic generator. Required because macOS's matrix
-    # produces two separate jobs whose outputs cannot both be observed at the
-    # consumer side; the matrix uploads `hashes-macos-<target>` artifacts
-    # which we download here.
-    needs: [build-linux, build-macos, build-windows]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      hashes: ${{ steps.combine.outputs.hashes }}
-    steps:
-      - name: Download macOS hash artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: hashes-macos-*
-          path: macos-hashes
-          merge-multiple: true
-
-      - id: combine
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Concatenate per-platform "<sha>  <filename>" lines, then base64-
-          # encode the whole list. The SLSA generic generator decodes once
-          # and produces one in-toto subject per line.
-          {
-            echo "${{ needs.build-linux.outputs.hashes }}" | base64 -d
-            cat macos-hashes/hashes-macos-*.txt
-            echo "${{ needs.build-windows.outputs.hashes }}" | base64 -d
-          } > combined-hashes.txt
-          echo "hashes=$(base64 -w0 < combined-hashes.txt)" >> "$GITHUB_OUTPUT"
-
-  provenance:
-    # SLSA Level 3 provenance attestation over every release artifact.
-    # Closes T-SC6 (THREAT_MODEL.md §6.6): a downloader can verify that the
-    # exact bytes they hold were produced by this workflow at this tag from
-    # this commit, by running:
-    #     slsa-verifier verify-artifact <file> \
-    #         --provenance-path argos-<tag>.intoto.jsonl \
-    #         --source-uri github.com/sovright/zec-wallet-rescue \
-    #         --source-tag <tag>
-    # The reusable workflow is SHA-pinned per T-SC10. `upload-assets: false`
-    # so the provenance is uploaded as a workflow artifact; the `release` job
-    # below adds it to the release alongside the binaries.
-    needs: [combine-hashes]
-    permissions:
-      actions: read
-      contents: write
-      id-token: write
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a # v2.1.0
-    with:
-      base64-subjects: ${{ needs.combine-hashes.outputs.hashes }}
-      upload-assets: false
-      provenance-name: argos-${{ github.ref_name }}.intoto.jsonl
-
   release:
-    needs: [build-linux, build-macos, build-windows, provenance]
+    needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
     environment: release-publish
     permissions:
@@ -371,24 +295,17 @@ jobs:
       - name: Download binary artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          # Match only the binary-bundle artifacts; the per-platform
-          # `hashes-*` artifacts and the provenance artifact are downloaded
-          # separately below to keep the SHA256SUMS step from re-hashing
-          # them.
+          # Provenance is no longer a release asset — attest-build-provenance
+          # stores attestations in the repo's attestation store (verify with
+          # `gh attestation verify <file> --repo sovright/zec-wallet-rescue`).
           pattern: zeck-*
           path: artifacts
           merge-multiple: false
 
-      - name: Download provenance attestation
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: ${{ needs.provenance.outputs.provenance-name }}
-          path: artifacts/provenance
-
       - name: Generate SHA256SUMS manifest
         working-directory: artifacts
         run: |
-          find . -type f ! -name SHA256SUMS ! -name '*.intoto.jsonl' -print0 \
+          find . -type f ! -name SHA256SUMS -print0 \
             | xargs -0 sha256sum \
             | sort \
             | tee SHA256SUMS
