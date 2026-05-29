@@ -251,6 +251,31 @@ impl RecoveryService {
         handle: &ScanHandle,
         request: SweepRequest,
     ) -> ZeckResult<Vec<TxBroadcastResult>> {
+        self.execute_sweep_inner(handle, request, None).await
+    }
+
+    /// Test-only sweep entrypoint that inserts a fixed pause between
+    /// per-account broadcasts. Exists so R-S29 (`argos-sweep-helper`) can
+    /// SIGKILL the subprocess deterministically in the gap between two
+    /// broadcasts; production builds compile this method out so the
+    /// pause-duration field is unreachable from any released binary.
+    #[cfg(feature = "argos-network")]
+    pub async fn execute_sweep_with_test_pause(
+        &self,
+        handle: &ScanHandle,
+        request: SweepRequest,
+        pause_between_broadcasts: std::time::Duration,
+    ) -> ZeckResult<Vec<TxBroadcastResult>> {
+        self.execute_sweep_inner(handle, request, Some(pause_between_broadcasts))
+            .await
+    }
+
+    async fn execute_sweep_inner(
+        &self,
+        handle: &ScanHandle,
+        request: SweepRequest,
+        pause_between_broadcasts: Option<std::time::Duration>,
+    ) -> ZeckResult<Vec<TxBroadcastResult>> {
         let session = self.session(handle).await?;
         let progress = session.state.lock().await.progress.clone();
         if progress.phase != ScanPhase::Complete {
@@ -266,7 +291,7 @@ impl RecoveryService {
             session.runtime.network,
             crate::donation::DONATION_ADDRESS,
         )?;
-        execute_sweep_for_session(session, request).await
+        execute_sweep_for_session(session, request, pause_between_broadcasts).await
     }
 
     /// Recursively delete the on-disk recovery workspace for a completed scan
@@ -554,6 +579,11 @@ fn build_sweep_proposal(
 async fn execute_sweep_for_session(
     session: SharedScanSession,
     request: SweepRequest,
+    // Test-only knob threaded through from `execute_sweep_with_test_pause`.
+    // Production callers pass None and the per-account loop runs at full
+    // speed. Threaded as `Option<Duration>` rather than gated behind cfg so
+    // the function signature stays stable across feature configurations.
+    pause_between_broadcasts: Option<std::time::Duration>,
 ) -> ZeckResult<Vec<TxBroadcastResult>> {
     let destination = validate_destination_address(&request.destination)?;
     let memo_text = normalized_memo_text(request.memo.as_deref())?;
@@ -720,6 +750,13 @@ async fn execute_sweep_for_session(
         // Step already enforced the cap against (prior + step fee) before broadcast;
         // recompute here purely to advance the running total for the next account.
         total_fee_zatoshis = checked_fee_total(total_fee_zatoshis, fee)?;
+
+        // R-S29 hook: pause between per-account broadcasts so the test parent
+        // can SIGKILL the helper subprocess deterministically in the gap. The
+        // pause is unconditional; in production this is always None.
+        if let Some(d) = pause_between_broadcasts {
+            tokio::time::sleep(d).await;
+        }
     }
 
     Ok(results)

@@ -65,3 +65,26 @@ tonic-prost = "0.14"
 # lock graph as transitive build-deps of the `zcash_*` crates, so this does
 # not add new downloads.
 tonic-prost-build = "0.14"
+
+# ─── Test-only helper binaries (R-S27, R-S29) ─────────────────────────────────
+#
+# These two binaries exist solely to be spawned as subprocesses by the C2
+# integration tests so the test parent can deliver SIGKILL at a chosen point
+# without the failure mode being in-process task cancellation (which would
+# not exercise the genuine crash-mid-batch behaviour).
+#
+# Built only when `--features argos-network` is active. Tests reach them
+# via `env!("CARGO_BIN_EXE_argos-scan-helper")` / `argos-sweep-helper`.
+# Locations under `tests/` keep them out of the normal `src/bin/` namespace
+# so they don't pollute `cargo install` output for argos-core (which is
+# itself a library; no end-user installs argos-core directly).
+
+[[bin]]
+name = "argos-scan-helper"
+path = "tests/bin/argos_scan_helper.rs"
+required-features = ["argos-network"]
+
+[[bin]]
+name = "argos-sweep-helper"
+path = "tests/bin/argos_sweep_helper.rs"
+required-features = ["argos-network"]
