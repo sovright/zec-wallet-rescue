@@ -1014,3 +1014,149 @@ async fn fake_lightwalletd_smoke() {
     validate_lightwalletd_network(ZeckNetwork::Testnet, &info)
         .expect("regtest chain must validate as Testnet under argos-network");
 }
+
+// ─── Helper-binary smoke tests (scaffolding for R-S27 / R-S29) ──────────────
+//
+// These tests prove that the `argos-scan-helper` and `argos-sweep-helper`
+// binaries can be spawned, parse their CLI, talk to the real harness, and
+// emit the documented stdout schema end-to-end. They run against the bare
+// harness (no fault injection); the actual R-S27 and R-S29 tests in the
+// next PR will exercise SIGKILL behaviour on top of this scaffolding.
+//
+// Both gated `#[ignore]` like every other C2 test — only run with
+// `--features argos-network -- --ignored` after `tests/regtest/setup.sh`
+// has funded the test seed.
+
+#[cfg(feature = "argos-network")]
+#[ignore = "scan-helper smoke test; requires the booted regtest harness"]
+#[tokio::test]
+async fn argos_scan_helper_smoke() {
+    use common::subprocess_driver::{HelperEvent, HelperSpawn};
+
+    let harness = RegtestHarness::require();
+    let temp = tempfile::tempdir().expect("temp data dir for scan-helper smoke");
+
+    let mut handle = HelperSpawn::new(
+        env!("CARGO_BIN_EXE_argos-scan-helper"),
+        harness.test_seed().to_owned(),
+    )
+    .arg_value("--data-dir", temp.path().display().to_string())
+    .arg_value("--lightwalletd-url", harness.lightwalletd_url().to_owned())
+    .arg_value("--birthday", "1")
+    .arg_value("--num-accounts", "2")
+    .arg_value("--gap-limit", "5")
+    .arg_value("--label", "smoke")
+    .spawn()
+    .await
+    .expect("spawn argos-scan-helper");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let total = handle
+        .wait_for(deadline, |events| {
+            events.iter().find_map(|e| match e {
+                HelperEvent::Complete { total_zatoshis } => Some(*total_zatoshis),
+                _ => None,
+            })
+        })
+        .await
+        .expect("scan-helper must reach Complete within 120s");
+
+    assert!(
+        total > 0,
+        "[regtest] scan-helper smoke: setup.sh should have funded the test seed; got 0 zatoshis"
+    );
+
+    // Confirm the helper observed a transition through ScanningShielded —
+    // proves the stdout schema covers phase transitions, not just final
+    // events.
+    let saw_shielded = handle.events().iter().any(|e| matches!(
+        e,
+        HelperEvent::Phase { phase } if phase == "scanning_shielded"
+    ));
+    assert!(
+        saw_shielded,
+        "[regtest] scan-helper smoke: expected a `scanning_shielded` phase event"
+    );
+
+    let (status, _events) = handle
+        .wait_for_exit()
+        .await
+        .expect("scan-helper must exit cleanly after Complete");
+    assert!(
+        status.success(),
+        "[regtest] scan-helper exit status was not success: {status:?}"
+    );
+}
+
+#[cfg(feature = "argos-network")]
+#[ignore = "sweep-helper smoke test; requires the booted regtest harness"]
+#[tokio::test]
+async fn argos_sweep_helper_smoke() {
+    use common::subprocess_driver::{HelperEvent, HelperSpawn};
+
+    let harness = RegtestHarness::require();
+    let temp = tempfile::tempdir().expect("temp data dir for sweep-helper smoke");
+
+    // Derive account-1's UA from the test seed — same trick the workspace
+    // tests use to get a syntactically-valid UA without needing a second
+    // funded seed in the harness.
+    let seed = SecretString::new(harness.test_seed().to_owned());
+    let accounts = derive_accounts(&seed, ZeckNetwork::Testnet, 2)
+        .expect("derive_accounts for sweep destination");
+    let destination_ua = accounts[1].unified_address.clone();
+
+    let mut handle = HelperSpawn::new(
+        env!("CARGO_BIN_EXE_argos-sweep-helper"),
+        harness.test_seed().to_owned(),
+    )
+    .arg_value("--data-dir", temp.path().display().to_string())
+    .arg_value("--lightwalletd-url", harness.lightwalletd_url().to_owned())
+    .arg_value("--destination-ua", destination_ua)
+    .arg_value("--birthday", "1")
+    .arg_value("--num-accounts", "2")
+    .arg_value("--gap-limit", "5")
+    .arg_value("--label", "smoke-sweep")
+    // No pause for the smoke test; just prove the end-to-end flow.
+    .arg_value("--pause-millis-between-broadcasts", "0")
+    .spawn()
+    .await
+    .expect("spawn argos-sweep-helper");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(240);
+    let broadcast_count = handle
+        .wait_for(deadline, |events| {
+            events.iter().find_map(|e| match e {
+                HelperEvent::SweepComplete { broadcast_count } => Some(*broadcast_count),
+                _ => None,
+            })
+        })
+        .await
+        .expect("sweep-helper must reach SweepComplete within 240s");
+
+    // setup.sh as-of this PR funds only account 0, so we expect exactly one
+    // broadcast. The R-S29 PR will extend setup.sh to fund 2 accounts.
+    assert!(
+        broadcast_count >= 1,
+        "[regtest] sweep-helper smoke: expected at least one broadcast"
+    );
+
+    // Confirm we observed the SweepStarting marker — R-S29 will use that as
+    // its kill signal.
+    let saw_starting = handle
+        .events()
+        .iter()
+        .any(|e| matches!(e, HelperEvent::SweepStarting));
+    assert!(
+        saw_starting,
+        "[regtest] sweep-helper smoke: expected SweepStarting event"
+    );
+
+    let (status, _events) = handle
+        .wait_for_exit()
+        .await
+        .expect("sweep-helper must exit cleanly after SweepComplete");
+    assert!(
+        status.success(),
+        "[regtest] sweep-helper exit status was not success: {status:?}"
+    );
+}

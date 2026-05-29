@@ -12,3 +12,10 @@ pub mod regtest_harness;
 // also gated on that feature here.
 #[cfg(feature = "argos-network")]
 pub mod fake_lightwalletd;
+
+// Subprocess driver for the `argos-scan-helper` and `argos-sweep-helper`
+// binaries that R-S27 / R-S29 spawn so the test parent can deliver SIGKILL
+// at a chosen point. Both helpers are themselves `required-features =
+// ["argos-network"]`, so the driver matches that gate.
+#[cfg(feature = "argos-network")]
+pub mod subprocess_driver;
