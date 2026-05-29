@@ -76,7 +76,7 @@ boot and CI runners don't keep it warm. C3/C4 are humans driving the app.
 | R-N13 | Sustained high latency (e.g. 300 ms RTT) — scan completes; ETA / stall-detection sane | C2 | ✅ implemented (FakeLightwalletd `latency(Duration)`; baseline-equivalence assertion) |
 | R-N14 | Bandwidth throttle (e.g. 256 kbps) — `ProgressPoller` does NOT flag a false stall | C2 | ✅ implemented (FakeLightwalletd `bandwidth_bytes_per_sec`; asserts no `"stalled"` substring during scan) |
 | R-N15 | Hung stream / dead peer — TCP up, no h2 frames — surfaced as Err within bounded time | C2 | ✅ implemented (stall watchdog at `scan.rs::stall_watchdog`, 60 s no-advance trips with `"h2 protocol error"` so the existing retry matcher catches it; FakeLightwalletd `hang_after_blocks(N)` drives the test) |
-| R-N16 | DNS resolution drift between retries (mainnet endpoint resolves to a different IP mid-scan) | C2 | 🔲 planned |
+| R-N16 | DNS resolution drift between retries (mainnet endpoint resolves to a different IP mid-scan) | C2 | ✅ implemented (`TcpFailoverProxy` fronts two `FakeLightwalletd` backends; first connection hits fake_a (closes after 3 blocks), retry hits fake_b; asserts baseline `synced_to_height`) |
 | R-N17 | Captive-portal-shaped MitM — TLS-stripping HTTP 200 — surfaced as Err, not silent success | C2 | ✅ implemented (`serve_captive_portal_shim` writes raw HTTP 200) |
 | R-N18 | Asymmetric loss — outbound bytes flow, return path silently dropped | C2 / C3 | 🔲 planned — likely manual on Linux (`tc netem` one-way) |
 | R-N19 | Long sleep + resume on different network (wifi → cellular) | C3 manual | 🔲 documented checklist below |

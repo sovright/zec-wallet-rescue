@@ -730,6 +730,138 @@ async fn hung_stream_surfaces_err_within_bounded_time() {
     }
 }
 
+// ─── R-N16: DNS resolution drift between retries ────────────────────────────
+//
+// Verifies that a connection retry against the *same* lightwalletd URL can
+// successfully land on a *different* backend without confusing Argos. The
+// production scenario this models: zec.rocks (or any DNS-round-robin or
+// load-balancer-fronted endpoint) resolves to IP A for the first
+// connection, then to IP B for the retry after a transient failure on A.
+//
+// The fixture stack:
+//
+//   Argos
+//     │  lightwalletd_url = "http://127.0.0.1:<proxy_port>"  (stays constant)
+//     ▼
+//   TcpFailoverProxy
+//     │  connection #1 → fakeA   (fakeA configured to close after N blocks)
+//     │  connection #2+ → fakeB  (fakeB clean, proxies to upstream harness)
+//     ▼
+//   FakeLightwalletd A, FakeLightwalletd B (both proxy to the same harness)
+//     ▼
+//   tests/regtest/ (the real zcashd-regtest + lightwalletd stack)
+//
+// On the first connection fakeA sends the GoAway after N blocks, the
+// stall-watchdog and existing retry path kick in, the second connection
+// from the proxy hits fakeB, and the scan completes from fakeB. The URL
+// Argos used never changed — only the TCP peer behind it.
+//
+// Assertions:
+//   1. Scan reaches phase = Complete (the retry succeeded against the
+//      new backend).
+//   2. Final synced_to_height equals the baseline uninterrupted scan.
+//
+// What this would NOT catch: an Argos-side IP cache. If Argos cached the
+// first resolved IP and bypassed DNS on retry, the retry would also hit
+// fakeA — but our retries route through the proxy at the URL level, not
+// the IP level, so this test is actually slightly weaker than a pure
+// hosts-file flip. The honest property under test is: "the retry loop
+// re-establishes a fresh TCP connection each time, so an upstream change
+// behind the URL is invisible to Argos." That property covers the
+// production failure mode regardless of whether the underlying IP changes.
+#[cfg(feature = "argos-network")]
+#[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
+#[tokio::test]
+async fn dns_drift_retry_succeeds_against_replacement_backend() {
+    let harness = RegtestHarness::require();
+
+    let baseline_dir = tempfile::tempdir().expect("baseline tempdir");
+    let baseline = complete_scan_against_test_seed(&harness, &baseline_dir, "rn16-baseline").await;
+    let baseline_synced = baseline
+        .service
+        .get_scan_progress(&baseline.handle)
+        .await
+        .expect("baseline progress")
+        .synced_to_height;
+    drop(baseline);
+    drop(baseline_dir);
+
+    let fake_a = common::fake_lightwalletd::FakeLightwalletd::builder()
+        .upstream(harness.lightwalletd_url().to_owned())
+        .close_stream_after_blocks(3)
+        .build()
+        .await
+        .expect("bind fake_a with close-after-3-blocks");
+    let fake_b = common::fake_lightwalletd::FakeLightwalletd::builder()
+        .upstream(harness.lightwalletd_url().to_owned())
+        .build()
+        .await
+        .expect("bind fake_b clean");
+
+    // Strip `http://` from each fake's URL — the proxy wants host:port only.
+    fn strip_scheme(url: &str) -> String {
+        url.strip_prefix("http://").unwrap_or(url).to_owned()
+    }
+
+    let proxy = common::tcp_failover_proxy::serve_tcp_failover_proxy(vec![
+        strip_scheme(&fake_a.url),
+        strip_scheme(&fake_b.url),
+    ])
+    .await
+    .expect("bind tcp_failover_proxy fronting fake_a + fake_b");
+
+    let dir = tempfile::tempdir().expect("temp data dir");
+    let seed = harness.test_seed().to_owned();
+    let scan_config = ScanConfig {
+        birthday: 1,
+        num_accounts: Some(2),
+        gap_limit: 5,
+        lightwalletd_url: proxy.url.clone(),
+        data_dir: dir.path().to_path_buf(),
+        network: ZeckNetwork::Testnet,
+        label: "rn16-drift".to_owned(),
+    };
+    let service = RecoveryService::new();
+    let handle = service
+        .start_scan(scan_config, SecretString::new(seed))
+        .await
+        .expect("start_scan through failover proxy");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    let progress = loop {
+        let p = service.get_scan_progress(&handle).await.expect("progress");
+        match p.phase {
+            ScanPhase::Complete => break p,
+            ScanPhase::Error => panic!(
+                "[regtest] R-N16: scan errored against the replacement backend: {:?}",
+                p.error
+            ),
+            ScanPhase::Cancelled => panic!("[regtest] R-N16: scan cancelled"),
+            _ => {
+                if std::time::Instant::now() > deadline {
+                    panic!(
+                        "[regtest] R-N16: scan did not complete within 180s after the simulated \
+                         DNS drift; last phase = {:?}, message = {:?}",
+                        p.phase, p.message
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    };
+
+    assert_eq!(
+        progress.synced_to_height, baseline_synced,
+        "[regtest] R-N16: synced_to_height after DNS drift must match baseline \
+         (got {:?}, baseline {:?})",
+        progress.synced_to_height, baseline_synced
+    );
+    eprintln!(
+        "[regtest] R-N16 ok: scan reached {:?} via replacement backend after fake_a's GoAway",
+        progress.synced_to_height
+    );
+}
+
 // ─── R-N17: Captive-portal MitM ─────────────────────────────────────────────
 //
 // Verifies that a peer which accepts the TCP connection and writes a raw
