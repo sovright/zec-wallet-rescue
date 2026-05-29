@@ -19,3 +19,8 @@ pub mod fake_lightwalletd;
 // ["argos-network"]`, so the driver matches that gate.
 #[cfg(feature = "argos-network")]
 pub mod subprocess_driver;
+
+// TCP-level failover proxy used by R-N16 to simulate DNS resolution drift
+// (same lightwalletd_url, different backend on retry).
+#[cfg(feature = "argos-network")]
+pub mod tcp_failover_proxy;
