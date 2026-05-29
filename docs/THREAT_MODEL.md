@@ -20,7 +20,7 @@ The five things most worth knowing:
 | Windows installer authenticity | Medium | ⚠️ macOS signing landed; Windows code-signing is in progress (T-B3). SLSA provenance (T-SC6) gives a third-party-verifiable source-to-binary chain in the interim. |
 | Clipboard residue after paste | Medium | ⚠️ Argos itself never writes the seed to the clipboard. If the user pastes their seed in, that exposure is theirs to manage. The GUI offers a "Clear clipboard" button — see T-S4. |
 
-Where this puts us relative to neighbours: we ship the same `librustzcash` family that Zodl, Zashi, and zebrad rely on, the same Tauri version Zashi-Desktop ships (a separate but accepted residue), and a CI posture (`cargo-deny`, `cargo-vet`, zizmor, SLSA Level 3) that is at or above what those projects have today. The detailed comparison is in §6.6 and §7.
+Where this puts us relative to neighbours: we ship the same `librustzcash` family that Zodl (formerly Zashi) and zebrad rely on, a Tauri stack that is the same residue any Tauri-based Zcash desktop app carries, and a CI posture (`cargo-deny`, `cargo-vet`, zizmor, SLSA Level 3) that is at or above what those projects have today. The detailed comparison is in §6.6 and §7.
 
 ### If you're not deep in security
 
