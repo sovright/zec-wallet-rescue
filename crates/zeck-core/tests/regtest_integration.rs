@@ -468,6 +468,350 @@ async fn hostile_compact_block_rejected_cleanly() {
     );
 }
 
+// ─── R-N13: Sustained high latency ──────────────────────────────────────────
+//
+// Verifies that a high-RTT link (300 ms per emitted compact block, which is
+// a generous model of a transatlantic cellular link) does not break the scan.
+// `FakeLightwalletd::builder().latency(...)` sleeps that long before each
+// outbound block.
+//
+// Asserts:
+//   1. Scan reaches phase = Complete.
+//   2. Final synced_to_height equals the baseline uninterrupted scan against
+//      the bare harness.
+//   3. The scan completes within a generous-but-bounded budget (180s — the
+//      regtest harness has ~200 blocks; 200 × 300ms = 60s of pure latency, so
+//      180s is ~3× the lower bound).
+#[cfg(feature = "argos-network")]
+#[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
+#[tokio::test]
+async fn sustained_high_latency_scan_completes() {
+    let harness = RegtestHarness::require();
+
+    // Baseline.
+    let baseline_dir = tempfile::tempdir().expect("temp data dir for baseline");
+    let baseline = complete_scan_against_test_seed(&harness, &baseline_dir, "rn13-baseline").await;
+    let baseline_synced = baseline
+        .service
+        .get_scan_progress(&baseline.handle)
+        .await
+        .expect("baseline progress")
+        .synced_to_height;
+    drop(baseline);
+    drop(baseline_dir);
+
+    // Faulted scan against a 300ms-per-block fixture.
+    let fake = common::fake_lightwalletd::FakeLightwalletd::builder()
+        .upstream(harness.lightwalletd_url().to_owned())
+        .latency(Duration::from_millis(300))
+        .build()
+        .await
+        .expect("bind FakeLightwalletd with latency");
+
+    let dir = tempfile::tempdir().expect("temp data dir for faulted scan");
+    let seed = harness.test_seed().to_owned();
+    let scan_config = ScanConfig {
+        birthday: 1,
+        num_accounts: Some(2),
+        gap_limit: 5,
+        lightwalletd_url: fake.url.clone(),
+        data_dir: dir.path().to_path_buf(),
+        network: ZeckNetwork::Testnet,
+        label: "rn13-latency".to_owned(),
+    };
+    let service = RecoveryService::new();
+    let handle = service
+        .start_scan(scan_config, SecretString::new(seed))
+        .await
+        .expect("start_scan against latency fixture");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    let progress = loop {
+        let p = service.get_scan_progress(&handle).await.expect("progress");
+        match p.phase {
+            ScanPhase::Complete => break p,
+            ScanPhase::Error => panic!("[regtest] R-N13: scan errored under latency: {:?}", p.error),
+            ScanPhase::Cancelled => panic!("[regtest] R-N13: scan cancelled"),
+            _ => {
+                if std::time::Instant::now() > deadline {
+                    panic!(
+                        "[regtest] R-N13: scan did not complete within 180s under 300ms latency"
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    };
+
+    assert_eq!(
+        progress.synced_to_height, baseline_synced,
+        "[regtest] R-N13: synced_to_height under latency must match baseline (got {:?}, baseline {:?})",
+        progress.synced_to_height, baseline_synced
+    );
+    eprintln!("[regtest] R-N13 ok: scan completed under 300ms per-block latency");
+}
+
+// ─── R-N14: Bandwidth throttle without false stall ──────────────────────────
+//
+// Verifies a bandwidth-constrained link (32 KB/s ≈ 256 kbps — a slow 3G
+// connection) does not cause `ProgressPoller`'s no-advance heuristic to
+// flag a false stall when bytes are still flowing.
+//
+// `ProgressPoller` lives in `scan.rs` and updates `blocks_scanned` once a
+// second by polling the wallet DB. It does not currently emit an explicit
+// "stalled" message — but the GUI side maps prolonged absence of advance
+// into a "Stalled" status pill. If we ever introduce a false-stall trigger
+// in production code, this test breaks deterministically.
+//
+// Asserts:
+//   1. Scan reaches Complete within a generous timeout (240s under 32 KB/s).
+//   2. `synced_to_height` matches the baseline.
+//   3. `progress.message` does NOT contain the substring "stalled" at any
+//      observation tick during the scan.
+#[cfg(feature = "argos-network")]
+#[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
+#[tokio::test]
+async fn bandwidth_throttled_scan_does_not_flag_false_stall() {
+    let harness = RegtestHarness::require();
+
+    let baseline_dir = tempfile::tempdir().expect("temp data dir for baseline");
+    let baseline = complete_scan_against_test_seed(&harness, &baseline_dir, "rn14-baseline").await;
+    let baseline_synced = baseline
+        .service
+        .get_scan_progress(&baseline.handle)
+        .await
+        .expect("baseline progress")
+        .synced_to_height;
+    drop(baseline);
+    drop(baseline_dir);
+
+    let fake = common::fake_lightwalletd::FakeLightwalletd::builder()
+        .upstream(harness.lightwalletd_url().to_owned())
+        .bandwidth_bytes_per_sec(32_000)
+        .build()
+        .await
+        .expect("bind FakeLightwalletd with bandwidth throttle");
+
+    let dir = tempfile::tempdir().expect("temp data dir for faulted scan");
+    let seed = harness.test_seed().to_owned();
+    let scan_config = ScanConfig {
+        birthday: 1,
+        num_accounts: Some(2),
+        gap_limit: 5,
+        lightwalletd_url: fake.url.clone(),
+        data_dir: dir.path().to_path_buf(),
+        network: ZeckNetwork::Testnet,
+        label: "rn14-throttle".to_owned(),
+    };
+    let service = RecoveryService::new();
+    let handle = service
+        .start_scan(scan_config, SecretString::new(seed))
+        .await
+        .expect("start_scan against bandwidth fixture");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(240);
+    let mut saw_stalled_marker = false;
+    let progress = loop {
+        let p = service.get_scan_progress(&handle).await.expect("progress");
+        if let Some(msg) = p.message.as_ref() {
+            if msg.to_lowercase().contains("stalled") {
+                saw_stalled_marker = true;
+            }
+        }
+        match p.phase {
+            ScanPhase::Complete => break p,
+            ScanPhase::Error => panic!("[regtest] R-N14: scan errored under throttle: {:?}", p.error),
+            ScanPhase::Cancelled => panic!("[regtest] R-N14: scan cancelled"),
+            _ => {
+                if std::time::Instant::now() > deadline {
+                    panic!("[regtest] R-N14: scan did not complete within 240s under 32 KB/s throttle");
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    };
+
+    assert!(
+        !saw_stalled_marker,
+        "[regtest] R-N14: progress.message contained 'stalled' during a bandwidth-throttled \
+         scan that was still making progress — this is a false-stall regression"
+    );
+    assert_eq!(
+        progress.synced_to_height, baseline_synced,
+        "[regtest] R-N14: synced_to_height under throttle must match baseline (got {:?}, baseline {:?})",
+        progress.synced_to_height, baseline_synced
+    );
+    eprintln!("[regtest] R-N14 ok: scan completed under 32 KB/s throttle without false-stall");
+}
+
+// ─── R-N15: Hung stream / dead peer ─────────────────────────────────────────
+//
+// Verifies that a peer which accepts the TCP connection and completes the h2
+// handshake but then sends *zero* further block frames is surfaced as an
+// Err within a bounded time — rather than Argos's scan hanging indefinitely.
+//
+// **This test is expected to FAIL today.** `run_wallet_sync_with_retry` has
+// no per-stream watchdog; the gRPC client's `Stream::next()` await on a
+// hung server simply never resolves, and the scan blocks forever. The test
+// wraps the whole call in a 90s `tokio::time::timeout` so the failure is
+// surfaced as a clear assertion ("Argos did not Err within 90s — no
+// per-stream watchdog?") rather than hanging the test runner.
+//
+// If/when Argos gains a per-stream watchdog (recommended product change),
+// this test will start passing and the assertion can be tightened. Until
+// then, the test documents the gap in the most visible way the C2 surface
+// can — a deterministic failure with an actionable message.
+#[cfg(feature = "argos-network")]
+#[ignore = "requires the Argos network harness; expected to FAIL until Argos gains a stream watchdog"]
+#[tokio::test]
+async fn hung_stream_surfaces_err_within_bounded_time() {
+    let harness = RegtestHarness::require();
+
+    let fake = common::fake_lightwalletd::FakeLightwalletd::builder()
+        .upstream(harness.lightwalletd_url().to_owned())
+        // Emit 3 blocks normally, then park — gives the scan something to
+        // commit before the hang so we exercise the "between batch" hang
+        // window, not the "before first block" handshake window.
+        .hang_after_blocks(3)
+        .build()
+        .await
+        .expect("bind FakeLightwalletd in hang mode");
+
+    let dir = tempfile::tempdir().expect("temp data dir for hung-stream scan");
+    let seed = harness.test_seed().to_owned();
+    let scan_config = ScanConfig {
+        birthday: 1,
+        num_accounts: Some(2),
+        gap_limit: 5,
+        lightwalletd_url: fake.url.clone(),
+        data_dir: dir.path().to_path_buf(),
+        network: ZeckNetwork::Testnet,
+        label: "rn15-hang".to_owned(),
+    };
+    let service = RecoveryService::new();
+    let handle = service
+        .start_scan(scan_config, SecretString::new(seed))
+        .await
+        .expect("start_scan against hang fixture");
+
+    // 90s budget: the GoAway retry path sleeps 5s × 10 attempts = 50s. The
+    // hung stream isn't a retry event today, so 90s gives Argos comfortable
+    // headroom to surface an Err if it has any timeout at all.
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        let p = service.get_scan_progress(&handle).await.expect("progress");
+        match p.phase {
+            ScanPhase::Complete | ScanPhase::Error => {
+                eprintln!("[regtest] R-N15 ok: Argos surfaced phase = {:?}", p.phase);
+                return;
+            }
+            ScanPhase::Cancelled => panic!("[regtest] R-N15: scan unexpectedly cancelled"),
+            _ => {
+                if std::time::Instant::now() > deadline {
+                    panic!(
+                        "[regtest] R-N15: Argos did not surface Err within 90s against a \
+                         hung-stream peer. This is the documented gap — production \
+                         code lacks a per-stream watchdog. Last phase = {:?}, message = {:?}",
+                        p.phase, p.message
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
+}
+
+// ─── R-N17: Captive-portal MitM ─────────────────────────────────────────────
+//
+// Verifies that a peer which accepts the TCP connection and writes a raw
+// `HTTP/1.1 200 OK` (typical captive-portal hello-page byte pattern) is
+// surfaced as Err — not silently treated as a successful empty response.
+//
+// The shim does not speak gRPC at all; tonic's HTTP/2 layer should reject
+// the response as a protocol violation. The test asserts the scan ends in
+// Error within a bounded time.
+#[cfg(feature = "argos-network")]
+#[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
+#[tokio::test]
+async fn captive_portal_shim_surfaces_clean_error() {
+    let _harness = RegtestHarness::require();
+
+    let shim = common::fake_lightwalletd::serve_captive_portal_shim()
+        .await
+        .expect("bind captive-portal shim");
+
+    // The shim isn't real lightwalletd, so we can't use complete_scan_*; build
+    // ScanConfig directly. The scan attempt will fail at the GetLightdInfo
+    // probe step inside start_scan, surfaced as an Err.
+    let scan_config = ScanConfig {
+        birthday: 1,
+        num_accounts: Some(2),
+        gap_limit: 5,
+        lightwalletd_url: shim.url.clone(),
+        data_dir: tempfile::tempdir().expect("temp data dir").keep(),
+        network: ZeckNetwork::Testnet,
+        label: "rn17-captive".to_owned(),
+    };
+    let service = RecoveryService::new();
+    let seed = SecretString::new(common::regtest_harness::ARGOS_TEST_SEED.to_owned());
+
+    // start_scan returns Err immediately for the captive-portal case (the
+    // probe fails synchronously). Older Argos paths may instead transition
+    // to phase = Error post-start; tolerate both.
+    let start_outcome =
+        tokio::time::timeout(Duration::from_secs(30), service.start_scan(scan_config, seed)).await;
+
+    match start_outcome {
+        Err(_) => panic!(
+            "[regtest] R-N17: start_scan did not return within 30s — likely silently hanging \
+             on an HTTP 200 response instead of erroring"
+        ),
+        Ok(Err(err)) => {
+            // Synchronous error path — best case. Argos rejected the probe.
+            let msg = err.to_string();
+            assert!(
+                !msg.to_lowercase().contains("complete"),
+                "[regtest] R-N17: start_scan error must not claim success: {msg}"
+            );
+            eprintln!("[regtest] R-N17 ok: start_scan rejected captive portal: {msg}");
+            return;
+        }
+        Ok(Ok(handle)) => {
+            // Async error path — wait for phase = Error within bound.
+            let deadline = std::time::Instant::now() + Duration::from_secs(60);
+            loop {
+                let p = service.get_scan_progress(&handle).await.expect("progress");
+                match p.phase {
+                    ScanPhase::Error => {
+                        eprintln!(
+                            "[regtest] R-N17 ok: scan surfaced Error against captive portal: {:?}",
+                            p.error
+                        );
+                        return;
+                    }
+                    ScanPhase::Complete => panic!(
+                        "[regtest] R-N17: scan claimed Complete against a captive portal that \
+                         doesn't speak gRPC"
+                    ),
+                    ScanPhase::Cancelled => {
+                        panic!("[regtest] R-N17: scan unexpectedly cancelled")
+                    }
+                    _ => {
+                        if std::time::Instant::now() > deadline {
+                            panic!(
+                                "[regtest] R-N17: scan did not error within 60s against captive \
+                                 portal; last phase = {:?}",
+                                p.phase
+                            );
+                        }
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ─── R-N10: All endpoints unreachable ───────────────────────────────────────
 #[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
 #[tokio::test]

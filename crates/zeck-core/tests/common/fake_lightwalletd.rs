@@ -3,26 +3,33 @@
 //!
 //! Boots a tonic server on a loopback ephemeral port, answers `GetLightdInfo`
 //! from a builder-supplied config, and (when given an upstream URL) forwards
-//! every other RPC Argos uses to a real lightwalletd instance. Two fault-
-//! injection knobs are honoured by `get_block_range`:
+//! every other RPC Argos uses to a real lightwalletd instance. The
+//! `get_block_range` body honours the following builder knobs (compose
+//! freely — multiple knobs can be active on the same fixture):
 //!
 //!   - `close_stream_after_blocks(N)` — after the first `N` compact blocks
 //!     have been emitted on a stream, the fixture aborts the stream with a
-//!     `tonic::Status` whose message contains the strings `run_wallet_sync_with_retry`
-//!     matches against (`"h2 protocol error"` + `"GoAway"`). Fires exactly
-//!     once per fixture lifetime — subsequent `get_block_range` calls
-//!     forward cleanly, so the retry loop can reach the chain tip.
-//!     Unblocks R-N8.
-//!   - `inject_hostile_block_at_height(H)` — when the upstream returns the
-//!     compact block at height `H`, the fixture mutates its `prev_hash`
-//!     field (XOR all bytes with 0xff) before forwarding. The resulting
-//!     block parses cleanly but breaks the chain-link invariant, so
-//!     `zcash_client_backend::sync` rejects it. Also fires exactly once.
-//!     Unblocks R-N9.
+//!     `tonic::Status` whose message contains the strings
+//!     `run_wallet_sync_with_retry` matches against (`"h2 protocol error"`
+//!     + `"GoAway"`). One-shot. Unblocks R-N8.
+//!   - `inject_hostile_block_at_height(H)` — XOR all bytes of `prev_hash`
+//!     at height `H` before forwarding. The block parses but breaks the
+//!     chain-link invariant. One-shot. Unblocks R-N9.
+//!   - `latency(Duration)` — sleep this long before each emitted block.
+//!     Models a high-RTT link. Unblocks R-N13.
+//!   - `bandwidth_bytes_per_sec(R)` — token-bucket per emitted block, so
+//!     each `CompactBlock` of `n` bytes is followed by a `n / R` second
+//!     sleep before the next is allowed. Models a bandwidth-constrained
+//!     link. Unblocks R-N14.
+//!   - `hang_after_blocks(N)` — emit `N` blocks normally, then the
+//!     forwarder task parks itself indefinitely without sending or closing
+//!     the stream. Models a dead peer (TCP up, no h2 frames). Drives R-N15.
 //!
-//! The `latency(Duration)` knob is still a no-op — left in the builder for
-//! the follow-up bad-network-coverage PR. See the `TODO(bad-network)`
-//! marker in `FaultState`.
+//! For R-N17 (captive-portal-shaped MitM), the fixture has nothing useful
+//! to add — instead, see [`serve_captive_portal_shim`], a sibling helper
+//! that binds a `TcpListener` and writes a raw `HTTP/1.1 200 OK` on each
+//! accepted connection before closing. The shim does not speak gRPC at
+//! all; the test points Argos at it and asserts an `Err`.
 //!
 //! Why proxy mode: it lets the bad-network tests reuse the real regtest
 //! harness's compact-block stream for the happy-path prefix, then introduce
@@ -40,6 +47,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use prost::Message as _;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
@@ -110,11 +118,8 @@ pub struct FakeLightwalletdBuilder {
     /// (e.g. `http://127.0.0.1:9067` for the regtest harness).
     upstream_url: Option<String>,
     // ─── Fault-injection knobs ──────────────────────────────────────────
-    /// Inject a fixed per-RPC latency before responding.
-    ///
-    /// TODO(bad-network): the follow-up bad-network-coverage PR will wire
-    /// this through `get_block_range` and `get_taddress_txids`. Currently a
-    /// no-op.
+    /// Inject a fixed delay before each emitted compact block on the
+    /// `GetBlockRange` stream. Used by R-N13 to model a high-RTT link.
     latency: Option<Duration>,
     /// Abort the `GetBlockRange` stream after this many compact blocks have
     /// been emitted, surfacing a `Status` whose message matches the strings
@@ -127,6 +132,15 @@ pub struct FakeLightwalletdBuilder {
     /// `zcash_client_backend::sync` rejects it. Fires exactly once.
     /// Unblocks R-N9.
     inject_hostile_block_at_height: Option<u64>,
+    /// Throttle bandwidth: after each block of `n` bytes, sleep for
+    /// `n / rate` seconds before the next is permitted. Used by R-N14
+    /// to model a bandwidth-constrained link. Composes with `latency` —
+    /// the per-block delay is `latency + (bytes / rate)`.
+    bandwidth_bytes_per_sec: Option<u32>,
+    /// Emit this many blocks normally, then park the forwarder task forever
+    /// without closing the stream. Models a dead peer (TCP up, no h2 frames).
+    /// Used by R-N15.
+    hang_after_blocks: Option<u64>,
 }
 
 impl Default for FakeLightwalletdBuilder {
@@ -139,6 +153,8 @@ impl Default for FakeLightwalletdBuilder {
             latency: None,
             close_stream_after_blocks: None,
             inject_hostile_block_at_height: None,
+            bandwidth_bytes_per_sec: None,
+            hang_after_blocks: None,
         }
     }
 }
@@ -175,12 +191,28 @@ impl FakeLightwalletdBuilder {
         self
     }
 
-    /// Inject a fixed latency before each RPC response.
-    ///
-    /// TODO(bad-network): currently a no-op. Wired through in the bad-network
-    /// follow-up PR alongside throttling and hung-stream knobs.
+    /// Sleep `latency` before each compact block on `GetBlockRange`. Models
+    /// a high-RTT link. Composes with `bandwidth_bytes_per_sec`. Drives
+    /// R-N13.
     pub fn latency(mut self, latency: Duration) -> Self {
         self.latency = Some(latency);
+        self
+    }
+
+    /// Throttle outbound bandwidth on `GetBlockRange` to `rate` bytes per
+    /// second using a per-block token-bucket sleep. Composes with
+    /// `latency`. Drives R-N14.
+    pub fn bandwidth_bytes_per_sec(mut self, rate: u32) -> Self {
+        assert!(rate > 0, "bandwidth_bytes_per_sec must be > 0");
+        self.bandwidth_bytes_per_sec = Some(rate);
+        self
+    }
+
+    /// Emit `count` blocks normally on `GetBlockRange`, then park the
+    /// forwarder forever without closing the stream. Models a dead peer
+    /// (TCP up, no h2 frames). Drives R-N15.
+    pub fn hang_after_blocks(mut self, count: u64) -> Self {
+        self.hang_after_blocks = Some(count);
         self
     }
 
@@ -227,24 +259,45 @@ impl FakeLightwalletdBuilder {
     }
 }
 
-/// One-shot fault state shared across `get_block_range` invocations on the
-/// same fixture. `triggered` flips to `true` the first time a fault fires so
-/// the retry loop's *next* connection sees clean behaviour — otherwise the
-/// retry would hit the same fault repeatedly and exhaust its budget.
+/// Fault state shared across `get_block_range` invocations on the same
+/// fixture. The `one_shot_triggered` flag governs the *one-shot* knobs
+/// (close-stream, hostile-block, hang) — once they fire, subsequent stream
+/// requests bypass them so the retry loop's next connection sees clean
+/// behaviour. The *steady-state* knobs (latency, bandwidth) apply to every
+/// stream unconditionally.
 struct FaultState {
+    // ─── One-shot knobs ────────────────────────────────────────────────
     close_stream_after_blocks: Option<u64>,
     inject_hostile_block_at_height: Option<u64>,
-    triggered: AtomicBool,
+    hang_after_blocks: Option<u64>,
+    one_shot_triggered: AtomicBool,
+    // ─── Steady-state knobs ────────────────────────────────────────────
+    latency: Option<Duration>,
+    bandwidth_bytes_per_sec: Option<u32>,
 }
 
 impl FaultState {
-    /// Returns true if a fault knob was set AND has not been triggered yet.
-    /// Used by `get_block_range` to decide whether to apply fault logic at
-    /// all — when false, the stream is forwarded verbatim.
-    fn armed(&self) -> bool {
+    /// Whether the one-shot knobs are armed (set + not yet triggered). The
+    /// steady-state knobs apply regardless.
+    fn one_shot_armed(&self) -> bool {
         (self.close_stream_after_blocks.is_some()
-            || self.inject_hostile_block_at_height.is_some())
-            && !self.triggered.load(Ordering::SeqCst)
+            || self.inject_hostile_block_at_height.is_some()
+            || self.hang_after_blocks.is_some())
+            && !self.one_shot_triggered.load(Ordering::SeqCst)
+    }
+
+    /// Sleep for the per-block budget implied by `latency` + the
+    /// bandwidth token-bucket cost of a `bytes`-sized block. Returns
+    /// immediately when neither knob is set.
+    async fn pace_per_block(&self, bytes: usize) {
+        let bandwidth_delay = match self.bandwidth_bytes_per_sec {
+            Some(rate) => Duration::from_secs_f64(bytes as f64 / f64::from(rate)),
+            None => Duration::ZERO,
+        };
+        let total = self.latency.unwrap_or(Duration::ZERO) + bandwidth_delay;
+        if !total.is_zero() {
+            tokio::time::sleep(total).await;
+        }
     }
 }
 
@@ -257,8 +310,6 @@ struct FakeService {
     /// RPC other than `GetLightdInfo` returns `unimplemented`.
     upstream: Option<UpstreamClient<Channel>>,
     fault: Arc<FaultState>,
-    /// Reserved for the bad-network follow-up; currently unused.
-    _latency: Option<Duration>,
 }
 
 impl FakeService {
@@ -287,9 +338,11 @@ impl FakeService {
             fault: Arc::new(FaultState {
                 close_stream_after_blocks: builder.close_stream_after_blocks,
                 inject_hostile_block_at_height: builder.inject_hostile_block_at_height,
-                triggered: AtomicBool::new(false),
+                hang_after_blocks: builder.hang_after_blocks,
+                one_shot_triggered: AtomicBool::new(false),
+                latency: builder.latency,
+                bandwidth_bytes_per_sec: builder.bandwidth_bytes_per_sec,
             }),
-            _latency: builder.latency,
         }
     }
 
@@ -384,24 +437,30 @@ impl CompactTxStreamer for FakeService {
         let (tx, rx) = mpsc::channel::<Result<CompactBlock, Status>>(16);
         let fault = self.fault.clone();
         tokio::spawn(async move {
-            // If a fault is armed, capture which one + the trigger threshold
-            // up front. The fault fires at most once per fixture lifetime —
-            // after firing we set `triggered` so subsequent stream requests
-            // (which happen during retry) see no fault.
-            let fault_active = fault.armed();
+            // Capture the one-shot armed state + thresholds up front so
+            // subsequent stream requests (which happen during retry) see
+            // clean behaviour without racing against another forwarder.
+            let one_shot_active = fault.one_shot_armed();
             let close_after = fault.close_stream_after_blocks;
             let hostile_height = fault.inject_hostile_block_at_height;
+            let hang_after = fault.hang_after_blocks;
 
             let mut emitted: u64 = 0;
             while let Some(item) = upstream_stream.message().await.transpose() {
+                // Steady-state pacing: every successful block is paced by
+                // latency + bandwidth before it leaves the fixture.
+                let block_bytes = item
+                    .as_ref()
+                    .ok()
+                    .map(|b| b.encoded_len())
+                    .unwrap_or(0);
+                fault.pace_per_block(block_bytes).await;
+
                 let mapped = match item {
                     Ok(block) => {
                         // R-N9: mutate the compact block at the target height.
                         let mut local = reencode::<_, CompactBlock>(&block);
-                        if fault_active && hostile_height == Some(local.height) {
-                            // Flip every bit of prev_hash. The block still
-                            // decodes; the chain-link check in
-                            // `zcash_client_backend::sync` rejects it.
+                        if one_shot_active && hostile_height == Some(local.height) {
                             if local.prev_hash.is_empty() {
                                 local.prev_hash = vec![0xff; 32];
                             } else {
@@ -409,7 +468,7 @@ impl CompactTxStreamer for FakeService {
                                     *b ^= 0xff;
                                 }
                             }
-                            fault.triggered.store(true, Ordering::SeqCst);
+                            fault.one_shot_triggered.store(true, Ordering::SeqCst);
                         }
                         Ok(local)
                     }
@@ -428,17 +487,33 @@ impl CompactTxStreamer for FakeService {
                 // R-N8: after N blocks have flowed through, abort the stream
                 // with a Status whose message matches the production retry
                 // matcher in `run_wallet_sync_with_retry`.
-                if fault_active
+                if one_shot_active
                     && close_after == Some(emitted)
-                    && !fault.triggered.load(Ordering::SeqCst)
+                    && !fault.one_shot_triggered.load(Ordering::SeqCst)
                 {
-                    fault.triggered.store(true, Ordering::SeqCst);
+                    fault.one_shot_triggered.store(true, Ordering::SeqCst);
                     let _ = tx
                         .send(Err(Status::unavailable(
                             "h2 protocol error: GoAway (simulated by FakeLightwalletd)",
                         )))
                         .await;
                     break;
+                }
+
+                // R-N15: after N blocks, park the forwarder forever without
+                // closing the stream. The client awaits on an unending channel;
+                // the test's outer `tokio::time::timeout` is the only thing
+                // that distinguishes "Argos has a watchdog and surfaced Err"
+                // from "Argos hung indefinitely". The mpsc Sender stays alive
+                // here so the receiver doesn't observe stream-end.
+                if one_shot_active
+                    && hang_after == Some(emitted)
+                    && !fault.one_shot_triggered.load(Ordering::SeqCst)
+                {
+                    fault.one_shot_triggered.store(true, Ordering::SeqCst);
+                    let _hold_sender_alive = tx;
+                    std::future::pending::<()>().await;
+                    unreachable!("pending() never resolves");
                 }
             }
         });
@@ -521,4 +596,58 @@ impl CompactTxStreamer for FakeService {
         let resp = upstream.get_address_utxos(req).await?.into_inner();
         Ok(Response::new(reencode::<_, GetAddressUtxosReplyList>(&resp)))
     }
+}
+
+// ─── Captive-portal MitM shim (R-N17) ───────────────────────────────────────
+//
+// A separate tiny helper that has nothing to do with the gRPC fixture above.
+// Binds a `TcpListener` on a random loopback port, and on every accepted
+// connection writes a plain `HTTP/1.1 200 OK` response (Content-Length: 0)
+// and closes. This is what a captive portal typically looks like at the
+// byte level — the user's "lightwalletd endpoint" accepts the TCP connect,
+// completes a write, and never says anything h2-shaped.
+//
+// Argos's TLS-then-gRPC stack must surface this as Err rather than silently
+// treating it as a successful empty response. The test points Argos at the
+// shim's URL and asserts an error within a bounded time.
+
+/// Handle to a running captive-portal shim. Drop to free the port.
+pub struct CaptivePortalShim {
+    /// Loopback URL the shim is listening on (`http://127.0.0.1:N`).
+    pub url: String,
+    _handle: tokio::task::JoinHandle<()>,
+}
+
+/// Spin up a captive-portal-shaped MitM on a random loopback port. Returns
+/// a [`CaptivePortalShim`]; dropping it aborts the listener task and frees
+/// the port.
+pub async fn serve_captive_portal_shim() -> std::io::Result<CaptivePortalShim> {
+    use tokio::io::AsyncWriteExt;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let local_addr: SocketAddr = listener.local_addr()?;
+    let url = format!("http://{local_addr}");
+
+    let handle = tokio::spawn(async move {
+        // Loop accepting connections forever. Each gets an HTTP 200 + close.
+        // Any error from accept() (e.g. listener dropped) terminates the task.
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                // Best-effort: a write error here means the client already
+                // closed, which is fine for a captive-portal simulator.
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+
+    Ok(CaptivePortalShim {
+        url,
+        _handle: handle,
+    })
 }
