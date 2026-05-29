@@ -648,80 +648,301 @@ fn zcashd_cli(args: &[&str]) -> String {
 
 // ─── R-S27: Crash mid-scan resume ───────────────────────────────────────────
 //
-// Deferred. Two structural points make a runtime version of this test
-// substantially weaker than it looks on the surface:
+// Implemented in #92 (helper-binary scaffolding) + this PR.
 //
-//   1. **In-process cancellation is not a crash.** The cheap version of
-//      this test — spawn `RecoveryService::start_scan`, drop the handle
-//      partway through, recreate the service on the same workspace,
-//      observe resume — only exercises the Drop path of the sync task,
-//      which is well-behaved by construction (every commit to the wallet
-//      DB is its own SQLite transaction). It does NOT exercise the
-//      genuine-crash failure mode where the process disappears between a
-//      sync batch's "scanned blocks" emission and its DB commit. That
-//      window is exactly where data corruption would happen if it could,
-//      and only an actual SIGKILL of a subprocess can land inside it.
+// Spawns `argos-scan-helper` as a subprocess against the booted regtest
+// harness, watches its stdout JSON-line stream for a `block` event past a
+// configurable threshold, delivers SIGKILL via `tokio::process::Child::start_kill`,
+// then re-spawns the same helper with the same `--data-dir`. The second run
+// must reach `Complete` with `total_zatoshis` matching a baseline
+// uninterrupted scan.
 //
-//   2. **Subprocess SIGKILL needs argos-cli scaffolding we don't have.**
-//      The honest version spawns `argos-cli scan` with `--data-dir
-//      <tmpdir>` against the harness URL, parses its stdout to know how
-//      far it got, sends SIGKILL after N blocks, then re-runs it and
-//      checks `fully_scanned_height` came up where the first run left
-//      off. That needs (a) a stable `argos-cli scan` JSON-progress mode
-//      (today the output is human-readable lines), (b) the cli binary on
-//      `$PATH` during `cargo test` runs, and (c) a sweep of the
-//      ARGOS_DATA_DIR env-var plumbing through tests. All three are real
-//      changes outside this PR's scope.
-//
-// The resume invariant itself is exercised on the unit-test side: R-W1
-// through R-W20 in `workspace.rs` cover the `(seed, birthday, network)`
-// keying that determines what counts as "the same workspace" for resume,
-// and `fully_scanned_height` comes straight from `zcash_client_sqlite`
-// (whose own test suite covers the per-batch commit boundary). The C2
-// gap is specifically "real SIGKILL against real subprocess" — see also
-// the C3 testnet smoke checklist item "Restart the GUI mid-scan" in
-// `docs/superpowers/test-plans/recovery-resilience.md`, which is the
-// manual cover for this row until the subprocess scaffolding lands.
-#[ignore = "deferred: needs argos-cli subprocess + JSON-progress mode for honest SIGKILL — see comment"]
-#[test]
-fn crash_mid_scan_resumes_from_fully_scanned_height() {
-    let _harness = RegtestHarness::require();
-    panic!(
-        "[regtest] R-S27 deferred: see comment above. Convert after argos-cli \
-         gains a JSON progress mode and the test harness can spawn it as a \
-         subprocess with deterministic SIGKILL timing."
+// Why this exercises the production property: the SIGKILL lands inside the
+// subprocess's running event loop, not via in-process task cancellation.
+// Whether it lands between a batch's "scanned blocks" emission and the
+// corresponding DB commit is timing-dependent, but the test runs the kill
+// many blocks into the scan — well past the first batch boundary — so over
+// runs the kill window will land in different places. The assertion that
+// matters is structural: the second run reaches the same final state as
+// the baseline. Any failure to resume (corruption, lost cursor, double-
+// counting) would surface as `total_zatoshis` divergence.
+#[cfg(feature = "argos-network")]
+#[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
+#[tokio::test]
+async fn crash_mid_scan_resumes_from_fully_scanned_height() {
+    use common::subprocess_driver::{HelperEvent, HelperSpawn};
+
+    let harness = RegtestHarness::require();
+
+    // ─── Baseline: uninterrupted scan, capture total_zatoshis ──────────────
+    let baseline_dir = tempfile::tempdir().expect("baseline tempdir");
+    let baseline_handle = HelperSpawn::new(
+        env!("CARGO_BIN_EXE_argos-scan-helper"),
+        harness.test_seed().to_owned(),
+    )
+    .arg_value("--data-dir", baseline_dir.path().display().to_string())
+    .arg_value("--lightwalletd-url", harness.lightwalletd_url().to_owned())
+    .arg_value("--birthday", "1")
+    .arg_value("--num-accounts", "2")
+    .arg_value("--gap-limit", "5")
+    .arg_value("--label", "rs27-baseline")
+    .spawn()
+    .await
+    .expect("spawn scan-helper for baseline");
+
+    let (_baseline_status, baseline_events) = baseline_handle
+        .wait_for_exit()
+        .await
+        .expect("baseline scan-helper must run to completion");
+
+    let baseline_total = baseline_events
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            HelperEvent::Complete { total_zatoshis } => Some(*total_zatoshis),
+            _ => None,
+        })
+        .expect("baseline scan must emit a Complete event with total_zatoshis");
+    assert!(
+        baseline_total > 0,
+        "[regtest] R-S27: baseline scan found zero funds; setup.sh did not run?"
+    );
+
+    // ─── First crash run: kill the subprocess after >= SCAN_KILL_AT blocks ─
+    //
+    // The threshold is well past the first batch boundary in librustzcash's
+    // default batch size (~100 blocks), so the kill lands inside one of the
+    // mid-scan windows R-S27 is meant to exercise. Regtest setup.sh tops the
+    // chain at ~200 blocks; 50 leaves comfortable headroom on either side.
+    const SCAN_KILL_AT: u64 = 50;
+
+    let resume_dir = tempfile::tempdir().expect("resume tempdir");
+    let mut crash_handle = HelperSpawn::new(
+        env!("CARGO_BIN_EXE_argos-scan-helper"),
+        harness.test_seed().to_owned(),
+    )
+    .arg_value("--data-dir", resume_dir.path().display().to_string())
+    .arg_value("--lightwalletd-url", harness.lightwalletd_url().to_owned())
+    .arg_value("--birthday", "1")
+    .arg_value("--num-accounts", "2")
+    .arg_value("--gap-limit", "5")
+    .arg_value("--label", "rs27-crash")
+    .spawn()
+    .await
+    .expect("spawn scan-helper for crash run");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let kill_block = crash_handle
+        .wait_for(deadline, |events| {
+            events.iter().rev().find_map(|e| match e {
+                HelperEvent::Block { scanned_to } if *scanned_to >= SCAN_KILL_AT => {
+                    Some(*scanned_to)
+                }
+                _ => None,
+            })
+        })
+        .await
+        .expect("scan-helper must emit a block event past the kill threshold");
+
+    let kill_status = crash_handle
+        .sigkill_and_wait()
+        .await
+        .expect("SIGKILL must reap the subprocess");
+    assert!(
+        !kill_status.success(),
+        "[regtest] R-S27: subprocess should have died from SIGKILL, but exited cleanly: {kill_status:?}"
+    );
+    eprintln!("[regtest] R-S27: SIGKILLed first run at block {kill_block}");
+
+    // ─── Resume run: same --data-dir, expect Complete reaching baseline ────
+    let resume_handle = HelperSpawn::new(
+        env!("CARGO_BIN_EXE_argos-scan-helper"),
+        harness.test_seed().to_owned(),
+    )
+    .arg_value("--data-dir", resume_dir.path().display().to_string())
+    .arg_value("--lightwalletd-url", harness.lightwalletd_url().to_owned())
+    .arg_value("--birthday", "1")
+    .arg_value("--num-accounts", "2")
+    .arg_value("--gap-limit", "5")
+    .arg_value("--label", "rs27-crash") // same label keeps the workspace key identical
+    .spawn()
+    .await
+    .expect("spawn scan-helper for resume");
+
+    let (resume_status, resume_events) = resume_handle
+        .wait_for_exit()
+        .await
+        .expect("resume scan-helper must run to completion");
+    assert!(
+        resume_status.success(),
+        "[regtest] R-S27: resume run did not exit cleanly: {resume_status:?}"
+    );
+
+    let resume_total = resume_events
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            HelperEvent::Complete { total_zatoshis } => Some(*total_zatoshis),
+            _ => None,
+        })
+        .expect("resume scan must emit a Complete event");
+    assert_eq!(
+        resume_total, baseline_total,
+        "[regtest] R-S27: resume total_zatoshis ({resume_total}) must match baseline ({baseline_total})"
+    );
+
+    eprintln!(
+        "[regtest] R-S27 ok: SIGKILL at block {kill_block}, resume reached {} zatoshis (matches baseline)",
+        resume_total
     );
 }
 
 // ─── R-S29: Crash mid-broadcast ─────────────────────────────────────────────
 //
-// Deferred. The no-double-spend property at the broadcast layer requires
-// the SIGKILL to land BETWEEN two per-account sweep broadcasts. Our
-// current harness funds exactly one account (`tests/regtest/setup.sh`
-// sends to the test seed's account-0 transparent address), so there's
-// only one broadcast in a sweep — no "mid-broadcast" window to interrupt.
+// Implemented in #92 (sweep-helper + pause hook) + this PR (multi-account
+// funding in setup.sh).
 //
-// Converting this stub end-to-end needs one of:
+// `argos-sweep-helper` is spawned with `--pause-millis-between-broadcasts
+// 30000` so the per-account broadcast loop sleeps 30s between accounts. The
+// test parent waits for the `sweep_starting` event, then sleeps long enough
+// (~8s) for the first broadcast to land in the wallet DB but not nearly
+// enough to exit the library's 30s pause. SIGKILL.
 //
-//   - Extending setup.sh to fund N accounts so a single sweep produces
-//     N per-account broadcasts, with the SIGKILL targeting the gap
-//     between #1 and #2.
-//   - A test-only hook in `RecoveryService::execute_sweep_for_session`
-//     that can pause / panic at a chosen point between broadcasts,
-//     which the test then drives deterministically.
+// On the resume run, the helper does a fresh scan against the same
+// `--data-dir`. The account that was already swept on the killed run has
+// near-zero balance after sync (because its sweep tx persisted in the
+// wallet DB and was included in the chain by the harness's miner), so the
+// second sweep produces exactly **one** broadcast: for the account that
+// was *not* swept on the killed run.
 //
-// Both are real work and warrant their own PR. Filing this stub as
-// `panic!("deferred ...")` rather than `unimplemented!()` so the test
-// produces a clear, actionable message under `cargo test --ignored`
-// instead of looking like an unfinished placeholder.
-#[ignore = "deferred: needs multi-account funding or a sweep-broadcast pause hook — see comment"]
-#[test]
-fn crash_mid_broadcast_does_not_double_spend_on_resume() {
-    let _harness = RegtestHarness::require();
-    panic!(
-        "[regtest] R-S29 deferred: see comment above. Convert after either \
-         extending tests/regtest/setup.sh to fund multiple accounts, or \
-         adding a test-only pause hook in execute_sweep_for_session."
+// Assertion: second-run `broadcast_count` is exactly 1 (the
+// not-yet-swept account). Two broadcasts would prove the first run's
+// effect was lost; zero broadcasts would prove the second account had
+// already been swept (impossible if the kill landed in the gap).
+//
+// Skip-condition: if setup.sh has not been re-run with the new multi-account
+// default (i.e. `ARGOS_REGTEST_TEST_T_ADDR_1` is not exported), the test
+// emits a skip notice rather than failing — there's no point asserting a
+// multi-broadcast property against a single-broadcast fixture.
+#[cfg(feature = "argos-network")]
+#[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported, setup.sh re-run with multi-account funding)"]
+#[tokio::test]
+async fn crash_mid_broadcast_does_not_double_spend_on_resume() {
+    use common::subprocess_driver::{HelperEvent, HelperSpawn};
+
+    let harness = RegtestHarness::require();
+
+    // Multi-account funding gate: PR B's setup.sh exports
+    // ARGOS_REGTEST_TEST_T_ADDR_1 when account 1 was funded. If a
+    // contributor is running against an older setup.sh, fail with a
+    // clear message rather than silently producing a meaningless result.
+    if std::env::var("ARGOS_REGTEST_TEST_T_ADDR_1").is_err() {
+        panic!(
+            "[regtest] R-S29 requires multi-account funding. Re-run \
+             tests/regtest/setup.sh (which now funds accounts 0 and 1 by \
+             default) and export ARGOS_REGTEST_TEST_T_ADDR_1."
+        );
+    }
+
+    // Derive account-2's UA from the test seed as the sweep destination.
+    // (Both account 0 and account 1 are sources; account 2 is the
+    // destination, which keeps the sweep deterministic regardless of which
+    // source account is processed first.)
+    let seed = SecretString::new(harness.test_seed().to_owned());
+    let accounts = derive_accounts(&seed, ZeckNetwork::Testnet, 3)
+        .expect("derive 3 accounts to choose a sweep destination outside the funded set");
+    let destination_ua = accounts[2].unified_address.clone();
+
+    let crash_dir = tempfile::tempdir().expect("crash tempdir");
+
+    // ─── First run: spawn, wait for sweep_starting, sleep, SIGKILL ────────
+    let mut crash_handle = HelperSpawn::new(
+        env!("CARGO_BIN_EXE_argos-sweep-helper"),
+        harness.test_seed().to_owned(),
+    )
+    .arg_value("--data-dir", crash_dir.path().display().to_string())
+    .arg_value("--lightwalletd-url", harness.lightwalletd_url().to_owned())
+    .arg_value("--destination-ua", destination_ua.clone())
+    .arg_value("--birthday", "1")
+    .arg_value("--num-accounts", "3") // 0, 1 funded; 2 is the destination
+    .arg_value("--gap-limit", "5")
+    .arg_value("--label", "rs29-crash")
+    .arg_value("--pause-millis-between-broadcasts", "30000")
+    .spawn()
+    .await
+    .expect("spawn sweep-helper for crash run");
+
+    let starting_deadline = std::time::Instant::now() + Duration::from_secs(180);
+    crash_handle
+        .wait_for(starting_deadline, |events| {
+            events.iter().find_map(|e| match e {
+                HelperEvent::SweepStarting => Some(()),
+                _ => None,
+            })
+        })
+        .await
+        .expect("sweep-helper must emit SweepStarting within 180s");
+
+    // Give the first broadcast time to land in the wallet DB. 8s comfortably
+    // exceeds typical regtest broadcast latency (<1s) and is well inside
+    // the helper's 30s pause window.
+    tokio::time::sleep(Duration::from_secs(8)).await;
+
+    let kill_status = crash_handle
+        .sigkill_and_wait()
+        .await
+        .expect("SIGKILL must reap sweep-helper");
+    assert!(
+        !kill_status.success(),
+        "[regtest] R-S29: subprocess should have died from SIGKILL, exited cleanly instead: {kill_status:?}"
+    );
+    eprintln!("[regtest] R-S29: SIGKILLed first run during pause between broadcasts");
+
+    // ─── Resume run: same --data-dir, expect exactly 1 broadcast ──────────
+    let resume_handle = HelperSpawn::new(
+        env!("CARGO_BIN_EXE_argos-sweep-helper"),
+        harness.test_seed().to_owned(),
+    )
+    .arg_value("--data-dir", crash_dir.path().display().to_string())
+    .arg_value("--lightwalletd-url", harness.lightwalletd_url().to_owned())
+    .arg_value("--destination-ua", destination_ua)
+    .arg_value("--birthday", "1")
+    .arg_value("--num-accounts", "3")
+    .arg_value("--gap-limit", "5")
+    .arg_value("--label", "rs29-crash") // identical workspace key
+    .arg_value("--pause-millis-between-broadcasts", "0")
+    .spawn()
+    .await
+    .expect("spawn sweep-helper for resume");
+
+    let (resume_status, resume_events) = resume_handle
+        .wait_for_exit()
+        .await
+        .expect("resume sweep-helper must run to completion");
+    assert!(
+        resume_status.success(),
+        "[regtest] R-S29: resume run did not exit cleanly: {resume_status:?}"
+    );
+
+    let resume_broadcasts: Vec<u32> = resume_events
+        .iter()
+        .filter_map(|e| match e {
+            HelperEvent::Broadcast { source_account, .. } => Some(*source_account),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        resume_broadcasts.len(),
+        1,
+        "[regtest] R-S29: resume run must produce exactly 1 broadcast (the \
+         not-yet-swept account); got {} broadcasts from accounts {:?}",
+        resume_broadcasts.len(),
+        resume_broadcasts
+    );
+
+    eprintln!(
+        "[regtest] R-S29 ok: resume swept exactly the not-yet-swept account ({})",
+        resume_broadcasts[0]
     );
 }
 

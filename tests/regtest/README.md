@@ -50,17 +50,22 @@ cd tests/regtest
 docker compose up -d
 
 # Wait for the healthcheck to pass and run the funding script.
-# This mines 200 blocks (clears coinbase maturity) and sends 5 ZEC to the
-# Argos test seed's transparent address. Idempotent — safe to re-run.
+# This mines 200 blocks (clears coinbase maturity) and sends 5 ZEC each to
+# accounts 0 and 1 of the Argos test seed's transparent addresses (2 funded
+# accounts by default — R-S29 requires multiple per-account broadcasts).
+# Override the account count with REGTEST_FUND_ACCOUNTS=N. Idempotent —
+# safe to re-run.
 ./setup.sh
 ```
 
-The script prints the lightwalletd URL and the funded transparent address
-when it finishes. Export them as the integration tests expect:
+The script prints the lightwalletd URL and one funded transparent address
+per derived account. Export them as the integration tests expect:
 
 ```bash
 export ARGOS_REGTEST_LIGHTWALLETD_URL=http://localhost:9067
-export ARGOS_REGTEST_TEST_T_ADDR=t1...   # printed by setup.sh
+export ARGOS_REGTEST_TEST_T_ADDR=t1...     # account 0; printed by setup.sh
+export ARGOS_REGTEST_TEST_T_ADDR_0=t1...   # same as above; one-per-account form
+export ARGOS_REGTEST_TEST_T_ADDR_1=t1...   # account 1; required by R-S29
 ```
 
 ## Running the integration tests
