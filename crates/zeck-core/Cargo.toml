@@ -53,3 +53,15 @@ zip32.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio-stream = { version = "0.1", features = ["net", "sync"] }
+# Required at runtime by the tonic-server code generated for the FakeLightwalletd
+# fixture (see build.rs). Already in the workspace lock as a transitive of
+# zcash_client_backend; not a new download.
+tonic-prost = "0.14"
+
+[build-dependencies]
+# Only invoked when the `argos-network` feature is enabled (see build.rs).
+# Both `tonic-build` and `tonic-prost-build` are already in the workspace
+# lock graph as transitive build-deps of the `zcash_*` crates, so this does
+# not add new downloads.
+tonic-prost-build = "0.14"

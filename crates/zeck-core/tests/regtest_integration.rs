@@ -906,3 +906,44 @@ async fn workspace_permissions_tampered_surfaces_clean_error() {
 
     eprintln!("[regtest] propose_sweep failed as expected after chmod 0o000: {err}");
 }
+
+// ─── FakeLightwalletd fixture smoke test ────────────────────────────────────
+//
+// Validates the proto-codegen and tonic-server plumbing for the in-process
+// `FakeLightwalletd` fixture (`tests/common/fake_lightwalletd.rs`). Boots the
+// fixture in pure-skeleton mode (no upstream) and confirms a real Argos
+// gRPC client can probe it, get back the configured chain identity, and pass
+// `validate_lightwalletd_network` as a regtest server under the
+// `argos-network` feature.
+//
+// `#[ignore]` so it doesn't run in default `cargo test`; the fault-injection
+// follow-up PR will lift the gate once R-N8/R-N9 land.
+#[cfg(feature = "argos-network")]
+#[ignore = "fixture smoke test; run with --ignored --features argos-network"]
+#[tokio::test]
+async fn fake_lightwalletd_smoke() {
+    use argos_core::lightwalletd::{
+        probe_lightwalletd_endpoints, validate_lightwalletd_network,
+    };
+    use argos_core::models::ZeckNetwork;
+
+    let fake = common::fake_lightwalletd::FakeLightwalletd::builder()
+        .chain_name("regtest")
+        .sapling_activation_height(1)
+        .block_height(42)
+        .build()
+        .await
+        .expect("bind FakeLightwalletd on loopback");
+
+    let (_client, endpoint, info) = probe_lightwalletd_endpoints(&fake.url)
+        .await
+        .expect("Argos client probes FakeLightwalletd cleanly");
+
+    assert_eq!(endpoint, fake.url);
+    assert_eq!(info.chain_name, "regtest");
+    assert_eq!(info.sapling_activation_height, 1);
+    assert_eq!(info.block_height, 42);
+
+    validate_lightwalletd_network(ZeckNetwork::Testnet, &info)
+        .expect("regtest chain must validate as Testnet under argos-network");
+}

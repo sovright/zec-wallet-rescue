@@ -5,3 +5,10 @@
 // contained a top-level `tests/common.rs`).
 
 pub mod regtest_harness;
+
+// `FakeLightwalletd` is the in-process gRPC test fixture used by the bad-
+// network C2 tests (R-N8, R-N9). It depends on tonic server codegen run by
+// `build.rs`, which only fires under the `argos-network` feature, so it is
+// also gated on that feature here.
+#[cfg(feature = "argos-network")]
+pub mod fake_lightwalletd;
