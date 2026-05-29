@@ -452,44 +452,6 @@ async fn multi_endpoint_fallback_respects_configured_order() {
     );
 }
 
-// ─── R-S25: Sprout-only wallet graceful handling ────────────────────────────
-//
-// Deferred. Two structural reasons:
-//
-//   1. **No regtest fixture exists.** Our regtest config activates Sapling
-//      at height 1 (see `tests/regtest/zcashd-regtest.conf` nuparams), so
-//      every block has Sapling available. Constructing a Sprout-only
-//      chain requires a custom regtest config with Sapling activated at
-//      a much later height, AND a way to mine Sprout-transfer transactions
-//      in the pre-Sapling range. zcashd's regtest mode does not provide
-//      an easy way to mine Sprout transfers programmatically.
-//
-//   2. **The property is structurally true.** Argos does not derive
-//      Sprout viewing keys from a BIP-39 seed at all — see
-//      `argos_core::derive_accounts`, which only produces Sapling +
-//      Orchard + transparent receivers. So "scan a wallet with only
-//      Sprout funds" reduces to "scan a wallet with no Sapling/Orchard
-//      funds", which is the empty-wallet case already covered by R-A1
-//      on the unit-test side. The recovery report's Sprout
-//      acknowledgement is a UI-side concern documented in §9 (Out of
-//      scope) of `docs/THREAT_MODEL.md`.
-//
-// Converting this stub to a meaningful runtime check needs the custom
-// fixture above. Until then the structural argument is the test — kept
-// here in the test file rather than only in the threat model so a
-// future contributor surveying the C2 stubs sees why it stays deferred.
-#[ignore = "deferred: see comment — structurally covered by 'no Sprout derivation' + R-A1 empty-wallet test"]
-#[test]
-fn sprout_only_wallet_scans_cleanly_with_zero_funds() {
-    let _harness = RegtestHarness::require();
-    panic!(
-        "[regtest] R-S25 deferred: see comment above. Runtime test needs a \
-         custom regtest fixture with late-Sapling activation; the structural \
-         property is already true by construction (Argos does not derive \
-         Sprout keys)."
-    );
-}
-
 // ─── R-S26: Reorg during scan ───────────────────────────────────────────────
 #[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
 #[tokio::test]
