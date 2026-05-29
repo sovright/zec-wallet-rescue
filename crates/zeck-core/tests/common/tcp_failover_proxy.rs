@@ -139,3 +139,139 @@ async fn forward(client_stream: TcpStream, target: &str) {
     // both to finish before returning.
     tokio::join!(to_upstream, to_client);
 }
+
+// ─── Asymmetric-loss proxy (R-N18) ──────────────────────────────────────────
+//
+// Models one-way packet loss: bytes from the client reach the upstream,
+// but bytes from the upstream are silently dropped before reaching the
+// client. From Argos's view this looks like a server that accepts the
+// connection, completes the gRPC negotiation, then stops responding. The
+// TCP socket is still open (no FIN, no RST); the stall watchdog at
+// `scan.rs::stall_watchdog` is what surfaces the failure.
+//
+// The proxy is one-shot: the first accepted connection drops upstream→client
+// bytes after `response_bytes_before_drop` bytes have passed; subsequent
+// connections are clean pass-through. That mirrors the retry-recovery
+// pattern from R-N8 / R-N15 — the watchdog trips on conn #1, the retry
+// loop opens conn #2 which sees clean behaviour, scan completes.
+//
+// The upstream side is fully drained (we keep reading from upstream even
+// after dropping toward the client) so the upstream's send buffer doesn't
+// block and trigger errors back through the gRPC stack — the asymmetry
+// model assumes the *server* sees a happy connection.
+
+/// A running asymmetric-loss proxy. Drop to free the port.
+pub struct AsymmetricLossProxy {
+    pub url: String,
+    _handle: tokio::task::JoinHandle<()>,
+}
+
+/// Bind an asymmetric-loss proxy on a random loopback port.
+///
+/// `upstream` must be `host:port` (no scheme). `response_bytes_before_drop`
+/// is the number of upstream→client bytes that pass before the proxy
+/// starts dropping responses on the first connection.
+pub async fn serve_asymmetric_loss_proxy(
+    upstream: String,
+    response_bytes_before_drop: usize,
+) -> std::io::Result<AsymmetricLossProxy> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let local_addr: SocketAddr = listener.local_addr()?;
+    let url = format!("http://{local_addr}");
+
+    let connection_count = Arc::new(AtomicUsize::new(0));
+    let upstream = Arc::new(upstream);
+
+    let handle = tokio::spawn(async move {
+        loop {
+            let Ok((client_stream, _peer)) = listener.accept().await else {
+                return;
+            };
+            let nth = connection_count.fetch_add(1, Ordering::SeqCst);
+            let upstream = upstream.clone();
+            tokio::spawn(async move {
+                if nth == 0 {
+                    forward_with_response_drop(
+                        client_stream,
+                        &upstream,
+                        response_bytes_before_drop,
+                    )
+                    .await;
+                } else {
+                    forward(client_stream, &upstream).await;
+                }
+            });
+        }
+    });
+
+    Ok(AsymmetricLossProxy {
+        url,
+        _handle: handle,
+    })
+}
+
+/// Forward client↔upstream like [`forward`], but stop writing upstream→client
+/// bytes once `drop_after` bytes have been forwarded in that direction.
+/// Upstream reads continue (the upstream socket stays drained) so the
+/// upstream's send buffer doesn't block.
+async fn forward_with_response_drop(
+    client_stream: TcpStream,
+    target: &str,
+    drop_after: usize,
+) {
+    let Ok(upstream_stream) = TcpStream::connect(target).await else {
+        return;
+    };
+
+    let (mut cr, mut cw) = tokio::io::split(client_stream);
+    let (mut ur, mut uw) = tokio::io::split(upstream_stream);
+
+    let to_upstream = async move {
+        let mut buf = vec![0u8; 16 * 1024];
+        loop {
+            match cr.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if uw.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        let _ = uw.shutdown().await;
+    };
+
+    let to_client = async move {
+        let mut buf = vec![0u8; 16 * 1024];
+        let mut bytes_forwarded: usize = 0;
+        loop {
+            match ur.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if bytes_forwarded < drop_after {
+                        let remaining = drop_after - bytes_forwarded;
+                        let to_write = remaining.min(n);
+                        if cw.write_all(&buf[..to_write]).await.is_err() {
+                            break;
+                        }
+                        bytes_forwarded += to_write;
+                        // Anything past `to_write` is silently dropped:
+                        // the upstream byte was read (so its send buffer
+                        // is drained) but never reaches the client.
+                    }
+                    // After `drop_after` bytes, every read is drained but
+                    // nothing is written toward the client. We do NOT close
+                    // the client side — Argos must see the connection as
+                    // "open but silent" so the stall watchdog is the thing
+                    // that surfaces the failure.
+                }
+            }
+        }
+        // Don't shutdown cw: the test wants the client-side socket to stay
+        // open until either Argos closes it (because the retry loop opens
+        // a new connection) or the listener task is dropped at fixture
+        // teardown.
+    };
+
+    tokio::join!(to_upstream, to_client);
+}

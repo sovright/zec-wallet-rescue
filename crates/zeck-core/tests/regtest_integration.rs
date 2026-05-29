@@ -953,6 +953,132 @@ async fn captive_portal_shim_surfaces_clean_error() {
     }
 }
 
+// ─── R-N18: Asymmetric loss (one-way drop) ──────────────────────────────────
+//
+// Verifies that a connection on which outbound bytes flow normally but the
+// return path silently drops bytes is surfaced by Argos within a bounded
+// time rather than hanging forever. The TCP socket stays open (no FIN,
+// no RST); the *application* layer sees no data — exactly the failure
+// mode `tc netem`'s one-way loss produces against a real network.
+//
+// What's covered by which layer:
+//   - Stall watchdog (scan.rs::stall_watchdog) trips at 60 s no-advance
+//     and returns an `h2 protocol error` substring that the retry matcher
+//     catches.
+//   - The retry loop opens a fresh connection; on conn #2 the proxy is in
+//     clean-pass-through mode, so the scan completes.
+//
+// The new property R-N18 adds beyond R-N15 is the failure mode at the
+// *transport* layer: R-N15 has the server actively choosing not to send
+// (the proxied gRPC handler parks). R-N18 has the server sending normally
+// but the bytes never arriving — which is what happens with NAT/PF
+// asymmetry, half-NAT timeouts, and broken-symmetric routing. Both are
+// caught by the watchdog because both produce no `synced_to_height`
+// advance; the test exists to document that the watchdog covers this
+// distinct failure mode without needing a separate detection mechanism.
+//
+// Assertions:
+//   1. Scan reaches `phase = Complete` (the retry recovered against the
+//      same proxy in clean mode).
+//   2. Final `synced_to_height` equals the baseline uninterrupted scan.
+//
+// No sudo / no `tc netem` required: the asymmetric-loss proxy implements
+// the drop at the application layer instead of the network layer. The
+// effect on Argos is identical.
+#[cfg(feature = "argos-network")]
+#[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
+#[tokio::test]
+async fn asymmetric_loss_recovers_via_watchdog_and_retry() {
+    let harness = RegtestHarness::require();
+
+    let baseline_dir = tempfile::tempdir().expect("baseline tempdir");
+    let baseline = complete_scan_against_test_seed(&harness, &baseline_dir, "rn18-baseline").await;
+    let baseline_synced = baseline
+        .service
+        .get_scan_progress(&baseline.handle)
+        .await
+        .expect("baseline progress")
+        .synced_to_height;
+    drop(baseline);
+    drop(baseline_dir);
+
+    // Bring up a FakeLightwalletd in proxy mode so the proxy in front of it
+    // sees plaintext-h2 wire format from a real upstream. The asymmetric
+    // proxy then drops upstream→client bytes after ~32 KiB on conn #1.
+    // 32 KiB is enough for the gRPC handshake + a few compact blocks to
+    // pass; the drop happens mid-scan so `synced_to_height` advances a
+    // little before stalling.
+    let fake = common::fake_lightwalletd::FakeLightwalletd::builder()
+        .upstream(harness.lightwalletd_url().to_owned())
+        .build()
+        .await
+        .expect("bind fake lightwalletd backing the asymmetric proxy");
+    let fake_addr = fake
+        .url
+        .strip_prefix("http://")
+        .expect("fake url has http:// prefix")
+        .to_owned();
+
+    let proxy = common::tcp_failover_proxy::serve_asymmetric_loss_proxy(fake_addr, 32 * 1024)
+        .await
+        .expect("bind asymmetric_loss_proxy");
+
+    let dir = tempfile::tempdir().expect("temp data dir");
+    let seed = harness.test_seed().to_owned();
+    let scan_config = ScanConfig {
+        birthday: 1,
+        num_accounts: Some(2),
+        gap_limit: 5,
+        lightwalletd_url: proxy.url.clone(),
+        data_dir: dir.path().to_path_buf(),
+        network: ZeckNetwork::Testnet,
+        label: "rn18-asymmetric".to_owned(),
+    };
+    let service = RecoveryService::new();
+    let handle = service
+        .start_scan(scan_config, SecretString::new(seed))
+        .await
+        .expect("start_scan through asymmetric-loss proxy");
+
+    // 180 s budget: watchdog trips at 60 s, retry-loop reconnect delay
+    // adds 5 s, the clean second connection completes in well under a
+    // second on regtest.
+    let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    let progress = loop {
+        let p = service.get_scan_progress(&handle).await.expect("progress");
+        match p.phase {
+            ScanPhase::Complete => break p,
+            ScanPhase::Error => panic!(
+                "[regtest] R-N18: scan errored instead of recovering via watchdog + retry: {:?}",
+                p.error
+            ),
+            ScanPhase::Cancelled => panic!("[regtest] R-N18: scan cancelled"),
+            _ => {
+                if std::time::Instant::now() > deadline {
+                    panic!(
+                        "[regtest] R-N18: scan did not complete within 180 s under asymmetric \
+                         loss. Stall watchdog should have tripped at 60 s. Last phase = {:?}, \
+                         message = {:?}",
+                        p.phase, p.message
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    };
+
+    assert_eq!(
+        progress.synced_to_height, baseline_synced,
+        "[regtest] R-N18: synced_to_height after asymmetric-loss recovery must match baseline \
+         (got {:?}, baseline {:?})",
+        progress.synced_to_height, baseline_synced
+    );
+    eprintln!(
+        "[regtest] R-N18 ok: scan recovered via watchdog from one-way loss, reached {:?}",
+        progress.synced_to_height
+    );
+}
+
 // ─── R-N10: All endpoints unreachable ───────────────────────────────────────
 #[ignore = "requires the Argos network harness (tests/regtest/ booted, ARGOS_REGTEST_LIGHTWALLETD_URL exported)"]
 #[tokio::test]

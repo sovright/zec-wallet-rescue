@@ -78,7 +78,7 @@ boot and CI runners don't keep it warm. C3/C4 are humans driving the app.
 | R-N15 | Hung stream / dead peer — TCP up, no h2 frames — surfaced as Err within bounded time | C2 | ✅ implemented (stall watchdog at `scan.rs::stall_watchdog`, 60 s no-advance trips with `"h2 protocol error"` so the existing retry matcher catches it; FakeLightwalletd `hang_after_blocks(N)` drives the test) |
 | R-N16 | DNS resolution drift between retries (mainnet endpoint resolves to a different IP mid-scan) | C2 | ✅ implemented (`TcpFailoverProxy` fronts two `FakeLightwalletd` backends; first connection hits fake_a (closes after 3 blocks), retry hits fake_b; asserts baseline `synced_to_height`) |
 | R-N17 | Captive-portal-shaped MitM — TLS-stripping HTTP 200 — surfaced as Err, not silent success | C2 | ✅ implemented (`serve_captive_portal_shim` writes raw HTTP 200) |
-| R-N18 | Asymmetric loss — outbound bytes flow, return path silently dropped | C2 / C3 | 🔲 planned — likely manual on Linux (`tc netem` one-way) |
+| R-N18 | Asymmetric loss — outbound bytes flow, return path silently dropped | C2 | ✅ implemented (`serve_asymmetric_loss_proxy` drops upstream→client bytes at the application layer after N bytes on conn #1 — no `tc netem` / sudo required; stall watchdog catches the stall, retry recovers on clean conn #2) |
 | R-N19 | Long sleep + resume on different network (wifi → cellular) | C3 manual | 🔲 documented checklist below |
 
 ### Workspace integrity (T-L1 / T-L3 / T-L4)
