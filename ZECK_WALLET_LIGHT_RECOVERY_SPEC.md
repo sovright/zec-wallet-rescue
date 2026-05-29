@@ -527,7 +527,7 @@ listen('account-discovered', (event) => addAccountRow(event.payload));
 | Platform | Webview engine | Installer format | Signing |
 |---|---|---|---|
 | **macOS** | WKWebView (system) | `.dmg` + `.app` bundle | Apple Developer ID (notarized) |
-| **Windows** | WebView2 (Edge-based, preinstalled Win 10+) | `.msi` + `.exe` (NSIS) | Authenticode code signing |
+| **Windows** | WebView2 (Edge-based, preinstalled Win 10+) | `.msi` + `.exe` (NSIS) | Authenticode via Azure Trusted Signing (Iqlusion Inc) |
 | **Linux** | WebKitGTK | `.deb`, `.rpm`, `.AppImage` | GPG-signed checksums |
 
 Build pipeline (CI):
@@ -768,7 +768,7 @@ Argos builds directly on the `zcash_client_backend` / `zcash_client_sqlite` stac
 
 7. **GUI frontend framework:** Spec currently calls for Vanilla JS to minimize dependencies. If the scanning screen's live-updating table proves complex to manage, consider Preact (~3KB) or Solid.js. Decision deferred until Milestone 5 scaffolding.
 
-8. **macOS code signing:** Apple notarization requires an Apple Developer account ($99/year). Who holds this? ECC? Bootstrap? Open-source project account? Same question for Windows Authenticode.
+8. **Code signing:** *Resolved.* Windows is signed via **Azure Trusted Signing** under the **Iqlusion Inc** organization identity (cloud-held key, OIDC, no per-cert procurement; see `RELEASE_SIGNING.md`). macOS is signed/notarized with an Apple Developer ID via secrets configured in the `release-sign` CI environment.
 
 9. **WebView2 on older Windows:** Windows 10 1803+ ships WebView2, but some users may be on older builds. Tauri v2 bundles a WebView2 bootstrapper that auto-installs it — verify this works smoothly or document the requirement.
 
