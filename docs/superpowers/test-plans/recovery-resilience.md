@@ -68,8 +68,8 @@ boot and CI runners don't keep it warm. C3/C4 are humans driving the app.
 | R-N5 | `ftp://` and `file://` schemes rejected | C1 | ➕ added in this branch |
 | R-N6 | IPv6 loopback `[::1]` over http allowed (local testing) | C1 | ➕ added in this branch |
 | R-N7 | URL with embedded credentials (`https://u:p@host:port`) — documented behaviour | C1 | ➕ added in this branch |
-| R-N8 | GoAway frame mid-scan triggers reconnect, no duplicate emissions | C2 | 🔲 stub in `tests/regtest_integration.rs` |
-| R-N9 | Hostile compact block rejected, scan errors cleanly | C2 | 🔲 stub |
+| R-N8 | GoAway frame mid-scan triggers reconnect, no duplicate emissions | C2 | ⏸️ deferred — needs h2-aware proxy or patched lightwalletd |
+| R-N9 | Hostile compact block rejected, scan errors cleanly | C2 | ⏸️ deferred — needs FakeLightwalletd gRPC fixture |
 | R-N10 | All configured endpoints unreachable surfaces a clean error | C2 | 🔲 stub |
 | R-N11 | TLS handshake failure surfaced without falling back to plaintext | C2 | 🔲 stub |
 | R-N12 | Multi-endpoint fallback respects order with one slow endpoint | C2 | 🔲 stub |
@@ -95,11 +95,11 @@ boot and CI runners don't keep it warm. C3/C4 are humans driving the app.
 | R-S22 | Birthday far above chain tip rejected | C1 | ➕ added in this branch |
 | R-S23 | `gap_limit` 0/1/500/501 boundary in `validate_scan_config` | C1 | ➕ added in this branch |
 | R-S24 | `num_accounts` 0/1/500/501 boundary | C1 | ➕ added in this branch |
-| R-S25 | Sprout-only wallet — scan completes cleanly, finds 0 funds, no panic | C2 | 🔲 stub |
-| R-S26 | Reorg during scan invalidates and re-scans the reorganised range | C2 | 🔲 stub |
-| R-S27 | Crash mid-scan — resume picks up from `fully_scanned_height` | C2 | 🔲 stub |
+| R-S25 | Sprout-only wallet — scan completes cleanly, finds 0 funds, no panic | C2 | ⏸️ deferred — structurally covered (no Sprout derivation) |
+| R-S26 | Reorg during scan invalidates and re-scans the reorganised range | C2 | ✅ implemented |
+| R-S27 | Crash mid-scan — resume picks up from `fully_scanned_height` | C2 | ⏸️ deferred — needs argos-cli subprocess + JSON progress mode |
 | R-S28 | Machine sleep during scan surfaces `sleep_event` | C2 | 🔲 stub (manual on a real machine — laptop lid close) |
-| R-S29 | Crash mid-broadcast — resume detects broadcast tx in wallet DB | C2 | 🔲 stub |
+| R-S29 | Crash mid-broadcast — resume detects broadcast tx in wallet DB | C2 | ⏸️ deferred — needs multi-account funding or broadcast pause hook |
 
 ### Long-running scan behaviour (T-N4 / G2)
 
