@@ -110,6 +110,7 @@ Append after the existing `.donate-fields[hidden]` rule (around line 969) in `gu
 }
 .donate-collapsed .preset-row,
 .donate-collapsed .donate-fields,
+.donate-collapsed #donate-email-field,
 .donate-collapsed #donate-amount-preview {
   display: none;
 }
