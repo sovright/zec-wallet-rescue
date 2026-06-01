@@ -46,4 +46,4 @@ Best-effort on scan completion. Platform dispatch in `notify_user` (Tauri) and `
 `abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art`
 
 ## GitHub
-https://github.com/sovright/zec-wallet-rescue
+https://github.com/sovright/argos

@@ -154,7 +154,7 @@ jobs:
       contents: read
       # id-token: write serves two consumers: the OIDC token azure/login
       # exchanges with Entra ID (federated credential subject
-      # repo:sovright/zec-wallet-rescue:environment:release-sign — no signing
+      # repo:sovright/argos:environment:release-sign — no signing
       # secret is stored in GitHub, the key lives in Azure Trusted Signing),
       # and the Sigstore OIDC for attest-build-provenance below.
       id-token: write
@@ -297,7 +297,7 @@ jobs:
         with:
           # Provenance is no longer a release asset — attest-build-provenance
           # stores attestations in the repo's attestation store (verify with
-          # `gh attestation verify <file> --repo sovright/zec-wallet-rescue`).
+          # `gh attestation verify <file> --repo sovright/argos`).
           pattern: zeck-*
           path: artifacts
           merge-multiple: false

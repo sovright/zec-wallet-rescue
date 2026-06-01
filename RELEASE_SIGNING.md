@@ -33,7 +33,7 @@ signing secret ever lives in CI).
 | Production cert profile | `argos` (`PublicTrust` — created after org identity validation completes) |
 | CI app registration | `argos-windows-signing`, appId `aecd3457-d4f7-44fa-9f36-f6d205946288` |
 | RBAC | `Artifact Signing Certificate Profile Signer` on the account, granted to the app's service principal |
-| Federated credential subject | `repo:sovright/zec-wallet-rescue:environment:release-sign` |
+| Federated credential subject | `repo:sovright/argos:environment:release-sign` |
 
 ## GitHub configuration
 
@@ -87,7 +87,7 @@ az trustedsigning certificate-profile create \
 
    ```bash
    gh variable set AZURE_SIGNING_PROFILE \
-     --repo sovright/zec-wallet-rescue --env release-sign --body argos
+     --repo sovright/argos --env release-sign --body argos
    ```
 
 3. Tag a release (`v*`). The `build-windows` job now produces trusted,
