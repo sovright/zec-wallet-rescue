@@ -5,6 +5,20 @@ function listen(...args) {
   return window.__TAURI__.event.listen(...args);
 }
 
+// External links open in the OS default app. The Tauri webview has no in-app
+// browser and a strict CSP, so a bare target="_blank" would die silently —
+// route http(s)/mailto clicks through the opener plugin instead.
+document.addEventListener("click", (event) => {
+  const link = event.target.closest("a[href]");
+  if (!link) return;
+  const href = link.getAttribute("href");
+  if (!href || !/^(https?|mailto):/i.test(href)) return;
+  event.preventDefault();
+  invoke("plugin:opener|open_url", { url: href }).catch((err) => {
+    console.error("Failed to open external link:", href, err);
+  });
+});
+
 document.addEventListener("DOMContentLoaded", () => {
 
 // ─── State ────────────────────────────────────────────────────────────────────
