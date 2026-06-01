@@ -105,6 +105,25 @@ The address-copy mechanism is unchanged.
   story-copy spacing, skip link. Reuse existing tokens (`--accent`,
   `--accent-soft`, `--panel-strong`, radius).
 
+## Implementation notes (resolved ambiguities)
+
+- **Per-chip ZEC amounts are client-side estimates.** Only the *selected* rate is
+  ever sent to the backend (`propose_sweep` returns `total_donation_zatoshis` for
+  one rate). To show an amount under all three chips without fanning out three
+  proposal calls per render, compute each chip's display amount on the frontend as
+  an approximation from the recovered/gross total (e.g. `gross * pct`). The
+  selected chip's authoritative amount still comes from the proposal via the
+  existing `#donate-amount-preview` path. Do NOT issue three `propose_sweep` calls.
+- **Preserve the ZIP-317 sub-threshold message.** The current
+  `#donate-amount-preview` logic (main.js ~lines 925–936) has a branch for when the
+  donation is below the fee threshold and "may be included or skipped". The new
+  "You keep X · donate Y" line replaces the *success* branch only; keep the
+  sub-threshold caveat branch intact.
+- **Reconcile chip show/hide with the existing checkbox listener.** Today
+  `#donate-fields` visibility is driven by the `#donate-enabled` change listener
+  (main.js ~lines 860–864). The new preset/skip handlers must coordinate with that
+  listener (drive a single source of truth) rather than fighting it.
+
 ## Out of scope (YAGNI)
 
 - No backend / Rust changes; donation math, receipt email handling, and the
