@@ -813,6 +813,14 @@ criteria = "safe-to-deploy"
 version = "0.7.12"
 criteria = "safe-to-deploy"
 
+[[exemptions.is-docker]]
+version = "0.2.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.is-wsl]]
+version = "0.4.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.is_terminal_polyfill]]
 version = "1.70.2"
 criteria = "safe-to-deploy"
@@ -1045,6 +1053,10 @@ criteria = "safe-to-deploy"
 version = "0.3.1"
 criteria = "safe-to-deploy"
 
+[[exemptions.open]]
+version = "5.3.5"
+criteria = "safe-to-deploy"
+
 [[exemptions.orchard]]
 version = "0.13.1"
 criteria = "safe-to-deploy"
@@ -1079,6 +1091,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.pasta_curves]]
 version = "0.5.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.pathdiff]]
+version = "0.2.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.pbkdf2]]
@@ -1583,6 +1599,14 @@ criteria = "safe-to-deploy"
 
 [[exemptions.tauri-macros]]
 version = "2.5.5"
+criteria = "safe-to-deploy"
+
+[[exemptions.tauri-plugin]]
+version = "2.5.4"
+criteria = "safe-to-deploy"
+
+[[exemptions.tauri-plugin-opener]]
+version = "2.5.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.tauri-runtime]]
