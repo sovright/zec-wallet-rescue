@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 build = "build.rs"
+publish = false
 
 [build-dependencies]
 tauri-build.workspace = true

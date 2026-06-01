@@ -257,6 +257,35 @@ seedInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); validateSeed(); }
 });
 
+// Clear-clipboard affordance. Overwrites the OS clipboard with empty text so
+// the user's pasted seed phrase isn't sitting in the bare OS buffer after
+// they've moved past the seed step. This does NOT defeat clipboard-history
+// managers (Maccy, ClipboardFusion, the iOS handoff clipboard), which may
+// have snapshotted the seed at paste time — the inline guidance below the
+// button says so. We deliberately do not block paste itself: pasting from a
+// password manager is safer than retyping under a keylogger, and
+// `oncopy="return false"` on a textarea is bypassable theatre. See
+// THREAT_MODEL.md §6.1 T-S4.
+async function clearOsClipboard(statusEl) {
+  // navigator.clipboard requires a secure context. Tauri serves the UI from
+  // tauri://localhost which qualifies. If the Clipboard API is unavailable
+  // (very old WebKitGTK), fall back gracefully — overwriting via a hidden
+  // textarea + execCommand is also blocked in modern WebKit, so we just
+  // surface the limitation rather than fake it.
+  if (!navigator.clipboard || !navigator.clipboard.writeText) {
+    setStatus(statusEl, "Clipboard API not available in this WebView; clear your clipboard manually.", "error");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText("");
+    setStatus(statusEl, "OS clipboard cleared. Clipboard-history apps may still have a copy.", "success");
+  } catch (err) {
+    setStatus(statusEl, `Could not clear clipboard: ${err}`, "error");
+  }
+}
+
+$("seed-clear-clipboard").addEventListener("click", () => clearOsClipboard("seed-status"));
+
 // ─── Step 3: Configuration ────────────────────────────────────────────────────
 
 const SERVER_PRESETS = {
@@ -1430,6 +1459,9 @@ $("resume-cancel").addEventListener("click", closeResumeModal);
 $("resume-seed-visibility").addEventListener("change", () => {
   $("resume-seed-input").classList.toggle("masked", !$("resume-seed-visibility").checked);
 });
+$("resume-seed-clear-clipboard").addEventListener("click", () =>
+  clearOsClipboard("resume-modal-status")
+);
 
 $("resume-confirm").addEventListener("click", async () => {
   if (!pendingResumeRow) return;

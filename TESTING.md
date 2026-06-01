@@ -149,7 +149,7 @@ argos sweep \
 |------|--------|
 | Sweep execution (`execute_sweep`) | **Implemented** — full shielding + broadcast + confirmation polling |
 | Windows WebView2 on Win10 < 1803 | Untested |
-| Code signing (Apple notarization, Windows Authenticode) | Ownership unresolved |
+| Code signing (Apple notarization, Windows Authenticode) | **Implemented** — macOS via Apple Developer ID; Windows via Azure Trusted Signing (Iqlusion Inc). See `RELEASE_SIGNING.md` |
 
 ---
 

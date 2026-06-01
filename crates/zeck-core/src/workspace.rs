@@ -1088,4 +1088,75 @@ mod tests {
         let d = derive_workspace_id(ZeckNetwork::Testnet, &fp, 3_280_000, "auto-gap-20");
         assert_ne!(a, d);
     }
+
+    // ─── Workspace permissions (R-W21..R-W23) ─────────────────────────────────
+    //
+    // T-L1 in the threat model. The pure-keying tests above prove the
+    // *path* is correct; these tests prove the *permissions* on what's at
+    // that path. Unix-only — the Windows/macOS-with-FileVault story is
+    // documented in the threat model rather than tested.
+
+    #[cfg(unix)]
+    #[test]
+    fn create_private_dir_all_sets_mode_0o700_on_leaf() {
+        // R-W21: the leaf workspace directory must be created `0o700` so
+        // other local users (and other-process malware running as a
+        // different uid) cannot read FVKs/IVKs/note caches.
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let leaf = temp.path().join("workspace-leaf");
+        super::create_private_dir_all(&leaf).expect("create_private_dir_all should succeed");
+        let mode = std::fs::metadata(&leaf).expect("metadata").permissions().mode();
+        // Only inspect the permission bits — file type bits live in the upper
+        // half of `mode` and are not what we're asserting.
+        assert_eq!(mode & 0o777, 0o700, "leaf workspace dir mode is {:o}", mode & 0o777);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn set_private_file_permissions_sets_mode_0o600_on_file() {
+        // R-W22: a freshly-created file inside the workspace gets `0o600`
+        // applied via `set_private_file_permissions`. Argos invokes this on
+        // wallet.sqlite / blocks.sqlite immediately after creation.
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file = temp.path().join("private.bin");
+        std::fs::write(&file, b"sensitive").expect("write file");
+        // Force a permissive starting mode so the test actually proves the
+        // tightening step ran, not just that defaults happened to be 0o600.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644))
+            .expect("seed perms");
+        super::set_private_file_permissions(&file).expect("set perms");
+        let mode = std::fs::metadata(&file).expect("metadata").permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "file mode is {:o}", mode & 0o777);
+    }
+
+    #[test]
+    fn workspace_path_handles_unicode_data_dir() {
+        // R-W23: data-dir paths containing non-ASCII characters (Cyrillic,
+        // CJK, etc.) must produce a workspace path that round-trips through
+        // String/PathBuf without mangling. Defends against a regression that
+        // would lose data on macOS users with localised account names.
+        let cfg = RuntimeScanConfig {
+            seed_phrase: SecretString::new(SEED.to_owned()),
+            birthday: 3_280_000,
+            num_accounts: None,
+            gap_limit: 20,
+            lightwalletd_url: "https://example.invalid:443".to_owned(),
+            data_dir: PathBuf::from("/tmp/zeck-tëst-ñam-日本/data"),
+            network: ZeckNetwork::Mainnet,
+            label: String::new(),
+        };
+        let ws = RecoveryWorkspace::from_runtime(&cfg).expect("workspace from unicode data_dir");
+        // Round-trip the path through String and back: this is what the
+        // sidecar JSON serialisation does in practice. A mangling regression
+        // would surface as a path inequality after the round-trip.
+        let as_string = ws.root().to_string_lossy().into_owned();
+        let back = PathBuf::from(&as_string);
+        assert_eq!(ws.root(), back, "unicode path mangled through string round-trip");
+        // And the path actually contains the unicode segment, not a
+        // percent-encoded or stripped version.
+        assert!(as_string.contains("tëst"));
+        assert!(as_string.contains("日本"));
+    }
 }
