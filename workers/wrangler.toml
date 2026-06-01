@@ -1,0 +1,7 @@
+name = "argos-proxy"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+routes = [
+  { pattern = "argos.sovright.com", custom_domain = true }
+]
