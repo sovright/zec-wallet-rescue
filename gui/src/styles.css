@@ -743,6 +743,28 @@ pre {
   color: var(--ink);
 }
 
+.guide-qr {
+  display: block;
+  width: 160px;
+  height: 160px;
+  margin: 12px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.guide-warning {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--danger);
+  border-radius: 6px;
+  background: rgba(167, 59, 42, 0.08);
+}
+
+.guide-warning strong {
+  color: var(--ink);
+}
+
 .guide-tip {
   background: rgba(207, 155, 77, 0.1);
   border-left: 3px solid #c99649;

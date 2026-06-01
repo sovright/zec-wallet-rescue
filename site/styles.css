@@ -421,6 +421,53 @@ th {
   min-height: 0;
 }
 
+.help-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.help-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.help-card p {
+  flex: 1 1 auto;
+}
+
+.help-qr {
+  display: block;
+  width: 180px;
+  height: 180px;
+  margin: 16px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.help-link {
+  display: inline-block;
+  margin-top: auto;
+  font-weight: 700;
+  color: var(--green);
+}
+
+.help-link:hover {
+  color: var(--green-dark);
+}
+
+.help-disclaimer {
+  margin-top: 20px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning-ink);
+  font-size: 0.95rem;
+}
+
 .legacy-badge {
   display: flex;
   align-items: center;

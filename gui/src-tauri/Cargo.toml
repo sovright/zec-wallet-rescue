@@ -16,5 +16,6 @@ secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tauri.workspace = true
+tauri-plugin-opener.workspace = true
 tokio.workspace = true
 argos-core = { path = "../../crates/zeck-core" }
