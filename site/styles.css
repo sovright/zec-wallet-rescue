@@ -499,6 +499,39 @@ th {
   border-radius: 50%;
 }
 
+.support-section {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(135deg, #f3f8f5 0%, var(--paper) 60%);
+}
+
+.support-inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(300px, 0.9fr);
+  gap: 48px;
+  align-items: start;
+}
+
+.support-copy h2 {
+  max-width: 560px;
+}
+
+.support-panel {
+  padding: 28px;
+  border: 1px solid #b9d4c6;
+  border-radius: 8px;
+  background: #f0f8f4;
+}
+
+.support-panel h3 {
+  margin-bottom: 16px;
+  color: var(--green-dark);
+}
+
+.support-panel .check-list li::before {
+  background: var(--green);
+}
+
 .download-section {
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
@@ -669,6 +702,7 @@ details p {
   .hero,
   .notice-band,
   .split-section,
+  .support-inner,
   .guide-layout {
     grid-template-columns: 1fr;
   }
