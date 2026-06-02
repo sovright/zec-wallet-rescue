@@ -473,21 +473,41 @@
           <p id="sweep-summary" class="status-line"></p>
           <div class="report-card" id="sweep-skipped"></div>
           <div class="donate-form report-card" id="donate-form">
-            <label class="checkbox-row">
-              <input type="checkbox" id="donate-enabled" checked />
-              <span>Donate a share of recovered funds to support Argos</span>
-            </label>
-            <div class="donate-fields" id="donate-fields">
+            <p class="donate-eyebrow">Support Argos</p>
+            <h3 class="donate-heading">Help us keep doing this</h3>
+            <p class="donate-story">
+              This effort was only possible through public donations. If Argos
+              helped you recover your ZEC, Sovright would appreciate a small
+              donation to continue doing work like this.
+            </p>
+            <!-- Source of truth for on/off; toggled by the chips/skip link, not shown directly. -->
+            <input type="checkbox" id="donate-enabled" checked hidden />
+            <div class="preset-row" id="donate-presets" role="group" aria-label="Donation amount">
+              <button type="button" class="preset-chip" data-pct="5" aria-pressed="false">
+                <span class="preset-pct">5%</span><span class="preset-amt"></span>
+              </button>
+              <button type="button" class="preset-chip" data-pct="10" aria-pressed="true">
+                <span class="preset-pct">10%</span><span class="preset-amt"></span>
+              </button>
+              <button type="button" class="preset-chip" data-pct="20" aria-pressed="false">
+                <span class="preset-pct">20%</span><span class="preset-amt"></span>
+              </button>
+              <button type="button" class="preset-chip" data-pct="custom" aria-pressed="false">
+                <span class="preset-pct">Custom</span><span class="preset-amt">%</span>
+              </button>
+            </div>
+            <div class="donate-fields" id="donate-fields" hidden>
               <label class="field">
                 <span>Donation percentage</span>
                 <input id="donate-rate" type="number" min="0" max="99" step="1" value="10" />
               </label>
-              <label class="field">
-                <span>Email for receipt (optional)</span>
-                <input id="donate-email" type="email" placeholder="you@example.com" />
-              </label>
-              <p class="status-line" id="donate-amount-preview"></p>
             </div>
+            <label class="field" id="donate-email-field">
+              <span>Email for receipt (optional)</span>
+              <input id="donate-email" type="email" placeholder="you@example.com" />
+            </label>
+            <p class="status-line" id="donate-amount-preview" style="margin-top:8px"></p>
+            <button type="button" class="donate-skip" id="donate-skip">No thanks, skip donation</button>
           </div>
           <label class="checkline">
             <input type="checkbox" id="irreversible-check" />
