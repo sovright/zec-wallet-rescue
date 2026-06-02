@@ -8,3 +8,6 @@
 *.sqlite
 *.db
 .DS_Store
+
+# Brainstorming visual companion (local, not committed)
+.superpowers/

@@ -857,11 +857,61 @@ $("sweep-back").addEventListener("click", () => {
   goTo("scan");
 });
 
-$("donate-enabled").addEventListener("change", () => {
-  $("donate-fields").hidden = !$("donate-enabled").checked;
+// Client-side per-chip estimate: donation as a % of what you'd net without a
+// donation. Only the *selected* rate is ever sent to the backend; the chips
+// just preview amounts so we don't fan out three propose_sweep calls.
+function estimateDonationZat(pct) {
+  const p = state.sweepProposal;
+  if (!p) return null;
+  const base = (p.net_received_zatoshis || 0) + (p.total_donation_zatoshis || 0);
+  return Math.round((base * pct) / 100);
+}
+
+// Reflect a chosen percentage into the source-of-truth fields and re-propose.
+function selectDonationPreset(pctValue) {
+  const custom = pctValue === "custom";
+  $("donate-enabled").checked = true;
+  $("donate-form").classList.remove("donate-collapsed");
+  $("donate-fields").hidden = !custom;
+  if (!custom) $("donate-rate").value = String(pctValue);
+  document.querySelectorAll("#donate-presets .preset-chip").forEach((chip) => {
+    chip.setAttribute(
+      "aria-pressed",
+      String(chip.dataset.pct === String(pctValue)),
+    );
+  });
   maybeRefreshProposal();
+}
+
+document.querySelectorAll("#donate-presets .preset-chip").forEach((chip) => {
+  chip.addEventListener("click", () => selectDonationPreset(chip.dataset.pct));
+});
+
+// Custom field: keep its chip highlighted while typing; re-propose on change.
+$("donate-rate").addEventListener("input", () => {
+  document.querySelectorAll("#donate-presets .preset-chip").forEach((chip) => {
+    chip.setAttribute("aria-pressed", String(chip.dataset.pct === "custom"));
+  });
 });
 $("donate-rate").addEventListener("change", maybeRefreshProposal);
+
+// Skip toggles the donation off (collapse) / back on (default 10%). The
+// eyebrow + story copy stay visible either way.
+$("donate-skip").addEventListener("click", () => {
+  const turningOff = $("donate-enabled").checked;
+  if (turningOff) {
+    $("donate-enabled").checked = false;
+    $("donate-form").classList.add("donate-collapsed");
+    document.querySelectorAll("#donate-presets .preset-chip").forEach((chip) => {
+      chip.setAttribute("aria-pressed", "false");
+    });
+    $("donate-skip").textContent = "Changed your mind? Add a donation";
+    maybeRefreshProposal();
+  } else {
+    $("donate-skip").textContent = "No thanks, skip donation";
+    selectDonationPreset("10"); // re-enables, un-collapses, and re-proposes
+  }
+});
 // email does not affect amounts; it's read fresh at propose/execute time, no re-propose needed
 
 // ─── Step 5: Sweep Review ─────────────────────────────────────────────────────
@@ -922,6 +972,13 @@ function renderSweepProposal(proposal) {
   }
 
   $("donate-form").hidden = !state.donationEnabled || state.scanConfig?.network === "testnet";
+  // Fill each preset chip's "≈ X ZEC" estimate from the current proposal.
+  document.querySelectorAll("#donate-presets .preset-chip").forEach((chip) => {
+    if (chip.dataset.pct === "custom") return;
+    const est = estimateDonationZat(parseFloat(chip.dataset.pct));
+    chip.querySelector(".preset-amt").textContent =
+      est == null ? "" : `≈ ${fmt(est)}`;
+  });
   const donated = proposal.total_donation_zatoshis || 0;
   const preview = $("donate-amount-preview");
   if (donated > 0) {
@@ -1197,7 +1254,12 @@ $("restart-flow").addEventListener("click", () => {
   $("donate-enabled").checked = true;
   $("donate-rate").value = "10";
   $("donate-email").value = "";
-  $("donate-fields").hidden = false;
+  $("donate-fields").hidden = true;
+  $("donate-form").classList.remove("donate-collapsed");
+  $("donate-skip").textContent = "No thanks, skip donation";
+  document.querySelectorAll("#donate-presets .preset-chip").forEach((chip) => {
+    chip.setAttribute("aria-pressed", String(chip.dataset.pct === "10"));
+  });
   setStatus("donate-amount-preview", "", "");
   $("start-scan").disabled = false;
 
