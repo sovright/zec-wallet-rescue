@@ -8,6 +8,7 @@ use argos_core::RecoveryService;
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             service: RecoveryService::new(),
         })
