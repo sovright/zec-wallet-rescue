@@ -50,7 +50,7 @@ Argos now includes the major recovery phases end to end:
 
 ## Installing on Windows
 
-**The prebuilt installer is the supported Windows path.** Download the `.exe` from the [Releases page](https://github.com/sovright/zec-wallet-rescue/releases), verify the SHA256 checksum published alongside it, and run the installer. No additional dependencies are required.
+**The prebuilt installer is the supported Windows path.** Download the `.exe` from the [Releases page](https://github.com/sovright/argos/releases), verify the SHA256 checksum published alongside it, and run the installer. No additional dependencies are required.
 
 Building from source is an advanced/auditor path and is supported on **Windows x64** only. Windows on ARM (aarch64-pc-windows-msvc) is not currently a supported build target; ARM64 Windows users should use the prebuilt binary.
 
@@ -65,10 +65,10 @@ To verify a downloaded artifact:
 ```bash
 # Uses the GitHub CLI (gh). The attestation lives in this repo's attestation
 # store — no separate provenance file to download.
-gh attestation verify <downloaded-file> --repo sovright/zec-wallet-rescue
+gh attestation verify <downloaded-file> --repo sovright/argos
 ```
 
-A passing verification confirms that `<downloaded-file>` was produced by this repository's release workflow. (Pin the producing workflow with `--signer-workflow sovright/zec-wallet-rescue/.github/workflows/release.yml` for a stricter check.) Release bundles are also code-signed: macOS via Apple Developer ID (notarized), and Windows via Azure Trusted Signing under the Iqlusion Inc organization identity. The provenance attestation complements the platform code-signing by anchoring each artifact to a specific source-tree commit rather than only to a signing identity.
+A passing verification confirms that `<downloaded-file>` was produced by this repository's release workflow. (Pin the producing workflow with `--signer-workflow sovright/argos/.github/workflows/release.yml` for a stricter check.) Release bundles are also code-signed: macOS via Apple Developer ID (notarized), and Windows via Azure Trusted Signing under the Iqlusion Inc organization identity. The provenance attestation complements the platform code-signing by anchoring each artifact to a specific source-tree commit rather than only to a signing identity.
 
 ## Development
 
