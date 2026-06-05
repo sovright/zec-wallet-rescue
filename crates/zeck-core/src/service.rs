@@ -52,7 +52,7 @@ use crate::{
         refresh_scan_progress, run_recovery_scan, run_wallet_sync, ScanTaskState,
         SharedScanTaskState, TrackedAccount,
     },
-    workspace::{consensus_network, RecoveryWorkspace},
+    workspace::{consensus_network, open_wallet_db, RecoveryWorkspace},
 };
 
 const RECOVERY_MEMO_DEFAULT: &str = "Argos recovery";
@@ -793,18 +793,8 @@ async fn execute_shielding_step(
     transparent_account: &zcash_transparent::keys::AccountPrivKey,
     usk: &UnifiedSpendingKey,
 ) -> ZeckResult<u64> {
-    let mut wallet_db = WalletDb::for_path(
-        ctx.workspace.wallet_db_path(),
-        consensus_network(ctx.network),
-        SystemClock,
-        rand_core::OsRng,
-    )
-    .map_err(|err| {
-        ZeckError::Storage(format!(
-            "opening wallet database {}: {err}",
-            ctx.workspace.wallet_db_path().display()
-        ))
-    })?;
+    let mut wallet_db =
+        open_wallet_db(ctx.workspace.wallet_db_path(), consensus_network(ctx.network))?;
     let input_selector = GreedyInputSelector::<_>::new();
     let change_strategy = standard_zip317_change_strategy();
 
@@ -992,18 +982,8 @@ async fn execute_send_max_step(
     destination_address: &ZcashAddress,
     memo_bytes: Option<MemoBytes>,
 ) -> ZeckResult<u64> {
-    let mut wallet_db = WalletDb::for_path(
-        ctx.workspace.wallet_db_path(),
-        consensus_network(ctx.network),
-        SystemClock,
-        rand_core::OsRng,
-    )
-    .map_err(|err| {
-        ZeckError::Storage(format!(
-            "opening wallet database {}: {err}",
-            ctx.workspace.wallet_db_path().display()
-        ))
-    })?;
+    let mut wallet_db =
+        open_wallet_db(ctx.workspace.wallet_db_path(), consensus_network(ctx.network))?;
 
     // Pass 1 — measure the full-account send-max proposal (build only, no broadcast).
     let max_proposal = propose_send_max_transfer::<_, _, _, Infallible>(
@@ -1264,18 +1244,7 @@ fn account_total_zatoshis(
     network: crate::models::ZeckNetwork,
     account_id: zcash_client_sqlite::AccountUuid,
 ) -> ZeckResult<u64> {
-    let wallet_db = WalletDb::for_path(
-        workspace.wallet_db_path(),
-        consensus_network(network),
-        SystemClock,
-        rand_core::OsRng,
-    )
-    .map_err(|err| {
-        ZeckError::Storage(format!(
-            "opening wallet database {}: {err}",
-            workspace.wallet_db_path().display()
-        ))
-    })?;
+    let wallet_db = open_wallet_db(workspace.wallet_db_path(), consensus_network(network))?;
     let summary = wallet_db
         .get_wallet_summary(ConfirmationsPolicy::MIN)
         .map_err(|err| ZeckError::Wallet(format!("loading wallet summary: {err}")))?
@@ -1292,18 +1261,7 @@ fn account_transparent_zatoshis(
     network: crate::models::ZeckNetwork,
     tracked_account: &TrackedAccount,
 ) -> ZeckResult<u64> {
-    let wallet_db = WalletDb::for_path(
-        workspace.wallet_db_path(),
-        consensus_network(network),
-        SystemClock,
-        rand_core::OsRng,
-    )
-    .map_err(|err| {
-        ZeckError::Storage(format!(
-            "opening wallet database {}: {err}",
-            workspace.wallet_db_path().display()
-        ))
-    })?;
+    let wallet_db = open_wallet_db(workspace.wallet_db_path(), consensus_network(network))?;
     let summary = wallet_db
         .get_wallet_summary(ConfirmationsPolicy::MIN)
         .map_err(|err| ZeckError::Wallet(format!("loading wallet summary: {err}")))?

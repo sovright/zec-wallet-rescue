@@ -4,7 +4,6 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
-use rand_core::OsRng;
 use rusqlite::{params, Connection, OptionalExtension};
 use rustls::crypto::ring::default_provider;
 use secrecy::{ExposeSecret, SecretVec};
@@ -31,7 +30,7 @@ use zcash_client_backend::{
     },
     sync,
 };
-use zcash_client_sqlite::{util::SystemClock, AccountUuid, WalletDb};
+use zcash_client_sqlite::AccountUuid;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_transparent::address::TransparentAddress;
 use zip32::{fingerprint::SeedFingerprint, AccountId};
@@ -51,8 +50,8 @@ use crate::{
         ScanSummary, SleepEvent,
     },
     workspace::{
-        consensus_network, mark_session_completed, touch_session_last_run, write_session_metadata,
-        RecoveryWorkspace, SessionMetadata,
+        consensus_network, mark_session_completed, open_wallet_db, touch_session_last_run,
+        write_session_metadata, RecoveryWorkspace, SessionMetadata,
     },
 };
 
@@ -91,11 +90,20 @@ impl std::error::Error for CacheError {}
 /// one batch is ever live. This eliminates all cache.sqlite I/O: the protobuf
 /// encode/decode cycles, fsyncs, and incremental-vacuum work that the
 /// `SqliteBlockCache` predecessor required.
-struct MemoryBlockCache(StdMutex<std::collections::BTreeMap<BlockHeight, CompactBlock>>);
+struct MemoryBlockCache(StdMutex<std::collections::BTreeMap<u32, CompactBlock>>);
 
 impl MemoryBlockCache {
     fn new() -> Self {
         Self(StdMutex::new(std::collections::BTreeMap::new()))
+    }
+
+    fn lock(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, std::collections::BTreeMap<u32, CompactBlock>>, CacheError>
+    {
+        self.0
+            .lock()
+            .map_err(|_| CacheError::Corrupted("block cache mutex was poisoned".to_owned()))
     }
 }
 
@@ -115,32 +123,24 @@ impl BlockSource for MemoryBlockCache {
             ChainError::BlockSource(err)
         }
 
-        let guard = self
-            .0
-            .lock()
-            .map_err(|_| CacheError::Corrupted("block cache mutex was poisoned".to_owned()))
-            .map_err(to_chain_error)?;
+        let start_height = from_height.map_or(0u32, u32::from);
+        let row_limit = limit.unwrap_or(usize::MAX);
+        let guard = self.lock().map_err(to_chain_error)?;
 
-        let start = from_height.unwrap_or(BlockHeight::from_u32(0));
-        let cap = limit.unwrap_or(usize::MAX);
         let mut expected = from_height;
-        let mut count = 0usize;
-        for (height, block) in guard.range(start..) {
-            if count >= cap {
-                break;
-            }
+        for (&height, block) in guard.range(start_height..).take(row_limit) {
+            let height = BlockHeight::from_u32(height);
             if let Some(expected_height) = expected {
-                if *height != expected_height {
+                if height != expected_height {
                     return Err(to_chain_error(CacheError::MissingBlock(expected_height)));
                 }
             }
             with_row(block.clone())?;
             expected = expected.map(|h| h + 1);
-            count += 1;
         }
 
         if let Some(expected_height) = expected {
-            if expected_height == start {
+            if expected_height == from_height.unwrap_or(BlockHeight::from_u32(start_height)) {
                 return Err(to_chain_error(CacheError::MissingBlock(expected_height)));
             }
         }
@@ -155,28 +155,25 @@ impl BlockCache for MemoryBlockCache {
         &self,
         range: Option<&ScanRange>,
     ) -> Result<Option<BlockHeight>, Self::Error> {
-        let guard = self
-            .0
-            .lock()
-            .map_err(|_| CacheError::Corrupted("block cache mutex was poisoned".to_owned()))?;
-        let tip = match range {
-            Some(r) => guard.range(r.block_range().start..r.block_range().end).next_back(),
-            None => guard.iter().next_back(),
-        };
-        Ok(tip.map(|(h, _)| *h))
+        let (start_height, end_height) = range
+            .map(|r| (u32::from(r.block_range().start), u32::from(r.block_range().end)))
+            .unwrap_or((0, u32::MAX));
+        Ok(self
+            .lock()?
+            .range(start_height..end_height)
+            .next_back()
+            .map(|(&height, _)| BlockHeight::from_u32(height)))
     }
 
     async fn read(&self, range: &ScanRange) -> Result<Vec<CompactBlock>, Self::Error> {
-        let guard = self
-            .0
-            .lock()
-            .map_err(|_| CacheError::Corrupted("block cache mutex was poisoned".to_owned()))?;
         let start = range.block_range().start;
         let end = range.block_range().end;
+        let guard = self.lock()?;
         let mut blocks = Vec::new();
         let mut expected = start;
-        for (height, block) in guard.range(start..end) {
-            if *height != expected {
+        for (&height, block) in guard.range(u32::from(start)..u32::from(end)) {
+            let height = BlockHeight::from_u32(height);
+            if height != expected {
                 if blocks.is_empty() {
                     return Err(CacheError::MissingBlock(expected));
                 }
@@ -189,24 +186,22 @@ impl BlockCache for MemoryBlockCache {
     }
 
     async fn insert(&self, compact_blocks: Vec<CompactBlock>) -> Result<(), Self::Error> {
-        let mut guard = self
-            .0
-            .lock()
-            .map_err(|_| CacheError::Corrupted("block cache mutex was poisoned".to_owned()))?;
+        let mut guard = self.lock()?;
         for block in compact_blocks {
-            guard.insert(block.height(), block);
+            guard.insert(u32::from(block.height()), block);
         }
         Ok(())
     }
 
     async fn delete(&self, range: ScanRange) -> Result<(), Self::Error> {
-        let mut guard = self
-            .0
-            .lock()
-            .map_err(|_| CacheError::Corrupted("block cache mutex was poisoned".to_owned()))?;
-        let start = range.block_range().start;
-        let end = range.block_range().end;
-        guard.retain(|h, _| *h < start || *h >= end);
+        let start = u32::from(range.block_range().start);
+        let end = u32::from(range.block_range().end);
+        let mut guard = self.lock()?;
+        // `BTreeMap` has no remove-range; `split_off` twice removes
+        // `[start, end)` without visiting unrelated entries.
+        let mut tail = guard.split_off(&start);
+        let keep = tail.split_off(&end);
+        guard.extend(keep);
         Ok(())
     }
 }
@@ -305,12 +300,9 @@ impl ProgressPoller {
                 };
                 last_tick = Some((now_mono, now_wall));
 
-                let scanned_height = if let Ok(db) = WalletDb::for_path(
-                    workspace.wallet_db_path(),
-                    consensus_network(network),
-                    SystemClock,
-                    OsRng,
-                ) {
+                let scanned_height = if let Ok(db) =
+                    open_wallet_db(workspace.wallet_db_path(), consensus_network(network))
+                {
                     db.get_wallet_summary(ConfirmationsPolicy::MIN)
                         .ok()
                         .flatten()
@@ -704,18 +696,7 @@ async fn import_accounts(
     let seed_fingerprint = SeedFingerprint::from_seed(seed).ok_or_else(|| {
         ZeckError::Internal("mnemonic seed length is out of the ZIP 32 range".to_owned())
     })?;
-    let mut wallet_db = WalletDb::for_path(
-        workspace.wallet_db_path(),
-        consensus_network(network),
-        SystemClock,
-        OsRng,
-    )
-    .map_err(|err| {
-        ZeckError::Storage(format!(
-            "opening wallet database {}: {err}",
-            workspace.wallet_db_path().display()
-        ))
-    })?;
+    let mut wallet_db = open_wallet_db(workspace.wallet_db_path(), consensus_network(network))?;
 
     let mut tracked_accounts = Vec::with_capacity(accounts.len());
 
@@ -968,15 +949,7 @@ where
     <ChT::ResponseBody as Body>::Error: Into<StdError> + Send,
 {
     let cache = MemoryBlockCache::new();
-    let mut wallet_db =
-        WalletDb::for_path(workspace.wallet_db_path(), *network, SystemClock, OsRng).map_err(
-            |err| {
-                ZeckError::Storage(format!(
-                    "opening wallet database {}: {err}",
-                    workspace.wallet_db_path().display()
-                ))
-            },
-        )?;
+    let mut wallet_db = open_wallet_db(workspace.wallet_db_path(), *network)?;
 
     sync::run(client, network, &cache, &mut wallet_db, SYNC_BATCH_SIZE)
         .await
@@ -996,18 +969,7 @@ pub(crate) async fn refresh_scan_progress(
         guard.tracked_accounts.clone()
     };
 
-    let wallet_db = WalletDb::for_path(
-        workspace.wallet_db_path(),
-        consensus_network(network),
-        SystemClock,
-        OsRng,
-    )
-    .map_err(|err| {
-        ZeckError::Storage(format!(
-            "opening wallet database {}: {err}",
-            workspace.wallet_db_path().display()
-        ))
-    })?;
+    let wallet_db = open_wallet_db(workspace.wallet_db_path(), consensus_network(network))?;
 
     let summary = wallet_db
         .get_wallet_summary(ConfirmationsPolicy::MIN)
@@ -1470,18 +1432,7 @@ pub(crate) fn import_probe_account(
     let seed_fingerprint = SeedFingerprint::from_seed(seed).ok_or_else(|| {
         ZeckError::Internal("mnemonic seed length is out of the ZIP 32 range".to_owned())
     })?;
-    let mut wallet_db = WalletDb::for_path(
-        workspace.wallet_db_path(),
-        consensus_network(network),
-        SystemClock,
-        OsRng,
-    )
-    .map_err(|err| {
-        ZeckError::Storage(format!(
-            "opening probe wallet database {}: {err}",
-            workspace.wallet_db_path().display()
-        ))
-    })?;
+    let mut wallet_db = open_wallet_db(workspace.wallet_db_path(), consensus_network(network))?;
 
     let zip32_index = AccountId::ZERO;
     let derivation = Zip32Derivation::new(seed_fingerprint, zip32_index);
@@ -2361,6 +2312,171 @@ mod tests {
                     range,
                 );
             }
+        }
+    }
+
+    /// Pins the `BlockSource`/`BlockCache` semantics of `MemoryBlockCache`
+    /// that `zcash_client_backend::sync::run` and `scan_cached_blocks` rely on.
+    mod memory_block_cache {
+        use zcash_client_backend::{
+            data_api::{
+                chain::{error::Error as ChainError, BlockCache, BlockSource},
+                scanning::{ScanPriority, ScanRange},
+            },
+            proto::compact_formats::CompactBlock,
+        };
+        use zcash_protocol::consensus::BlockHeight;
+
+        use super::super::{CacheError, MemoryBlockCache};
+
+        fn test_block(height: u32) -> CompactBlock {
+            CompactBlock { height: u64::from(height), ..Default::default() }
+        }
+
+        fn scan_range(start: u32, end: u32) -> ScanRange {
+            ScanRange::from_parts(
+                BlockHeight::from_u32(start)..BlockHeight::from_u32(end),
+                ScanPriority::Historic,
+            )
+        }
+
+        fn collect_heights(
+            cache: &MemoryBlockCache,
+            from_height: Option<u32>,
+            limit: Option<usize>,
+        ) -> Result<Vec<u32>, ChainError<std::convert::Infallible, CacheError>> {
+            let mut heights = Vec::new();
+            cache.with_blocks(from_height.map(BlockHeight::from_u32), limit, |block| {
+                heights.push(u32::from(block.height()));
+                Ok(())
+            })?;
+            Ok(heights)
+        }
+
+        #[tokio::test]
+        async fn insert_then_with_blocks_yields_contiguous_ascending_blocks() {
+            let cache = MemoryBlockCache::new();
+            cache
+                .insert(vec![test_block(102), test_block(100), test_block(101)])
+                .await
+                .expect("insert");
+            let heights =
+                collect_heights(&cache, Some(100), None).expect("with_blocks over full range");
+            assert_eq!(heights, vec![100, 101, 102]);
+        }
+
+        #[tokio::test]
+        async fn with_blocks_respects_limit() {
+            let cache = MemoryBlockCache::new();
+            cache
+                .insert((100..110).map(test_block).collect())
+                .await
+                .expect("insert");
+            let heights = collect_heights(&cache, Some(100), Some(3)).expect("limited iteration");
+            assert_eq!(heights, vec![100, 101, 102]);
+        }
+
+        #[tokio::test]
+        async fn with_blocks_errors_on_gap() {
+            let cache = MemoryBlockCache::new();
+            cache
+                .insert(vec![test_block(100), test_block(102)])
+                .await
+                .expect("insert");
+            let err = collect_heights(&cache, Some(100), None)
+                .expect_err("gap at 101 must surface as an error");
+            assert!(
+                matches!(
+                    err,
+                    ChainError::BlockSource(CacheError::MissingBlock(height))
+                        if height == BlockHeight::from_u32(101)
+                ),
+                "expected MissingBlock(101), got {err:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn with_blocks_errors_when_start_height_is_absent() {
+            let cache = MemoryBlockCache::new();
+            cache.insert(vec![test_block(200)]).await.expect("insert");
+            let err = collect_heights(&cache, Some(100), None)
+                .expect_err("absent start height must surface as an error");
+            assert!(
+                matches!(
+                    err,
+                    ChainError::BlockSource(CacheError::MissingBlock(height))
+                        if height == BlockHeight::from_u32(100)
+                ),
+                "expected MissingBlock(100), got {err:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn read_returns_contiguous_prefix_of_range() {
+            let cache = MemoryBlockCache::new();
+            cache
+                .insert(vec![test_block(100), test_block(101)])
+                .await
+                .expect("insert");
+            let blocks = cache.read(&scan_range(100, 105)).await.expect("read");
+            let heights: Vec<u32> = blocks.iter().map(|b| u32::from(b.height())).collect();
+            assert_eq!(heights, vec![100, 101]);
+        }
+
+        #[tokio::test]
+        async fn read_errors_when_range_start_is_missing() {
+            let cache = MemoryBlockCache::new();
+            cache.insert(vec![test_block(101)]).await.expect("insert");
+            let err = cache
+                .read(&scan_range(100, 102))
+                .await
+                .expect_err("missing range start must error");
+            assert!(
+                matches!(err, CacheError::MissingBlock(height)
+                    if height == BlockHeight::from_u32(100)),
+                "expected MissingBlock(100), got {err:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn get_tip_height_scopes_to_range() {
+            let cache = MemoryBlockCache::new();
+            cache
+                .insert(vec![test_block(100), test_block(101), test_block(500)])
+                .await
+                .expect("insert");
+            let overall = cache.get_tip_height(None).expect("tip overall");
+            assert_eq!(overall, Some(BlockHeight::from_u32(500)));
+            let range = scan_range(100, 200);
+            let scoped = cache.get_tip_height(Some(&range)).expect("tip scoped");
+            assert_eq!(scoped, Some(BlockHeight::from_u32(101)));
+            let empty_range = scan_range(600, 700);
+            let empty = cache.get_tip_height(Some(&empty_range)).expect("tip of empty range");
+            assert_eq!(empty, None);
+        }
+
+        #[tokio::test]
+        async fn delete_removes_exactly_the_range() {
+            let cache = MemoryBlockCache::new();
+            cache
+                .insert((100..106).map(test_block).collect())
+                .await
+                .expect("insert");
+            cache.delete(scan_range(102, 104)).await.expect("delete range");
+            assert_eq!(
+                collect_heights(&cache, Some(100), Some(2)).expect("prefix survives"),
+                vec![100, 101]
+            );
+            assert_eq!(
+                collect_heights(&cache, Some(104), None).expect("suffix survives"),
+                vec![104, 105]
+            );
+            let err = collect_heights(&cache, Some(102), Some(1))
+                .expect_err("deleted heights must read as missing");
+            assert!(matches!(
+                err,
+                ChainError::BlockSource(CacheError::MissingBlock(_))
+            ));
         }
     }
 
