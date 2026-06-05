@@ -9,10 +9,7 @@ use secrecy::{ExposeSecret, SecretString, SecretVec};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zcash_client_backend::data_api::{wallet::ConfirmationsPolicy, WalletRead};
-use zcash_client_sqlite::{
-    chain::init::init_cache_database, util::SystemClock, wallet::init::init_wallet_db, BlockDb,
-    WalletDb,
-};
+use zcash_client_sqlite::{util::SystemClock, wallet::init::init_wallet_db, WalletDb};
 use zcash_protocol::consensus::Network;
 use zip32::fingerprint::SeedFingerprint;
 
@@ -55,7 +52,6 @@ pub struct RecoveryWorkspace {
     /// generic data_dir or network directories above it.
     private_root: PathBuf,
     wallet_db_path: PathBuf,
-    cache_db_path: PathBuf,
 }
 
 impl RecoveryWorkspace {
@@ -81,7 +77,6 @@ impl RecoveryWorkspace {
 
         Ok(Self {
             wallet_db_path: root.join("wallet.sqlite"),
-            cache_db_path: root.join("cache.sqlite"),
             root,
             private_root,
         })
@@ -118,43 +113,6 @@ impl RecoveryWorkspace {
         ensure_wallet_wal(&self.wallet_db_path)?;
         set_private_file_permissions(&self.wallet_db_path)?;
 
-        // Set `auto_vacuum=INCREMENTAL` on a fresh cache file so that the
-        // deletions `zcash_client_backend::sync::run` issues after each scan
-        // range can release pages back to the OS via `PRAGMA incremental_vacuum`
-        // in `SqliteBlockCache::delete`. The pragma only takes effect on a
-        // database that has no tables yet, so it must be set before
-        // `init_cache_database`. Existing caches are left as-is — converting
-        // them would require a full `VACUUM`, which is multi-GB on long scans.
-        if !self.cache_db_path.exists() {
-            let conn = rusqlite::Connection::open(&self.cache_db_path).map_err(|err| {
-                ZeckError::Storage(format!(
-                    "preparing cache database {}: {err}",
-                    self.cache_db_path.display()
-                ))
-            })?;
-            conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")
-                .map_err(|err| {
-                    ZeckError::Storage(format!(
-                        "enabling auto_vacuum on {}: {err}",
-                        self.cache_db_path.display()
-                    ))
-                })?;
-        }
-
-        let cache_db = BlockDb::for_path(&self.cache_db_path).map_err(|err| {
-            ZeckError::Storage(format!(
-                "opening cache database {}: {err}",
-                self.cache_db_path.display()
-            ))
-        })?;
-        init_cache_database(&cache_db).map_err(|err| {
-            ZeckError::Wallet(format!(
-                "initializing cache database {}: {err}",
-                self.cache_db_path.display()
-            ))
-        })?;
-        set_private_file_permissions(&self.cache_db_path)?;
-
         Ok(())
     }
 
@@ -164,10 +122,6 @@ impl RecoveryWorkspace {
 
     pub fn wallet_db_path(&self) -> &Path {
         &self.wallet_db_path
-    }
-
-    pub fn cache_db_path(&self) -> &Path {
-        &self.cache_db_path
     }
 }
 

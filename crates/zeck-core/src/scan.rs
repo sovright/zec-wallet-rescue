@@ -4,7 +4,6 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
-use prost::Message;
 use rand_core::OsRng;
 use rusqlite::{params, Connection, OptionalExtension};
 use rustls::crypto::ring::default_provider;
@@ -72,8 +71,6 @@ const SYNC_BATCH_SIZE: u32 = 1_000;
 
 #[derive(Debug)]
 enum CacheError {
-    Db(rusqlite::Error),
-    Decode(prost::DecodeError),
     MissingBlock(BlockHeight),
     Corrupted(String),
 }
@@ -81,8 +78,6 @@ enum CacheError {
 impl std::fmt::Display for CacheError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Db(err) => write!(f, "{err}"),
-            Self::Decode(err) => write!(f, "{err}"),
             Self::MissingBlock(height) => write!(f, "missing compact block at height {height}"),
             Self::Corrupted(message) => write!(f, "{message}"),
         }
@@ -91,27 +86,20 @@ impl std::fmt::Display for CacheError {
 
 impl std::error::Error for CacheError {}
 
-impl From<rusqlite::Error> for CacheError {
-    fn from(value: rusqlite::Error) -> Self {
-        Self::Db(value)
+/// In-memory block cache that holds at most one scan batch (~1,000 blocks).
+/// `sync::run` deletes each range immediately after scanning, so no more than
+/// one batch is ever live. This eliminates all cache.sqlite I/O: the protobuf
+/// encode/decode cycles, fsyncs, and incremental-vacuum work that the
+/// `SqliteBlockCache` predecessor required.
+struct MemoryBlockCache(StdMutex<std::collections::BTreeMap<BlockHeight, CompactBlock>>);
+
+impl MemoryBlockCache {
+    fn new() -> Self {
+        Self(StdMutex::new(std::collections::BTreeMap::new()))
     }
 }
 
-impl From<prost::DecodeError> for CacheError {
-    fn from(value: prost::DecodeError) -> Self {
-        Self::Decode(value)
-    }
-}
-
-struct SqliteBlockCache(StdMutex<Connection>);
-
-impl SqliteBlockCache {
-    fn for_path(path: &std::path::Path) -> Result<Self, CacheError> {
-        Ok(Self(StdMutex::new(Connection::open(path)?)))
-    }
-}
-
-impl BlockSource for SqliteBlockCache {
+impl BlockSource for MemoryBlockCache {
     type Error = CacheError;
 
     fn with_blocks<F, DbErrT>(
@@ -127,64 +115,32 @@ impl BlockSource for SqliteBlockCache {
             ChainError::BlockSource(err)
         }
 
-        let start_height = from_height.map_or(0u32, u32::from);
-        let row_limit = limit
-            .and_then(|limit| u32::try_from(limit).ok())
-            .unwrap_or(u32::MAX);
         let guard = self
             .0
             .lock()
             .map_err(|_| CacheError::Corrupted("block cache mutex was poisoned".to_owned()))
             .map_err(to_chain_error)?;
-        let mut stmt = guard
-            .prepare(
-                "SELECT height, data FROM compactblocks
-                 WHERE height >= ?
-                 ORDER BY height ASC LIMIT ?",
-            )
-            .map_err(CacheError::from)
-            .map_err(to_chain_error)?;
-        let mut rows = stmt
-            .query(params![start_height, row_limit])
-            .map_err(CacheError::from)
-            .map_err(to_chain_error)?;
 
+        let start = from_height.unwrap_or(BlockHeight::from_u32(0));
+        let cap = limit.unwrap_or(usize::MAX);
         let mut expected = from_height;
-        while let Some(row) = rows
-            .next()
-            .map_err(CacheError::from)
-            .map_err(to_chain_error)?
-        {
-            let height = BlockHeight::from_u32(
-                row.get::<_, u32>(0)
-                    .map_err(CacheError::from)
-                    .map_err(to_chain_error)?,
-            );
+        let mut count = 0usize;
+        for (height, block) in guard.range(start..) {
+            if count >= cap {
+                break;
+            }
             if let Some(expected_height) = expected {
-                if height != expected_height {
+                if *height != expected_height {
                     return Err(to_chain_error(CacheError::MissingBlock(expected_height)));
                 }
             }
-            let data = row
-                .get::<_, Vec<u8>>(1)
-                .map_err(CacheError::from)
-                .map_err(to_chain_error)?;
-            let block = CompactBlock::decode(&data[..])
-                .map_err(CacheError::from)
-                .map_err(to_chain_error)?;
-            if block.height() != height {
-                return Err(to_chain_error(CacheError::Corrupted(format!(
-                    "cached block height {} did not match row height {}",
-                    block.height(),
-                    height
-                ))));
-            }
-            with_row(block)?;
-            expected = expected.map(|height| height + 1);
+            with_row(block.clone())?;
+            expected = expected.map(|h| h + 1);
+            count += 1;
         }
 
         if let Some(expected_height) = expected {
-            if expected_height == from_height.unwrap_or(BlockHeight::from_u32(start_height)) {
+            if expected_height == start {
                 return Err(to_chain_error(CacheError::MissingBlock(expected_height)));
             }
         }
@@ -194,117 +150,63 @@ impl BlockSource for SqliteBlockCache {
 }
 
 #[async_trait]
-impl BlockCache for SqliteBlockCache {
+impl BlockCache for MemoryBlockCache {
     fn get_tip_height(
         &self,
         range: Option<&ScanRange>,
     ) -> Result<Option<BlockHeight>, Self::Error> {
-        let (start_height, end_height) = range
-            .map(|range: &ScanRange| {
-                (
-                    u32::from(range.block_range().start),
-                    u32::from(range.block_range().end),
-                )
-            })
-            .unwrap_or((0, u32::MAX));
-
-        self.0
-            .lock()
-            .map_err(|_| CacheError::Corrupted("block cache mutex was poisoned".to_owned()))?
-            .query_row(
-                "SELECT MAX(height) FROM compactblocks WHERE height >= ? AND height < ?",
-                params![start_height, end_height],
-                |row| row.get::<_, Option<u32>>(0),
-            )
-            .map(|height| height.map(BlockHeight::from_u32))
-            .map_err(CacheError::from)
-    }
-
-    async fn read(&self, range: &ScanRange) -> Result<Vec<CompactBlock>, Self::Error> {
-        let mut blocks = Vec::new();
-        let start = range.block_range().start;
-        let end = range.block_range().end;
         let guard = self
             .0
             .lock()
             .map_err(|_| CacheError::Corrupted("block cache mutex was poisoned".to_owned()))?;
-        let mut stmt = guard.prepare(
-            "SELECT height, data FROM compactblocks
-             WHERE height >= ? AND height < ?
-             ORDER BY height ASC",
-        )?;
-        let mut rows = stmt.query(params![u32::from(start), u32::from(end)])?;
-        let mut expected = start;
+        let tip = match range {
+            Some(r) => guard.range(r.block_range().start..r.block_range().end).next_back(),
+            None => guard.iter().next_back(),
+        };
+        Ok(tip.map(|(h, _)| *h))
+    }
 
-        while let Some(row) = rows.next()? {
-            let height = BlockHeight::from_u32(row.get(0)?);
-            if height != expected {
+    async fn read(&self, range: &ScanRange) -> Result<Vec<CompactBlock>, Self::Error> {
+        let guard = self
+            .0
+            .lock()
+            .map_err(|_| CacheError::Corrupted("block cache mutex was poisoned".to_owned()))?;
+        let start = range.block_range().start;
+        let end = range.block_range().end;
+        let mut blocks = Vec::new();
+        let mut expected = start;
+        for (height, block) in guard.range(start..end) {
+            if *height != expected {
                 if blocks.is_empty() {
                     return Err(CacheError::MissingBlock(expected));
                 }
                 break;
             }
-            let data: Vec<u8> = row.get(1)?;
-            let block = CompactBlock::decode(&data[..])?;
-            blocks.push(block);
+            blocks.push(block.clone());
             expected = expected + 1;
         }
-
         Ok(blocks)
     }
 
     async fn insert(&self, compact_blocks: Vec<CompactBlock>) -> Result<(), Self::Error> {
-        let guard = self
+        let mut guard = self
             .0
             .lock()
             .map_err(|_| CacheError::Corrupted("block cache mutex was poisoned".to_owned()))?;
-        let mut stmt = guard.prepare(
-            "INSERT INTO compactblocks(height, data)
-             VALUES (?, ?)
-             ON CONFLICT(height) DO UPDATE SET data = excluded.data",
-        )?;
-        guard.execute("BEGIN IMMEDIATE", [])?;
-        let result = compact_blocks.iter().try_for_each(|block| {
-            stmt.execute(params![u32::from(block.height()), block.encode_to_vec()])?;
-            Ok::<_, rusqlite::Error>(())
-        });
-        drop(stmt);
-        match result {
-            Ok(()) => {
-                guard.execute("COMMIT", [])?;
-                Ok(())
-            }
-            Err(err) => {
-                let _ = guard.execute("ROLLBACK", []);
-                Err(CacheError::from(err))
-            }
+        for block in compact_blocks {
+            guard.insert(block.height(), block);
         }
+        Ok(())
     }
 
     async fn delete(&self, range: ScanRange) -> Result<(), Self::Error> {
-        let guard = self
+        let mut guard = self
             .0
             .lock()
             .map_err(|_| CacheError::Corrupted("block cache mutex was poisoned".to_owned()))?;
-        guard.execute(
-            "DELETE FROM compactblocks WHERE height >= ? AND height < ?",
-            params![
-                u32::from(range.block_range().start),
-                u32::from(range.block_range().end)
-            ],
-        )?;
-        // Return freed pages to the OS. No-op when the database was created
-        // before `auto_vacuum=INCREMENTAL` was set (older workspaces).
-        //
-        // `PRAGMA incremental_vacuum` releases one freelist page per
-        // `sqlite3_step` call and returns a row each step, so we must drain
-        // the result set to actually clear the freelist. Using `execute` or
-        // `execute_batch` would only free a single page per scan range.
-        if let Ok(mut stmt) = guard.prepare("PRAGMA incremental_vacuum") {
-            if let Ok(mut rows) = stmt.query([]) {
-                while matches!(rows.next(), Ok(Some(_))) {}
-            }
-        }
+        let start = range.block_range().start;
+        let end = range.block_range().end;
+        guard.retain(|h, _| *h < start || *h >= end);
         Ok(())
     }
 }
@@ -1065,12 +967,7 @@ where
     ChT::ResponseBody: Body<Data = Bytes> + Send + 'static,
     <ChT::ResponseBody as Body>::Error: Into<StdError> + Send,
 {
-    let cache_db = SqliteBlockCache::for_path(workspace.cache_db_path()).map_err(|err| {
-        ZeckError::Storage(format!(
-            "opening cache database {}: {err}",
-            workspace.cache_db_path().display()
-        ))
-    })?;
+    let cache = MemoryBlockCache::new();
     let mut wallet_db =
         WalletDb::for_path(workspace.wallet_db_path(), *network, SystemClock, OsRng).map_err(
             |err| {
@@ -1081,7 +978,7 @@ where
             },
         )?;
 
-    sync::run(client, network, &cache_db, &mut wallet_db, SYNC_BATCH_SIZE)
+    sync::run(client, network, &cache, &mut wallet_db, SYNC_BATCH_SIZE)
         .await
         .map_err(|err| ZeckError::Wallet(format!("synchronizing wallet workspace: {err}")))?;
 
@@ -2112,7 +2009,6 @@ mod tests {
     mod cancel_resume {
         use std::sync::Arc;
 
-        use prost::Message as _;
         use secrecy::{ExposeSecret, SecretString};
         use tokio::sync::Mutex;
         use zcash_client_backend::{
@@ -2127,7 +2023,7 @@ mod tests {
         use zcash_primitives::block::BlockHash;
         use zcash_protocol::consensus::BlockHeight;
 
-        use super::super::{import_accounts, ScanTaskState, SqliteBlockCache};
+        use super::super::{import_accounts, MemoryBlockCache, ScanTaskState};
         use crate::{
             derivation::{derive_accounts, legacy_transparent_account_key, mnemonic_seed},
             models::{RuntimeScanConfig, ScanHandle, ZeckNetwork},
@@ -2356,11 +2252,10 @@ mod tests {
             .await
             .expect("import_accounts should succeed");
 
-            let cache_db_path = workspace1.cache_db_path().to_owned();
             let wallet_db_path = workspace1.wallet_db_path().to_owned();
 
             {
-                let cache_db = SqliteBlockCache::for_path(&cache_db_path).expect("cache_db");
+                let cache = MemoryBlockCache::new();
                 let mut wallet_db = WalletDb::for_path(
                     &wallet_db_path,
                     network,
@@ -2382,19 +2277,14 @@ mod tests {
                     .update_chain_tip(scan_height)
                     .expect("update_chain_tip");
 
-                // Insert one empty block at the birthday height.
                 let block = empty_compact_block(scan_height.into(), [0u8; 32], 0, 0);
-                // Sanity-check the block round-trips via prost — guards against
-                // accidentally constructing a block that the cache can't decode.
-                let bytes = block.encode_to_vec();
-                CompactBlock::decode(&bytes[..]).expect("compact block round-trip");
-                <SqliteBlockCache as super::super::BlockCache>::insert(&cache_db, vec![block])
+                <MemoryBlockCache as super::super::BlockCache>::insert(&cache, vec![block])
                     .await
                     .expect("cache insert");
 
                 scan_cached_blocks(
                     &network,
-                    &cache_db,
+                    &cache,
                     &mut wallet_db,
                     scan_height,
                     &chain_state_before_scan,
@@ -2471,123 +2361,6 @@ mod tests {
                     range,
                 );
             }
-        }
-    }
-
-    /// Verifies that `cache.sqlite` is created with `auto_vacuum=INCREMENTAL`
-    /// and that issuing a `DELETE` followed by `PRAGMA incremental_vacuum`
-    /// actually shrinks the file. Without auto-vacuum these would leave the
-    /// freed pages in the file and the cache would grow unboundedly across
-    /// the lifetime of a long historical scan.
-    mod cache_pruning {
-        use rusqlite::{params, Connection};
-        use secrecy::{ExposeSecret, SecretString};
-
-        use crate::{
-            derivation::mnemonic_seed,
-            models::{RuntimeScanConfig, ZeckNetwork},
-            workspace::RecoveryWorkspace,
-        };
-
-        const TEST_SEED: &str = "abandon abandon abandon abandon abandon abandon \
-                                  abandon abandon abandon abandon abandon abandon \
-                                  abandon abandon abandon abandon abandon abandon \
-                                  abandon abandon abandon abandon abandon art";
-
-        fn test_config(data_dir: std::path::PathBuf) -> RuntimeScanConfig {
-            RuntimeScanConfig {
-                seed_phrase: SecretString::new(TEST_SEED.to_owned()),
-                birthday: 419_200,
-                num_accounts: Some(1),
-                gap_limit: 5,
-                lightwalletd_url: "https://example.invalid:443".to_owned(),
-                data_dir,
-                network: ZeckNetwork::Mainnet,
-                label: String::new(),
-            }
-        }
-
-        fn auto_vacuum_mode(path: &std::path::Path) -> u32 {
-            let conn = Connection::open(path).expect("open cache.sqlite");
-            conn.query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
-                .expect("query auto_vacuum")
-        }
-
-        #[test]
-        fn fresh_cache_db_has_incremental_auto_vacuum() {
-            let tempdir = tempfile::tempdir().expect("temp dir");
-            let config = test_config(tempdir.path().to_owned());
-            let workspace = RecoveryWorkspace::from_runtime(&config).expect("workspace");
-            let seed = mnemonic_seed(&config.seed_phrase).expect("seed");
-            workspace
-                .initialize(config.network, seed.expose_secret())
-                .expect("initialize workspace");
-
-            assert_eq!(
-                auto_vacuum_mode(workspace.cache_db_path()),
-                2,
-                "cache.sqlite must be created with auto_vacuum=INCREMENTAL (mode 2)"
-            );
-        }
-
-        #[test]
-        fn delete_with_incremental_vacuum_shrinks_cache_file() {
-            let tempdir = tempfile::tempdir().expect("temp dir");
-            let config = test_config(tempdir.path().to_owned());
-            let workspace = RecoveryWorkspace::from_runtime(&config).expect("workspace");
-            let seed = mnemonic_seed(&config.seed_phrase).expect("seed");
-            workspace
-                .initialize(config.network, seed.expose_secret())
-                .expect("initialize workspace");
-
-            let cache_path = workspace.cache_db_path();
-            let conn = Connection::open(cache_path).expect("open cache.sqlite");
-
-            // Write enough synthetic compact-block payload (~1 MB) that the
-            // file grows well past initial allocation, so a successful vacuum
-            // is observable as a real reduction in on-disk size.
-            let payload = vec![0u8; 16 * 1024];
-            for height in 0..64u32 {
-                conn.execute(
-                    "INSERT INTO compactblocks(height, data) VALUES (?, ?)",
-                    params![height, payload],
-                )
-                .expect("insert compactblocks row");
-            }
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").ok();
-            drop(conn);
-
-            let size_after_insert = std::fs::metadata(cache_path)
-                .expect("stat cache.sqlite")
-                .len();
-            assert!(
-                size_after_insert > 512 * 1024,
-                "cache.sqlite should be at least 512 KiB after seeding (was {size_after_insert})"
-            );
-
-            let conn = Connection::open(cache_path).expect("reopen cache.sqlite");
-            conn.execute("DELETE FROM compactblocks", [])
-                .expect("delete rows");
-            // Drain `PRAGMA incremental_vacuum` — it returns one row per
-            // freed page. `execute_batch` only frees a single page.
-            let mut stmt = conn
-                .prepare("PRAGMA incremental_vacuum")
-                .expect("prepare incremental_vacuum");
-            let mut rows = stmt.query([]).expect("query incremental_vacuum");
-            while rows.next().expect("step incremental_vacuum").is_some() {}
-            drop(rows);
-            drop(stmt);
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").ok();
-            drop(conn);
-
-            let size_after_vacuum = std::fs::metadata(cache_path)
-                .expect("stat cache.sqlite")
-                .len();
-            assert!(
-                size_after_vacuum * 4 < size_after_insert,
-                "cache.sqlite should shrink dramatically after delete + incremental_vacuum \
-                 (was {size_after_insert}, now {size_after_vacuum})"
-            );
         }
     }
 
