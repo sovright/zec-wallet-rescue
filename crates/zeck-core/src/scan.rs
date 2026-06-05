@@ -1129,6 +1129,11 @@ pub(crate) async fn refresh_scan_progress(
     .map_err(|err| {
         ZeckError::Storage(format!("opening wallet database for activity check: {err}"))
     })?;
+    raw_conn
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|err| {
+            ZeckError::Storage(format!("setting busy_timeout on wallet database: {err}"))
+        })?;
 
     let target_height = (summary.chain_tip_height() + 1).into();
     let mut account_rows = Vec::with_capacity(tracked_accounts.len());

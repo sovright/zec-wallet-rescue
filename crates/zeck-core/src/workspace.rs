@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use rand_core::OsRng;
@@ -111,6 +112,10 @@ impl RecoveryWorkspace {
                 self.wallet_db_path.display()
             ))
         })?;
+        // WAL mode and synchronous=NORMAL are stored in the DB file header and
+        // apply to every future connection, including WalletDb's internal one.
+        // Set here (idempotent) so we never run a scan in rollback-journal mode.
+        ensure_wallet_wal(&self.wallet_db_path)?;
         set_private_file_permissions(&self.wallet_db_path)?;
 
         // Set `auto_vacuum=INCREMENTAL` on a fresh cache file so that the
@@ -265,6 +270,33 @@ fn set_private_file_permissions(path: &Path) -> ZeckResult<()> {
         let _ = path;
     }
 
+    Ok(())
+}
+
+/// Set WAL journal mode, synchronous=NORMAL, and busy_timeout on the wallet
+/// database. Both `journal_mode=WAL` and `synchronous=NORMAL` are stored in
+/// the DB file header and persist across connections, so calling this once in
+/// `initialize` is sufficient for all subsequent `WalletDb::for_path` opens.
+/// `busy_timeout` only applies to this temporary connection but the WAL/sync
+/// settings are what matter for preventing reader/writer contention.
+pub fn ensure_wallet_wal(path: &Path) -> ZeckResult<()> {
+    let conn = rusqlite::Connection::open(path).map_err(|err| {
+        ZeckError::Storage(format!(
+            "opening wallet database for pragma setup {}: {err}",
+            path.display()
+        ))
+    })?;
+    conn.busy_timeout(Duration::from_secs(5))
+        .map_err(|err| ZeckError::Storage(format!("setting busy_timeout on {}: {err}", path.display())))?;
+    conn.pragma_update(None, "journal_mode", "WAL").map_err(|err| {
+        ZeckError::Storage(format!("setting journal_mode=WAL on {}: {err}", path.display()))
+    })?;
+    conn.pragma_update(None, "synchronous", "NORMAL").map_err(|err| {
+        ZeckError::Storage(format!(
+            "setting synchronous=NORMAL on {}: {err}",
+            path.display()
+        ))
+    })?;
     Ok(())
 }
 
