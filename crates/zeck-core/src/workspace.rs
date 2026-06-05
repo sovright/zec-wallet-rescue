@@ -8,10 +8,7 @@ use secrecy::{ExposeSecret, SecretString, SecretVec};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zcash_client_backend::data_api::{wallet::ConfirmationsPolicy, WalletRead};
-use zcash_client_sqlite::{
-    chain::init::init_cache_database, util::SystemClock, wallet::init::init_wallet_db, BlockDb,
-    WalletDb,
-};
+use zcash_client_sqlite::{util::SystemClock, wallet::init::init_wallet_db, WalletDb};
 use zcash_protocol::consensus::Network;
 use zip32::fingerprint::SeedFingerprint;
 
@@ -35,11 +32,11 @@ const SESSION_SCHEMA_VERSION: u32 = 1;
 /// Resume keying: identical scan args MUST resolve to the same `root`
 /// across runs. This module's tests pin that contract. The downstream
 /// behavior — that re-running Argos with the same args actually resumes
-/// from `WalletSummary::fully_scanned_height` — depends on `WalletDb`
-/// and `BlockDb` initializers being idempotent against existing on-disk
-/// workspaces, which is an upstream contract from `zcash_client_sqlite`.
-/// That contract is not pinned here; treat it as a thing to verify
-/// during dependency bumps.
+/// from `WalletSummary::fully_scanned_height` — depends on the `WalletDb`
+/// initializer being idempotent against existing on-disk workspaces,
+/// which is an upstream contract from `zcash_client_sqlite`. That
+/// contract is not pinned here; treat it as a thing to verify during
+/// dependency bumps.
 ///
 /// Privacy: the per-wallet path component is a SHA-256-derived hash of
 /// `(domain, network, seed-fingerprint, birthday, scope)` rather than the
@@ -54,7 +51,6 @@ pub struct RecoveryWorkspace {
     /// generic data_dir or network directories above it.
     private_root: PathBuf,
     wallet_db_path: PathBuf,
-    cache_db_path: PathBuf,
 }
 
 impl RecoveryWorkspace {
@@ -80,7 +76,6 @@ impl RecoveryWorkspace {
 
         Ok(Self {
             wallet_db_path: root.join("wallet.sqlite"),
-            cache_db_path: root.join("cache.sqlite"),
             root,
             private_root,
         })
@@ -93,18 +88,7 @@ impl RecoveryWorkspace {
         // resumes don't quietly inherit looser perms set in a previous run.
         tighten_private_perms(&self.private_root, &self.root)?;
 
-        let mut wallet_db = WalletDb::for_path(
-            &self.wallet_db_path,
-            consensus_network(network),
-            SystemClock,
-            OsRng,
-        )
-        .map_err(|err| {
-            ZeckError::Storage(format!(
-                "opening wallet database {}: {err}",
-                self.wallet_db_path.display()
-            ))
-        })?;
+        let mut wallet_db = open_wallet_db(&self.wallet_db_path, consensus_network(network))?;
         init_wallet_db(&mut wallet_db, Some(SecretVec::new(seed.to_vec()))).map_err(|err| {
             ZeckError::Wallet(format!(
                 "initializing wallet database {}: {err}",
@@ -112,43 +96,17 @@ impl RecoveryWorkspace {
             ))
         })?;
         set_private_file_permissions(&self.wallet_db_path)?;
-
-        // Set `auto_vacuum=INCREMENTAL` on a fresh cache file so that the
-        // deletions `zcash_client_backend::sync::run` issues after each scan
-        // range can release pages back to the OS via `PRAGMA incremental_vacuum`
-        // in `SqliteBlockCache::delete`. The pragma only takes effect on a
-        // database that has no tables yet, so it must be set before
-        // `init_cache_database`. Existing caches are left as-is — converting
-        // them would require a full `VACUUM`, which is multi-GB on long scans.
-        if !self.cache_db_path.exists() {
-            let conn = rusqlite::Connection::open(&self.cache_db_path).map_err(|err| {
-                ZeckError::Storage(format!(
-                    "preparing cache database {}: {err}",
-                    self.cache_db_path.display()
-                ))
-            })?;
-            conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")
-                .map_err(|err| {
-                    ZeckError::Storage(format!(
-                        "enabling auto_vacuum on {}: {err}",
-                        self.cache_db_path.display()
-                    ))
-                })?;
+        // WAL mode adds `-wal`/`-shm` sidecar files next to the database;
+        // tighten them too when they already exist. Best-effort: SQLite
+        // recreates them with the database file's permissions otherwise.
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = self.wallet_db_path.as_os_str().to_owned();
+            sidecar.push(suffix);
+            let sidecar = PathBuf::from(sidecar);
+            if sidecar.exists() {
+                set_private_file_permissions(&sidecar)?;
+            }
         }
-
-        let cache_db = BlockDb::for_path(&self.cache_db_path).map_err(|err| {
-            ZeckError::Storage(format!(
-                "opening cache database {}: {err}",
-                self.cache_db_path.display()
-            ))
-        })?;
-        init_cache_database(&cache_db).map_err(|err| {
-            ZeckError::Wallet(format!(
-                "initializing cache database {}: {err}",
-                self.cache_db_path.display()
-            ))
-        })?;
-        set_private_file_permissions(&self.cache_db_path)?;
 
         Ok(())
     }
@@ -160,10 +118,69 @@ impl RecoveryWorkspace {
     pub fn wallet_db_path(&self) -> &Path {
         &self.wallet_db_path
     }
+}
 
-    pub fn cache_db_path(&self) -> &Path {
-        &self.cache_db_path
-    }
+/// Number of seconds a wallet-database connection waits on a locked
+/// database before surfacing `SQLITE_BUSY`. The scan writer and the
+/// once-per-second progress poller share the file, so lock collisions
+/// are routine rather than exceptional.
+const WALLET_DB_BUSY_TIMEOUT_SECS: u64 = 5;
+
+/// Opens a raw SQLite connection to a wallet database with the tuning
+/// Argos requires:
+///
+/// - `journal_mode=WAL` so the once-per-second progress poller (reader)
+///   never blocks the scan writer or vice versa, and so commits append to
+///   the log instead of rewriting a rollback journal with extra fsyncs.
+///   The mode is persisted in the database header, so setting it on every
+///   open is an idempotent no-op after the first conversion.
+/// - `synchronous=NORMAL`, the recommended (and crash-safe) durability
+///   level for WAL databases. This is per-connection state, which is why
+///   every open must come through this helper rather than relying on the
+///   database file.
+/// - a busy timeout, so concurrent access waits instead of failing with
+///   `SQLITE_BUSY` immediately.
+///
+/// `zcash_client_sqlite` deliberately leaves connection tuning to the
+/// embedder (ZODL's mobile apps do the same at the app layer); its
+/// `WalletDb::for_path` opens with SQLite defaults, which is why callers
+/// should use [`open_wallet_db`] instead.
+fn open_tuned_wallet_connection(path: &Path) -> Result<rusqlite::Connection, rusqlite::Error> {
+    let conn = rusqlite::Connection::open(path)?;
+    // `WalletDb::from_connection` documents that the caller is responsible
+    // for loading the array module (`WalletDb::for_path` does the same).
+    rusqlite::vtab::array::load_module(&conn)?;
+    conn.busy_timeout(std::time::Duration::from_secs(WALLET_DB_BUSY_TIMEOUT_SECS))?;
+    // `PRAGMA journal_mode` returns the resulting mode as a row, so it needs
+    // the query form rather than `pragma_update`.
+    conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| {
+        row.get::<_, String>(0)
+    })?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    Ok(conn)
+}
+
+/// Opens a wallet database with the connection tuning from
+/// [`open_tuned_wallet_connection`]. All production opens of
+/// `wallet.sqlite` should come through here — `WalletDb::for_path` leaves
+/// the connection on SQLite defaults (rollback journal, `synchronous=FULL`,
+/// no busy timeout).
+pub(crate) fn open_wallet_db(
+    path: &Path,
+    network: Network,
+) -> ZeckResult<WalletDb<rusqlite::Connection, Network, SystemClock, OsRng>> {
+    let conn = open_tuned_wallet_connection(path).map_err(|err| {
+        ZeckError::Storage(format!(
+            "opening wallet database {}: {err}",
+            path.display()
+        ))
+    })?;
+    Ok(WalletDb::from_connection(
+        conn,
+        network,
+        SystemClock,
+        OsRng,
+    ))
 }
 
 pub fn consensus_network(network: ZeckNetwork) -> Network {
@@ -521,13 +538,7 @@ fn try_build_incomplete_row(
 }
 
 fn read_synced_height(wallet_db_path: &Path, network: ZeckNetwork) -> Option<u32> {
-    let wallet_db = WalletDb::for_path(
-        wallet_db_path,
-        consensus_network(network),
-        SystemClock,
-        OsRng,
-    )
-    .ok()?;
+    let wallet_db = open_wallet_db(wallet_db_path, consensus_network(network)).ok()?;
     let summary = wallet_db
         .get_wallet_summary(ConfirmationsPolicy::MIN)
         .ok()
@@ -1158,5 +1169,75 @@ mod tests {
         // percent-encoded or stripped version.
         assert!(as_string.contains("tëst"));
         assert!(as_string.contains("日本"));
+    }
+
+    // ─── wallet DB connection tuning ──────────────────────────────────
+    //
+    // `zcash_client_sqlite` sets no journal_mode/synchronous/busy_timeout
+    // pragmas itself, so an untuned open runs in rollback-journal mode with
+    // `synchronous=FULL` and zero busy timeout. These tests pin that every
+    // wallet DB opened through `open_tuned_wallet_connection` gets the
+    // WAL + NORMAL + busy-timeout configuration.
+
+    #[test]
+    fn tuned_wallet_connection_sets_wal_normal_and_busy_timeout() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let path = tempdir.path().join("wallet.sqlite");
+
+        let conn = super::open_tuned_wallet_connection(&path).expect("open tuned connection");
+
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("query journal_mode");
+        assert_eq!(
+            journal_mode.to_ascii_lowercase(),
+            "wal",
+            "wallet DB must run in WAL mode so the progress poller never blocks the scan writer"
+        );
+
+        let synchronous: i64 = conn
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .expect("query synchronous");
+        assert_eq!(synchronous, 1, "synchronous must be NORMAL (1) in WAL mode");
+
+        let busy_timeout_ms: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .expect("query busy_timeout");
+        assert_eq!(
+            busy_timeout_ms,
+            i64::try_from(super::WALLET_DB_BUSY_TIMEOUT_SECS * 1_000).expect("timeout fits"),
+            "busy_timeout must wait on lock contention instead of failing immediately"
+        );
+    }
+
+    #[test]
+    fn wal_mode_persists_for_untuned_readers() {
+        // journal_mode is stored in the database header: once any tuned
+        // connection has converted the file, later opens — even ones that
+        // skip the pragma, like third-party inspection tools — see WAL.
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let path = tempdir.path().join("wallet.sqlite");
+
+        let conn = super::open_tuned_wallet_connection(&path).expect("open tuned connection");
+        drop(conn);
+
+        let plain = rusqlite::Connection::open(&path).expect("plain reopen");
+        let journal_mode: String = plain
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("query journal_mode");
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+    }
+
+    #[test]
+    fn open_wallet_db_succeeds_on_fresh_and_existing_files() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let path = tempdir.path().join("wallet.sqlite");
+        let network = super::consensus_network(crate::models::ZeckNetwork::Mainnet);
+
+        // Fresh file.
+        let db = super::open_wallet_db(&path, network).expect("open fresh wallet db");
+        drop(db);
+        // Idempotent reopen of the (now WAL-mode) file.
+        super::open_wallet_db(&path, network).expect("reopen existing wallet db");
     }
 }
