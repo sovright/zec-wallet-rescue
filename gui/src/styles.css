@@ -911,9 +911,9 @@ select {
   align-items: center;
   gap: 16px;
   padding: 12px 14px;
-  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.12));
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--color-card, rgba(255, 255, 255, 0.04));
+  background: var(--panel-strong);
 }
 
 .session-row .session-label {
@@ -922,7 +922,7 @@ select {
 
 .session-row .session-meta {
   font-size: 0.85em;
-  color: var(--color-muted, #999);
+  color: var(--muted);
   margin-top: 2px;
 }
 
@@ -953,13 +953,14 @@ select {
 }
 
 .modal-card {
-  background: var(--color-bg, #1a1a1a);
-  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.16));
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  color: var(--ink);
   border-radius: 12px;
   padding: 24px;
   max-width: 560px;
   width: 100%;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
 }
 
 .donate-form { border-left: 3px solid var(--accent); }

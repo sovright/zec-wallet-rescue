@@ -328,7 +328,7 @@ $("sweep-memo").addEventListener("input", () => {
   const bytes = new TextEncoder().encode($("sweep-memo").value).length;
   const counter = $("memo-byte-count");
   counter.textContent = `${bytes} / 512 bytes`;
-  counter.style.color = bytes > 512 ? "var(--color-error, #c0392b)" : "";
+  counter.style.color = bytes > 512 ? "var(--danger)" : "";
 });
 
 $("auto-gap-limit").addEventListener("change", () => {
