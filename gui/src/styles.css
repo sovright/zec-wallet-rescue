@@ -377,6 +377,17 @@ textarea.masked {
   justify-content: space-between;
 }
 
+.audit-notice {
+  margin-top: 16px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.audit-notice a {
+  color: inherit;
+  text-decoration: underline;
+}
+
 .metric-panel {
   display: grid;
   grid-template-columns: auto auto auto 1fr;
