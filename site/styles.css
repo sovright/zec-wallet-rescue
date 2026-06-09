@@ -191,11 +191,11 @@ p {
 
 .button.primary {
   color: #fff;
-  background: var(--green);
+  background: #111;
 }
 
 .button.primary:hover {
-  background: var(--green-dark);
+  background: #333;
 }
 
 .button.secondary {
