@@ -245,7 +245,7 @@ p {
   min-height: 42px;
   padding: 0 16px;
   color: #dfe6df;
-  background: var(--green-dark);
+  background: #111;
 }
 
 .window-bar span {
@@ -277,7 +277,7 @@ p {
 .sidebar-preview {
   padding: 24px 20px;
   color: #eaf0eb;
-  background: #20362f;
+  background: #111;
 }
 
 .sidebar-preview p {
